@@ -95,18 +95,28 @@ async def find_matches(
         bedrooms: int | None = criteria.get("bedrooms")
         excluded = excluded_ids or set()
 
+        # Only level-2 records (child nodes: parent_id IS NOT NULL)
+        level2_join = (
+            "JOIN url_nodes un ON sr.url_node_id = un.id "
+            "WHERE un.parent_id IS NOT NULL"
+        )
+
         if location:
             rows = db.execute(
                 text(
-                    "SELECT id, data FROM scraped_records "
-                    "WHERE data::text ILIKE :loc "
-                    "ORDER BY scraped_at DESC LIMIT :lim"
+                    f"SELECT sr.id, sr.data FROM scraped_records sr "
+                    f"{level2_join} AND sr.data::text ILIKE :loc "
+                    "ORDER BY sr.scraped_at DESC LIMIT :lim"
                 ),
                 {"loc": f"%{location}%", "lim": _CANDIDATE_LIMIT},
             ).fetchall()
         else:
             rows = db.execute(
-                text("SELECT id, data FROM scraped_records ORDER BY scraped_at DESC LIMIT :lim"),
+                text(
+                    f"SELECT sr.id, sr.data FROM scraped_records sr "
+                    f"{level2_join} "
+                    "ORDER BY sr.scraped_at DESC LIMIT :lim"
+                ),
                 {"lim": _CANDIDATE_LIMIT},
             ).fetchall()
 
