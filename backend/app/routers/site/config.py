@@ -1,9 +1,11 @@
 """Admin site configuration endpoints."""
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
+import json
 
 from database import get_db
 from app.models.site_config import SiteConfig, DEFAULT_SITE_CONFIG_ID, DEFAULT_CARD_FIELDS
@@ -14,29 +16,42 @@ router = APIRouter()
 class CardFieldSchema(BaseModel):
     key: str
     label: str
-    type: str  # title | price | text | badge | image | link
+    type: str
 
 
 class SiteConfigIn(BaseModel):
+    # General
     site_name: Optional[str] = None
     tagline: Optional[str] = None
     primary_color: Optional[str] = None
     secondary_color: Optional[str] = None
     logo_text: Optional[str] = None
+    # Hero text
     show_hero: Optional[bool] = None
     hero_title: Optional[str] = None
     hero_subtitle: Optional[str] = None
     hero_cta_text: Optional[str] = None
     hero_bg_color: Optional[str] = None
-    show_carousel: Optional[bool] = None
-    carousel_title: Optional[str] = None
-    carousel_field_image: Optional[str] = None
-    show_listing: Optional[bool] = None
-    listing_title: Optional[str] = None
-    listing_columns: Optional[str] = None
+    # Hero carousel record IDs
+    hero_record_ids: Optional[List[str]] = None
+    # Featured section
+    featured_enabled: Optional[bool] = None
+    featured_title: Optional[str] = None
+    featured_level: Optional[int] = None
+    featured_limit: Optional[int] = None
+    featured_field_keys: Optional[List[str]] = None
+    # Catalog section
+    catalog_enabled: Optional[bool] = None
+    catalog_title: Optional[str] = None
+    catalog_level: Optional[int] = None
+    catalog_columns: Optional[str] = None
+    catalog_field_keys: Optional[List[str]] = None
+    # Footer
     footer_text: Optional[str] = None
     footer_contact: Optional[str] = None
+    # Legacy card fields (kept for backward compat)
     card_fields: Optional[List[dict]] = None
+    # Chatbot
     chatbot_enabled: Optional[bool] = None
     chatbot_greeting: Optional[str] = None
     chatbot_button_label: Optional[str] = None
@@ -65,3 +80,61 @@ def update_config(body: SiteConfigIn, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(cfg)
     return cfg
+
+
+def _level_condition(level: int, alias: str = "sr") -> str:
+    """Build JOIN + WHERE condition for record level filtering."""
+    if level == 1:
+        return f"JOIN url_nodes un ON {alias}.url_node_id = un.id WHERE un.parent_id IS NULL"
+    elif level == 2:
+        return f"JOIN url_nodes un ON {alias}.url_node_id = un.id WHERE un.parent_id IS NOT NULL"
+    return f"JOIN url_nodes un ON {alias}.url_node_id = un.id WHERE 1=1"
+
+
+@router.get("/records/browse")
+def browse_records(
+    level: int = 2,
+    limit: int = 48,
+    skip: int = 0,
+    search: str = "",
+    db: Session = Depends(get_db),
+):
+    """Return paginated records for admin record browser (to pick hero items)."""
+    join_where = _level_condition(level)
+    params: dict = {"lim": limit, "skip": skip}
+
+    if search:
+        sql = text(
+            f"SELECT sr.id, sr.data FROM scraped_records sr {join_where} "
+            "AND sr.data::text ILIKE :q ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
+        )
+        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr {join_where} AND sr.data::text ILIKE :q")
+        params["q"] = f"%{search}%"
+    else:
+        sql = text(
+            f"SELECT sr.id, sr.data FROM scraped_records sr {join_where} "
+            "ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
+        )
+        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr {join_where}")
+
+    rows = db.execute(sql, params).fetchall()
+    total = db.execute(count_sql, {k: v for k, v in params.items() if k not in ("lim", "skip")}).scalar() or 0
+
+    items = [{"id": str(r[0]), "data": dict(r[1]) if r[1] else {}} for r in rows]
+    return {"total": int(total), "items": items}
+
+
+@router.get("/fields/discover")
+def discover_fields(level: int = 2, db: Session = Depends(get_db)):
+    """Return unique field keys present in records at the given level (sample of 200 records)."""
+    join_where = _level_condition(level)
+    rows = db.execute(
+        text(f"SELECT sr.data FROM scraped_records sr {join_where} ORDER BY sr.scraped_at DESC LIMIT 200")
+    ).fetchall()
+
+    keys: set = set()
+    for (data,) in rows:
+        if data and isinstance(data, dict):
+            keys.update(data.keys())
+
+    return sorted(keys)
