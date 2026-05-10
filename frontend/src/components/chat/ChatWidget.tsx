@@ -492,6 +492,7 @@ export default function ChatWidget({
   const [loading, setLoading] = useState(false)
   const [state, setState] = useState('collecting_info')
   const bottomRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
@@ -511,7 +512,11 @@ export default function ChatWidget({
     }
   }
 
-  const handleOpen = () => { setOpen(true); if (!sessionId) startSession() }
+  const handleOpen = () => {
+    setOpen(true)
+    if (!sessionId) startSession()
+    setTimeout(() => inputRef.current?.focus(), 100)
+  }
 
   const sendRaw = async (content: string) => {
     if (!sessionId || loading) return
@@ -524,6 +529,7 @@ export default function ChatWidget({
       setMessages(m => [...m, { role: 'assistant', content: 'Ocurrió un error. Intenta nuevamente.', card: null }])
     } finally {
       setLoading(false)
+      setTimeout(() => inputRef.current?.focus(), 0)
     }
   }
 
@@ -643,6 +649,7 @@ export default function ChatWidget({
           {/* Input */}
           <div className="border-t border-slate-200 bg-white p-3 flex items-end gap-2 flex-shrink-0">
             <textarea
+              ref={inputRef}
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
