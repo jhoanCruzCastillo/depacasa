@@ -20,6 +20,7 @@ interface Props {
   cardFields?: CardField[]
   user?: SiteUser | null
   token?: string | null
+  onRequestAuth?: (tab: 'login' | 'register') => void
 }
 
 // ─── Image extraction ─────────────────────────────────────────────────────────
@@ -484,6 +485,7 @@ export default function ChatWidget({
   cardFields = [],
   user,
   token,
+  onRequestAuth,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -491,6 +493,7 @@ export default function ChatWidget({
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [state, setState] = useState('collecting_info')
+  const [showRegBanner, setShowRegBanner] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -523,7 +526,11 @@ export default function ChatWidget({
     setLoading(true)
     try {
       const res = await API.post(`/chat/web/sessions/${sessionId}/message`, { content })
-      setMessages(m => [...m, { role: 'assistant', content: res.data.message, card: res.data.card }])
+      setMessages(m => {
+        const next = [...m, { role: 'assistant' as const, content: res.data.message, card: res.data.card }]
+        if (res.data.card && !user && !showRegBanner) setShowRegBanner(true)
+        return next
+      })
       setState(res.data.state)
     } catch {
       setMessages(m => [...m, { role: 'assistant', content: 'Ocurrió un error. Intenta nuevamente.', card: null }])
@@ -643,6 +650,36 @@ export default function ChatWidget({
                 </div>
               </div>
             )}
+            {/* Registration suggestion banner */}
+            {showRegBanner && !user && onRequestAuth && (
+              <div className="relative mx-1 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
+                <button
+                  onClick={() => setShowRegBanner(false)}
+                  className="absolute top-2 right-2 text-slate-300 hover:text-slate-500 transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+                <p className="text-xs text-slate-700 leading-relaxed pr-4">
+                  <span className="font-semibold text-slate-800">Guarda tus preferencias</span> — Regístrate para recibir novedades de propiedades que se ajusten a lo que buscas.
+                </p>
+                <div className="flex gap-2 mt-2.5">
+                  <button
+                    onClick={() => onRequestAuth('register')}
+                    className="flex-1 py-1.5 rounded-xl text-xs font-semibold text-white transition-opacity hover:opacity-90"
+                    style={{ backgroundColor: primaryColor }}
+                  >
+                    Registrarme
+                  </button>
+                  <button
+                    onClick={() => onRequestAuth('login')}
+                    className="flex-1 py-1.5 rounded-xl text-xs font-medium border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 transition-colors"
+                  >
+                    Ya tengo cuenta
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div ref={bottomRef} />
           </div>
 

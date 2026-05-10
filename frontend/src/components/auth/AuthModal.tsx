@@ -1,22 +1,26 @@
 import { useState } from 'react'
-import { X, Mail, Lock, Eye, EyeOff, Bell } from 'lucide-react'
+import { X, Mail, Lock, Eye, EyeOff, User, Globe } from 'lucide-react'
 import { SiteUser, useAuth } from '../../hooks/useAuth'
 
 interface Props {
   onClose: () => void
   onSuccess: (user: SiteUser) => void
   primaryColor?: string
+  initialTab?: 'login' | 'register'
 }
 
-export default function AuthModal({ onClose, onSuccess, primaryColor = '#2563eb' }: Props) {
+export default function AuthModal({ onClose, onSuccess, primaryColor = '#2563eb', initialTab = 'login' }: Props) {
   const { login, register } = useAuth()
-  const [tab, setTab] = useState<'login' | 'register'>('login')
+  const [tab, setTab] = useState<'login' | 'register'>(initialTab)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [newsletter, setNewsletter] = useState(false)
+  const [name, setName] = useState('')
+  const [country, setCountry] = useState('')
   const [showPwd, setShowPwd] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  const switchTab = (t: 'login' | 'register') => { setTab(t); setError('') }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -25,7 +29,7 @@ export default function AuthModal({ onClose, onSuccess, primaryColor = '#2563eb'
     try {
       const user = tab === 'login'
         ? await login(email, password)
-        : await register(email, password, newsletter)
+        : await register(email, password, name.trim(), country.trim() || undefined)
       onSuccess(user)
       onClose()
     } catch (err: unknown) {
@@ -58,7 +62,7 @@ export default function AuthModal({ onClose, onSuccess, primaryColor = '#2563eb'
           {(['login', 'register'] as const).map(t => (
             <button
               key={t}
-              onClick={() => { setTab(t); setError('') }}
+              onClick={() => switchTab(t)}
               className={`pb-2.5 mr-6 text-sm font-medium border-b-2 transition-colors ${
                 tab === t
                   ? 'border-current text-current'
@@ -73,6 +77,26 @@ export default function AuthModal({ onClose, onSuccess, primaryColor = '#2563eb'
 
         {/* Form */}
         <form onSubmit={submit} className="px-6 py-5 space-y-4">
+
+          {/* Username (register only) */}
+          {tab === 'register' && (
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">Nombre de usuario</label>
+              <div className="relative">
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input
+                  type="text"
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  required
+                  placeholder="Tu nombre o apodo"
+                  className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 transition-shadow"
+                  style={{ '--tw-ring-color': primaryColor } as React.CSSProperties}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Email */}
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1.5">Correo electrónico</label>
@@ -115,33 +139,24 @@ export default function AuthModal({ onClose, onSuccess, primaryColor = '#2563eb'
             </div>
           </div>
 
-          {/* Newsletter (register only) */}
+          {/* Country (register only, optional) */}
           {tab === 'register' && (
-            <label className="flex items-start gap-2.5 cursor-pointer group">
-              <div className="relative mt-0.5 flex-shrink-0">
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                País <span className="text-slate-300 font-normal">(opcional)</span>
+              </label>
+              <div className="relative">
+                <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
-                  type="checkbox"
-                  checked={newsletter}
-                  onChange={e => setNewsletter(e.target.checked)}
-                  className="sr-only peer"
+                  type="text"
+                  value={country}
+                  onChange={e => setCountry(e.target.value)}
+                  placeholder="Ej: Perú, Colombia, Chile…"
+                  className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 transition-shadow"
+                  style={{ '--tw-ring-color': primaryColor } as React.CSSProperties}
                 />
-                <div
-                  className="w-4 h-4 rounded border-2 border-slate-300 peer-checked:border-transparent flex items-center justify-center transition-colors"
-                  style={newsletter ? { backgroundColor: primaryColor, borderColor: primaryColor } : {}}
-                >
-                  {newsletter && <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 12 12"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                </div>
               </div>
-              <div>
-                <div className="flex items-center gap-1.5 text-sm text-slate-700 font-medium">
-                  <Bell className="w-3.5 h-3.5 text-slate-400" />
-                  Recibir novedades
-                </div>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Te avisaremos sobre nuevas propiedades según tus preferencias.
-                </p>
-              </div>
-            </label>
+            </div>
           )}
 
           {/* Error */}
@@ -161,12 +176,12 @@ export default function AuthModal({ onClose, onSuccess, primaryColor = '#2563eb'
             {loading ? 'Cargando...' : tab === 'login' ? 'Entrar' : 'Crear cuenta'}
           </button>
 
-          {/* Switch tab hint */}
+          {/* Switch tab */}
           <p className="text-center text-xs text-slate-400">
             {tab === 'login' ? '¿No tienes cuenta? ' : '¿Ya tienes cuenta? '}
             <button
               type="button"
-              onClick={() => { setTab(tab === 'login' ? 'register' : 'login'); setError('') }}
+              onClick={() => switchTab(tab === 'login' ? 'register' : 'login')}
               className="font-medium underline"
               style={{ color: primaryColor }}
             >

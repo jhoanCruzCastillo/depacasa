@@ -280,9 +280,9 @@ function HeroCarousel({ records, config, onScrollDown }: {
   return (
     <section className="relative h-[88vh] min-h-[520px] overflow-hidden bg-slate-900">
       {/* Background image */}
-      <div className="absolute inset-0 transition-opacity duration-700">
+      <div className="absolute inset-0 transition-opacity duration-700 bg-white">
         {heroImg
-          ? <img src={heroImg} alt="" className="w-full h-full object-cover" />
+          ? <img src={heroImg} alt="" className="w-full h-full object-contain" />
           : <div className="w-full h-full" style={{ backgroundColor: config.hero_bg_color }} />}
         <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-black/20" />
       </div>
@@ -401,6 +401,7 @@ function FeaturedSection({ records, config }: { records: PublicRecord[]; config:
 export default function PublicSitePage() {
   const { user, token, logout } = useAuth()
   const [showAuth, setShowAuth] = useState(false)
+  const [authTab, setAuthTab] = useState<'login' | 'register'>('login')
   const [config, setConfig] = useState<SiteConfig | null>(null)
   const [heroRecords, setHeroRecords] = useState<PublicRecord[]>([])
   const [featuredRecords, setFeaturedRecords] = useState<PublicRecord[]>([])
@@ -606,14 +607,18 @@ export default function PublicSitePage() {
 
       {/* ── Chatbot ───────────────────────────────────────────────────────── */}
       {config.chatbot_enabled && (
-        <ChatWidget buttonLabel={config.chatbot_button_label} primaryColor={config.primary_color}
-          secondaryColor={config.secondary_color} cardFields={config.card_fields} user={user} token={token} />
+        <ChatWidget
+          buttonLabel={config.chatbot_button_label} primaryColor={config.primary_color}
+          secondaryColor={config.secondary_color} cardFields={config.card_fields}
+          user={user} token={token}
+          onRequestAuth={(tab) => { setAuthTab(tab); setShowAuth(true) }}
+        />
       )}
 
       {/* ── Auth modal ────────────────────────────────────────────────────── */}
       {showAuth && (
         <AuthModal onClose={() => setShowAuth(false)} onSuccess={() => setShowAuth(false)}
-          primaryColor={config.primary_color} />
+          primaryColor={config.primary_color} initialTab={authTab} />
       )}
     </div>
   )

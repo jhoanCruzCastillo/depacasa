@@ -145,7 +145,7 @@ export default function Sidebar() {
             }`}
           >
             <MessageSquare className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1 text-left">Chatbot WhatsApp</span>
+            <span className="flex-1 text-left">Chatbot</span>
             {chatOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
           </button>
 

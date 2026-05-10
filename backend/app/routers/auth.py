@@ -3,11 +3,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+from typing import Optional
 from uuid import UUID
 
 from database import get_db
 from app.models.site_user import SiteUser
 from app.services.auth_service import hash_password, verify_password, create_token, decode_token
+from app.services.email_service import send_welcome
 
 router = APIRouter()
 
@@ -15,6 +17,8 @@ router = APIRouter()
 class RegisterIn(BaseModel):
     email: str
     password: str
+    name: str
+    country: Optional[str] = None
     wants_newsletter: bool = False
 
 
@@ -55,11 +59,14 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     user = SiteUser(
         email=body.email.lower(),
         password_hash=hash_password(body.password),
+        name=body.name,
+        country=body.country,
         wants_newsletter=body.wants_newsletter,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
+    send_welcome(user.email, user.name or "")
     return {"token": create_token(str(user.id)), "user": _user_out(user)}
 
 

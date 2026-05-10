@@ -150,8 +150,8 @@ export const sendWebChatMessage = (sessionId: string, content: string) =>
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
-export const authRegister = (email: string, password: string, wants_newsletter: boolean) =>
-  API.post('/auth/register', { email, password, wants_newsletter })
+export const authRegister = (email: string, password: string, name: string, country?: string) =>
+  API.post('/auth/register', { email, password, name, country })
 export const authLogin = (email: string, password: string) =>
   API.post('/auth/login', { email, password })
 export const authMe = (token: string) =>
