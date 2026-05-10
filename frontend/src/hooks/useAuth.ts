@@ -52,6 +52,14 @@ export function useAuth() {
     return r.data.user
   }
 
+  const refresh = () => {
+    const savedToken = localStorage.getItem(TOKEN_KEY)
+    const savedUser = localStorage.getItem(USER_KEY)
+    if (savedToken && savedUser) {
+      try { setToken(savedToken); setUser(JSON.parse(savedUser)) } catch { /* ignore */ }
+    }
+  }
+
   const logout = () => {
     localStorage.removeItem(TOKEN_KEY)
     localStorage.removeItem(USER_KEY)
@@ -59,5 +67,5 @@ export function useAuth() {
     setUser(null)
   }
 
-  return { user, token, loading, login, register, logout }
+  return { user, token, loading, login, register, logout, refresh }
 }

@@ -399,7 +399,7 @@ function FeaturedSection({ records, config }: { records: PublicRecord[]; config:
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function PublicSitePage() {
-  const { user, token, logout } = useAuth()
+  const { user, token, logout, refresh } = useAuth()
   const [showAuth, setShowAuth] = useState(false)
   const [authTab, setAuthTab] = useState<'login' | 'register'>('login')
   const [config, setConfig] = useState<SiteConfig | null>(null)
@@ -617,8 +617,12 @@ export default function PublicSitePage() {
 
       {/* ── Auth modal ────────────────────────────────────────────────────── */}
       {showAuth && (
-        <AuthModal onClose={() => setShowAuth(false)} onSuccess={() => setShowAuth(false)}
-          primaryColor={config.primary_color} initialTab={authTab} />
+        <AuthModal
+          onClose={() => setShowAuth(false)}
+          onSuccess={() => { setShowAuth(false); refresh() }}
+          primaryColor={config.primary_color}
+          initialTab={authTab}
+        />
       )}
     </div>
   )
