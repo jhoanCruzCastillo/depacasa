@@ -427,6 +427,7 @@ export default function DeveloperDetailPage() {
   const [modalRecord, setModalRecord] = useState<ScrapedRecord | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [modalNodeId, setModalNodeId] = useState<string | null>(null)
+  const [modalImageFieldNames, setModalImageFieldNames] = useState<Set<string> | undefined>(undefined)
 
   const { data: developer, isLoading: loadingDev } = useQuery({
     queryKey: ['developer', id],
@@ -554,6 +555,59 @@ export default function DeveloperDetailPage() {
   }
 
   const openModal = (record: ScrapedRecord, nodeId: string) => {
+    try {
+      // attempt to merge shared fields from selected parent (non-intrusive)
+      const node = nodeById[nodeId]
+      if (node && node.parent_id) {
+        const parentId = node.parent_id
+        const parentSelectedId = selectedByNodeId[parentId]
+        if (parentSelectedId) {
+          const parentRec = (recordsByNodeId[parentId] || []).find(r => r.id === parentSelectedId)
+          if (parentRec) {
+            // determine shared fields from template (prefer templateNodes if available)
+            const parentTemplate = templateNodes.find(n => n.id === parentId) || nodeById[parentId]
+            const sharedFieldNames: string[] = (parentTemplate?.fields || []).filter((f: any) => f?.is_shared).map((f: any) => f.name)
+
+            if (sharedFieldNames.length) {
+              const childData = { ...(record.data || {}) }
+              for (const fname of sharedFieldNames) {
+                const childVal = childData[fname]
+                const parentVal = parentRec.data ? parentRec.data[fname] : undefined
+                const emptyChild = childVal === undefined || childVal === null || (Array.isArray(childVal) && childVal.length === 0) || (typeof childVal === 'string' && childVal.trim() === '')
+                if ((childVal === undefined || emptyChild) && parentVal !== undefined) {
+                  childData[fname] = parentVal
+                }
+              }
+              record = { ...record, data: childData }
+
+              // compute merged image field names so FieldValue renders inherited images correctly
+              const childImageNames = imageFieldNamesByNodeId[nodeId] || new Set<string>()
+              const mergedImages = new Set<string>(childImageNames)
+              for (const fname of sharedFieldNames) {
+                const val = parentRec.data ? parentRec.data[fname] : undefined
+                if (val !== undefined) {
+                  // if value looks like image (single or array), treat as image field for modal
+                  const cand = Array.isArray(val) ? val.find(v => looksLikeImage(v)) : val
+                  if (cand && looksLikeImage(cand)) mergedImages.add(fname)
+                }
+              }
+              setModalImageFieldNames(mergedImages)
+            } else {
+              setModalImageFieldNames(imageFieldNamesByNodeId[nodeId])
+            }
+          } else {
+            setModalImageFieldNames(imageFieldNamesByNodeId[nodeId])
+          }
+        } else {
+          setModalImageFieldNames(imageFieldNamesByNodeId[nodeId])
+        }
+      } else {
+        setModalImageFieldNames(imageFieldNamesByNodeId[nodeId])
+      }
+    } catch (e) {
+      setModalImageFieldNames(imageFieldNamesByNodeId[nodeId])
+    }
+
     setModalRecord(record)
     setModalNodeId(nodeId)
     setModalOpen(true)
