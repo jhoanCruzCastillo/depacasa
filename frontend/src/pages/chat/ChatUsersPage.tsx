@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Users, Send, Plus, Pencil, Trash2, Search, X,
+  Users, Send, Pencil, Trash2, Search, X,
   ChevronLeft, ChevronRight, Mail, Globe, Phone, User,
+  Eye, MapPin, BedDouble, Tag, Clock, Star, MessageSquare,
 } from 'lucide-react'
 import API from '../../services/api'
 import toast from 'react-hot-toast'
@@ -14,6 +15,40 @@ interface SiteUser {
   phone: string | null
   wants_newsletter: boolean
   created_at: string | null
+}
+
+interface UserPreference {
+  location: string | null
+  bedrooms: number | null
+  min_price: number | null
+  max_price: number | null
+  features: string[]
+  keywords: string[]
+  raw_description: string | null
+  updated_at: string | null
+}
+
+interface Interaction {
+  record_id: string
+  rating: number | null
+  interested: boolean
+  seen_in_chat: boolean
+  rated_at: string | null
+}
+
+interface SearchEntry {
+  id: string
+  query: string | null
+  location: string | null
+  source: string
+  created_at: string | null
+}
+
+interface UserProfile {
+  user: SiteUser
+  preferences: UserPreference | null
+  interactions: Interaction[]
+  search_history: SearchEntry[]
 }
 
 const PAGE_SIZE = 20
@@ -42,6 +77,23 @@ export default function ChatUsersPage() {
   const [emailSubject, setEmailSubject] = useState('Novedades del portal')
   const [emailBody, setEmailBody] = useState('')
   const [sending, setSending] = useState(false)
+
+  // Detail modal
+  const [detailProfile, setDetailProfile] = useState<UserProfile | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+
+  const openDetail = async (u: SiteUser) => {
+    setDetailLoading(true)
+    setDetailProfile(null)
+    try {
+      const res = await API.get(`/site-users/${u.id}/profile`)
+      setDetailProfile(res.data)
+    } catch {
+      toast.error('No se pudo cargar el perfil del usuario')
+    } finally {
+      setDetailLoading(false)
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -222,9 +274,17 @@ export default function ChatUsersPage() {
                   <td className="px-4 py-3.5">
                     <div className="flex items-center justify-end gap-1">
                       <button
+                        onClick={() => openDetail(u)}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-600 text-white text-xs rounded-lg hover:bg-indigo-700 transition-colors"
+                        title="Ver perfil completo"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        Perfil
+                      </button>
+                      <button
                         onClick={() => openEmail(u)}
                         className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-600 text-white text-xs rounded-lg hover:bg-emerald-700 transition-colors"
-                        title="Enviar correo de prueba"
+                        title="Enviar correo"
                       >
                         <Mail className="w-3.5 h-3.5" />
                         Enviar
@@ -362,6 +422,168 @@ export default function ChatUsersPage() {
                 {deleting ? 'Eliminando…' : 'Eliminar'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── User detail modal ─────────────────────────────────────────────────── */}
+      {(detailLoading || detailProfile) && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-sm font-bold text-indigo-600">
+                  {detailProfile ? (detailProfile.user.name || detailProfile.user.email).charAt(0).toUpperCase() : '…'}
+                </div>
+                <div>
+                  <h2 className="font-bold text-slate-800 text-base">
+                    {detailProfile?.user.name || <span className="text-slate-400 italic">Sin nombre</span>}
+                  </h2>
+                  <p className="text-xs text-slate-400">{detailProfile?.user.email}</p>
+                </div>
+              </div>
+              <button onClick={() => setDetailProfile(null)} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {detailLoading ? (
+              <div className="flex items-center justify-center py-24 text-slate-400">
+                <div className="w-8 h-8 border-4 border-indigo-300 border-t-indigo-600 rounded-full animate-spin" />
+              </div>
+            ) : detailProfile && (
+              <div className="overflow-y-auto flex-1 p-6 space-y-6">
+
+                {/* Basic info */}
+                <section>
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Información del usuario</h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    {[
+                      { icon: Mail, label: 'Correo', value: detailProfile.user.email },
+                      { icon: User, label: 'Nombre', value: detailProfile.user.name || '—' },
+                      { icon: Globe, label: 'País', value: detailProfile.user.country || '—' },
+                      { icon: Phone, label: 'Teléfono', value: detailProfile.user.phone || '—' },
+                    ].map(({ icon: Icon, label, value }) => (
+                      <div key={label} className="flex items-start gap-2.5 bg-slate-50 rounded-xl p-3">
+                        <Icon className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
+                        <div>
+                          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{label}</p>
+                          <p className="text-sm text-slate-700 font-medium break-all">{value}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                {/* Preferences */}
+                <section>
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Preferencias detectadas</h3>
+                  {detailProfile.preferences ? (
+                    <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 space-y-3">
+                      <div className="flex flex-wrap gap-2">
+                        {detailProfile.preferences.location && (
+                          <span className="flex items-center gap-1.5 text-xs font-medium bg-white border border-indigo-200 text-indigo-700 px-3 py-1.5 rounded-full">
+                            <MapPin className="w-3 h-3" />{detailProfile.preferences.location}
+                          </span>
+                        )}
+                        {detailProfile.preferences.bedrooms && (
+                          <span className="flex items-center gap-1.5 text-xs font-medium bg-white border border-indigo-200 text-indigo-700 px-3 py-1.5 rounded-full">
+                            <BedDouble className="w-3 h-3" />{detailProfile.preferences.bedrooms} dormitorio{detailProfile.preferences.bedrooms !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                        {detailProfile.preferences.min_price && (
+                          <span className="text-xs font-medium bg-white border border-indigo-200 text-indigo-700 px-3 py-1.5 rounded-full">
+                            Desde S/ {detailProfile.preferences.min_price.toLocaleString()}
+                          </span>
+                        )}
+                        {detailProfile.preferences.max_price && (
+                          <span className="text-xs font-medium bg-white border border-indigo-200 text-indigo-700 px-3 py-1.5 rounded-full">
+                            Hasta S/ {detailProfile.preferences.max_price.toLocaleString()}
+                          </span>
+                        )}
+                        {(detailProfile.preferences.keywords || []).map(k => (
+                          <span key={k} className="flex items-center gap-1 text-xs bg-white border border-slate-200 text-slate-600 px-2.5 py-1.5 rounded-full">
+                            <Tag className="w-3 h-3" />{k}
+                          </span>
+                        ))}
+                      </div>
+                      {detailProfile.preferences.raw_description && (
+                        <div className="mt-2">
+                          <p className="text-[10px] font-semibold text-indigo-400 uppercase tracking-wide mb-1">Descripción original</p>
+                          <p className="text-sm text-slate-600 italic leading-relaxed">"{detailProfile.preferences.raw_description}"</p>
+                        </div>
+                      )}
+                      {detailProfile.preferences.updated_at && (
+                        <p className="text-[10px] text-indigo-300 flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          Actualizado: {new Date(detailProfile.preferences.updated_at).toLocaleString('es-PE')}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-400 italic">Sin preferencias registradas aún.</p>
+                  )}
+                </section>
+
+                {/* Search history */}
+                {detailProfile.search_history.length > 0 && (
+                  <section>
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Historial de búsquedas</h3>
+                    <div className="space-y-2">
+                      {detailProfile.search_history.map(h => (
+                        <div key={h.id} className="flex items-start gap-3 bg-slate-50 rounded-xl px-4 py-3">
+                          <MessageSquare className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            {h.query && <p className="text-sm text-slate-700 truncate">"{h.query}"</p>}
+                            {h.location && <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3" />{h.location}</p>}
+                          </div>
+                          <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${h.source === 'chatbot' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'}`}>
+                              {h.source === 'chatbot' ? 'Chat' : 'Portal'}
+                            </span>
+                            {h.created_at && (
+                              <span className="text-[10px] text-slate-300">
+                                {new Date(h.created_at).toLocaleDateString('es-PE')}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {/* Interactions / ratings */}
+                {detailProfile.interactions.filter(i => i.rating !== null || i.interested).length > 0 && (
+                  <section>
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Propiedades calificadas</h3>
+                    <div className="space-y-2">
+                      {detailProfile.interactions.filter(i => i.rating !== null || i.interested).map(i => (
+                        <div key={i.record_id} className="flex items-center gap-3 bg-slate-50 rounded-xl px-4 py-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-slate-400 font-mono truncate">{i.record_id}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {i.interested && (
+                              <span className="text-[10px] font-semibold bg-emerald-100 text-emerald-600 px-2 py-0.5 rounded-full">Interesado</span>
+                            )}
+                            {i.rating !== null && (
+                              <span className="flex items-center gap-1 text-[10px] font-semibold text-amber-600">
+                                <Star className="w-3 h-3 fill-amber-400 stroke-amber-400" />
+                                {i.rating}/5
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -224,15 +224,30 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
 async def _start_search(session: WebChatSession, description: str, db: Session) -> dict:
     try:
         from app.services.claude_service import extract_criteria
-        criteria = await extract_criteria(description)
+        new_criteria = await extract_criteria(description)
     except Exception:
-        criteria = {"keywords": description.split(), "location": ""}
-    session.extracted_criteria = criteria
+        new_criteria = {"keywords": description.split(), "location": ""}
+
+    # Merge: keep all previous criteria; new non-empty values override
+    prev = dict(session.extracted_criteria or {})
+    merged: dict = {**prev}
+    for k, v in new_criteria.items():
+        if v is None or v == "" or (isinstance(v, list) and not v):
+            continue
+        merged[k] = v
+    session.extracted_criteria = merged
+
+    # Build full description context: original intent + current adjustment
+    original = session.ideal_description or ""
+    if original and description != original:
+        full_desc = f"{original}\nAjuste del usuario: {description}"
+    else:
+        full_desc = description
 
     # Save preferences + search history for registered users
     if session.site_user_id:
-        _save_preferences(session.site_user_id, criteria, description, db)
-        _save_search_history(session.site_user_id, description, criteria, db)
+        _save_preferences(session.site_user_id, merged, full_desc, db)
+        _save_search_history(session.site_user_id, description, merged, db)
 
     from app.models.chat_config import ChatConfig, DEFAULT_CONFIG_ID
     config = db.query(ChatConfig).filter(ChatConfig.id == DEFAULT_CONFIG_ID).first()
@@ -243,7 +258,7 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
     if session.site_user_id:
         excluded = _get_disliked_ids(session.site_user_id, db)
 
-    matches = await find_matches(db, criteria, top_n, excluded_ids=excluded, raw_description=description)
+    matches = await find_matches(db, merged, top_n, excluded_ids=excluded, raw_description=full_desc)
     session.matched_record_ids = matches
     session.current_match_index = 0
     session.state = "presenting"

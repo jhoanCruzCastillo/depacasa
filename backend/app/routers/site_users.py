@@ -10,6 +10,9 @@ from uuid import UUID
 from database import get_db
 from app.models.site_user import SiteUser
 from app.services.email_service import send_email
+from app.models.user_preference import UserPreference
+from app.models.user_property_interaction import UserPropertyInteraction
+from app.models.search_history import SearchHistory
 
 router = APIRouter(prefix="/api/site-users", tags=["site-users"])
 
@@ -88,6 +91,66 @@ def delete_user(user_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
     db.delete(u)
     db.commit()
+
+
+@router.get("/{user_id}/profile")
+def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
+    """Admin view: full preference + interaction + history profile for a user."""
+    u = db.query(SiteUser).filter(SiteUser.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+
+    pref = db.query(UserPreference).filter_by(site_user_id=user_id).first()
+
+    interactions = (
+        db.query(UserPropertyInteraction)
+        .filter_by(site_user_id=user_id)
+        .order_by(UserPropertyInteraction.created_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    history = (
+        db.query(SearchHistory)
+        .filter_by(site_user_id=user_id)
+        .order_by(SearchHistory.created_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    return {
+        "user": _out(u),
+        "preferences": {
+            "location": pref.location,
+            "bedrooms": pref.bedrooms,
+            "min_price": pref.min_price,
+            "max_price": pref.max_price,
+            "features": pref.features or [],
+            "keywords": pref.keywords or [],
+            "raw_description": pref.raw_description,
+            "updated_at": pref.updated_at.isoformat() if pref.updated_at else None,
+        } if pref else None,
+        "interactions": [
+            {
+                "record_id": str(i.record_id),
+                "rating": i.rating,
+                "interested": i.interested,
+                "seen_in_chat": i.seen_in_chat,
+                "rated_at": i.rated_at.isoformat() if i.rated_at else None,
+            }
+            for i in interactions
+        ],
+        "search_history": [
+            {
+                "id": str(h.id),
+                "query": h.query,
+                "location": h.location,
+                "source": h.source,
+                "created_at": h.created_at.isoformat() if h.created_at else None,
+            }
+            for h in history
+        ],
+    }
 
 
 @router.post("/{user_id}/send-email")
