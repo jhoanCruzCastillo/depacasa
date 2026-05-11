@@ -118,6 +118,78 @@ def scrape_developer_task(developer_id: str, job_id: str):
                 db.commit()
 
 
+
+@celery_app.task(name="scrape_single_field")
+def scrape_single_field_task(payload: dict):
+    """Background task to scrape a single field using the current editor payload.
+    This works for draft fields because it doesn't depend on persisted field ids.
+    """
+    from database import get_db_context
+    from app.models import ScrapedRecord
+    from app.models.scraped_record import RecordStatus
+    from uuid import UUID
+
+    try:
+        developer_id = UUID(payload["developer_id"])
+        url_node_id = UUID(payload["url_node_id"])
+    except Exception as e:
+        logger.error(f"Invalid field scrape payload ids: {e}")
+        return
+
+    node_url = (payload.get("node_url") or "").strip()
+    if not node_url:
+        logger.error("Field scrape payload missing node_url")
+        return
+
+    field = payload.get("field") or {}
+    selectors = [
+        {"value": s.get("value", ""), "order": s.get("order", 0)}
+        for s in sorted(field.get("selectors", []), key=lambda x: x.get("order", 0))
+        if s.get("value", "").strip()
+    ]
+    field_snapshot = {
+        "id": "field-runtime",
+        "name": (field.get("name") or "field").strip().lower(),
+        "is_child_url": bool(field.get("is_child_url")),
+        "plain_text": bool(field.get("plain_text")),
+        "is_shared": bool(field.get("is_shared")),
+        "is_list": bool(field.get("is_list")),
+        "list_container": (field.get("list_container") or "").strip(),
+        "is_image": bool(field.get("is_image")),
+        "extract_attr": (field.get("extract_attr") or "").strip(),
+        "selectors": selectors,
+    }
+
+    node_snapshot = {
+        "id": str(url_node_id),
+        "parent_id": None,
+        "name": "field-runner",
+        "url": node_url,
+        "container_selector": (payload.get("container_selector") or "").strip() or None,
+        "order": 0,
+        "fields": [field_snapshot],
+    }
+
+    logger.info(f"Starting single field scrape for developer={developer_id} node={url_node_id}")
+
+    try:
+        import asyncio
+        from playwright.async_api import async_playwright
+
+        async def _run_one():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                try:
+                    return await _scrape_single_field(browser, node_snapshot, developer_id=str(developer_id))
+                finally:
+                    await browser.close()
+
+        total = asyncio.run(_run_one())
+        logger.info(f"Field scrape completed: {total} items for node={url_node_id}")
+    except Exception as e:
+        logger.error(f"Field scrape error for node={url_node_id}: {e}", exc_info=True)
+
+
 async def _run_scrape(developer_id, job_id) -> int:
     from database import get_db_context
     from app.models import UrlNode
@@ -150,6 +222,50 @@ async def _run_scrape(developer_id, job_id) -> int:
     except Exception as e:
         logger.error(f"Playwright error: {e}", exc_info=True)
         raise
+
+    return total
+
+
+async def _scrape_single_field(browser, node: dict, developer_id: str) -> int:
+    from database import get_db_context
+    from app.models import ScrapedRecord
+    from app.models.scraped_record import RecordStatus
+    from uuid import UUID
+
+    total = 0
+    page = await browser.new_page()
+    try:
+        await page.goto(node["url"], wait_until="networkidle", timeout=30000)
+        await page.mouse.move(400, 300)
+        await page.mouse.wheel(0, 500)
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(2000)
+
+        items = await _extract_items(
+            page,
+            node["fields"],
+            node.get("container_selector"),
+            developer_id=str(developer_id),
+        )
+
+        with get_db_context() as db:
+            for item_data in items:
+                record = ScrapedRecord(
+                    developer_id=UUID(str(developer_id)),
+                    url_node_id=UUID(node["id"]),
+                    source_url=node["url"],
+                    data=item_data,
+                    status=RecordStatus.SUCCESS,
+                )
+                db.add(record)
+            db.commit()
+            total += len(items)
+    finally:
+        await page.close()
 
     return total
 

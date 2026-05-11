@@ -6,6 +6,7 @@ import {
   getDeveloperTemplate,
   saveDeveloperTemplate,
   startScrapeJob,
+  runFieldScrape,
   getDeveloperRecords,
   updateDeveloper,
   getFieldNameSuggestions,
@@ -290,6 +291,7 @@ export default function TemplateEditorPage() {
       <div className="flex-1 overflow-y-auto">
         {activeTab === 'template' && (
           <TabTemplate
+            developerId={developerId!}
             nodes={nodes}
             rootNodes={rootNodes}
             updateNode={updateNode}
@@ -345,8 +347,9 @@ export default function TemplateEditorPage() {
 // ─── Tab: Plantilla de extracción ────────────────────────────────────────────
 
 function TabTemplate({
-  nodes, rootNodes, updateNode, removeNode, addChildNode, onAddRoot, onOpenSelector,
+  developerId, nodes, rootNodes, updateNode, removeNode, addChildNode, onAddRoot, onOpenSelector,
 }: {
+  developerId: string
   nodes: NodeDraft[]
   rootNodes: NodeDraft[]
   updateNode: (cid: string, p: Partial<NodeDraft>) => void
@@ -378,6 +381,7 @@ function TabTemplate({
       {rootNodes.map(node => (
         <UrlNodeEditor
           key={node.client_id}
+          developerId={developerId}
           node={node}
           allNodes={nodes}
           depth={0}
@@ -574,8 +578,9 @@ const depthColors = [
 ]
 
 function UrlNodeEditor({
-  node, allNodes, depth, onUpdate, onRemove, onAddChild, onOpenSelector,
+  developerId, node, allNodes, depth, onUpdate, onRemove, onAddChild, onOpenSelector,
 }: {
+  developerId: string
   node: NodeDraft
   allNodes: NodeDraft[]
   depth: number
@@ -685,7 +690,16 @@ function UrlNodeEditor({
           {node.fields.length > 0 && (
             <div className="space-y-3 mb-4">
               {node.fields.map(field => (
-                <FieldEditor key={field.id} field={field} onUpdate={updateField} onRemove={removeField} />
+                <FieldEditor
+                  key={field.id}
+                  developerId={developerId}
+                  field={field}
+                  nodeId={node.client_id}
+                  nodeUrl={node.url}
+                  containerSelector={node.container_selector}
+                  onUpdate={updateField}
+                  onRemove={removeField}
+                />
               ))}
             </div>
           )}
@@ -725,6 +739,7 @@ function UrlNodeEditor({
               {children.map(child => (
                 <UrlNodeEditor
                   key={child.client_id}
+                  developerId={developerId}
                   node={child}
                   allNodes={allNodes}
                   depth={depth + 1}
@@ -824,12 +839,17 @@ function FieldNameAutocomplete({
 // ─── FieldEditor ──────────────────────────────────────────────────────────────
 
 function FieldEditor({
-  field, onUpdate, onRemove,
+  developerId, field, nodeId, nodeUrl, containerSelector, onUpdate, onRemove,
 }: {
+  developerId: string
   field: FieldDraft
+  nodeId: string
+  nodeUrl: string
+  containerSelector: string
   onUpdate: (id: string, p: Partial<FieldDraft>) => void
   onRemove: (id: string) => void
 }) {
+  const [running, setRunning] = useState(false)
   const addSelector = () =>
     onUpdate(field.id, { selectors: [...field.selectors, emptySelector(field.selectors.length)] })
 
@@ -1097,12 +1117,54 @@ function FieldEditor({
           )}
         </div>
 
-        <button
-          onClick={() => onRemove(field.id)}
-          className="p-1.5 text-gray-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition flex-shrink-0 mt-0.5"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
+        <div className="flex flex-col gap-2">
+          <button
+            onClick={async () => {
+              try {
+                if (!nodeUrl.trim()) {
+                  toast.error('Este nodo no tiene URL. Completa la URL antes de ejecutar este campo.')
+                  return
+                }
+                setRunning(true)
+                await runFieldScrape({
+                  developer_id: developerId,
+                  url_node_id: nodeId,
+                  node_url: nodeUrl,
+                  container_selector: containerSelector || null,
+                  field: {
+                    name: field.name,
+                    is_child_url: field.is_child_url,
+                    plain_text: field.plain_text,
+                    is_shared: field.is_shared,
+                    is_list: field.is_list,
+                    list_container: field.list_container || null,
+                    is_image: field.is_image,
+                    extract_attr: field.extract_attr || null,
+                    order: field.order,
+                    selectors: field.selectors.filter(s => s.value.trim()).map(s => ({ value: s.value, order: s.order })),
+                  },
+                })
+                toast.success('Ejecución encolada para este campo')
+              } catch (e: any) {
+                toast.error(e?.response?.data?.detail || 'Error al iniciar ejecución del campo')
+              } finally {
+                setRunning(false)
+              }
+            }}
+            disabled={running}
+            className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition flex-shrink-0 mt-0.5"
+            title="Ejecutar campo"
+          >
+            {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          </button>
+
+          <button
+            onClick={() => onRemove(field.id)}
+            className="p-1.5 text-gray-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition flex-shrink-0 mt-0.5"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
       </div>
     </div>
   )

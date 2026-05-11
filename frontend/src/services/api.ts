@@ -64,6 +64,26 @@ export const updateField = (id: string, data: Partial<Field>) =>
   API.put<Field>(`/templates/fields/${id}`, data)
 export const deleteField = (id: string) => API.delete(`/templates/fields/${id}`)
 
+// Run single-field scrape
+export const runFieldScrape = (data: {
+  developer_id: string
+  url_node_id: string
+  node_url: string
+  container_selector?: string | null
+  field: {
+    name: string
+    is_child_url: boolean
+    plain_text: boolean
+    is_shared: boolean
+    is_list: boolean
+    list_container: string | null
+    is_image: boolean
+    extract_attr: string | null
+    order: number
+    selectors: Array<{ value: string; order: number }>
+  }
+}) => API.post('/scrape/field/run', data)
+
 // Selectors
 export const getSelectors = (fieldId: string) =>
   API.get<Selector[]>(`/templates/fields/${fieldId}/selectors`)
