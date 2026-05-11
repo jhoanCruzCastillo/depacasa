@@ -45,6 +45,7 @@ class FieldResponse(BaseModel):
     extract_attr: Optional[str]
     order: int
     created_at: datetime
+    inherited_from: Optional[UUID] = None
 
     class Config:
         from_attributes = True

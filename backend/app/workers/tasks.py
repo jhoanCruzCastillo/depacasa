@@ -213,10 +213,10 @@ async def _run_scrape(developer_id, job_id) -> int:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
-                for root in nodes_data:
-                    if root["parent_id"] is None:
-                        count = await _scrape_node(browser, root, nodes_data, developer_id, job_id)
-                        total += count
+                    for root in nodes_data:
+                        if root["parent_id"] is None:
+                            count = await _scrape_node(browser, root, nodes_data, developer_id, job_id)
+                            total += count
             finally:
                 await browser.close()
     except Exception as e:
@@ -284,7 +284,7 @@ def _snapshot_nodes(db, developer_id) -> list:
     return result
 
 
-async def _scrape_node(browser, node: dict, all_nodes: list, developer_id, job_id, parent_url: str = None) -> int:
+async def _scrape_node(browser, node: dict, all_nodes: list, developer_id, job_id, parent_url: str = None, parent_shared: dict | None = None) -> int:
     from database import get_db_context
     from app.models import ScrapedRecord
     from app.models.scraped_record import RecordStatus
@@ -314,11 +314,13 @@ async def _scrape_node(browser, node: dict, all_nodes: list, developer_id, job_i
 
         with get_db_context() as db:
             for item_data in items:
+                # Merge parent's shared data (if provided) so level-2 records inherit parent's fields
+                merged = {**(parent_shared or {}), **item_data} if parent_shared else item_data
                 record = ScrapedRecord(
                     developer_id=UUID(str(developer_id)),
                     url_node_id=UUID(node["id"]),
                     source_url=target_url,
-                    data=item_data,
+                    data=merged,
                     status=RecordStatus.SUCCESS,
                 )
                 db.add(record)
@@ -329,11 +331,13 @@ async def _scrape_node(browser, node: dict, all_nodes: list, developer_id, job_i
         child_nodes = [n for n in all_nodes if n["parent_id"] == node["id"]]
         if child_nodes:
             for item_data in items:
+                # For child scraping, pass the shared data of this parent item so children can inherit
+                parent_shared = {k: v for k, v in item_data.items()}
                 for field in node["fields"]:
                     if field["is_child_url"] and item_data.get(field["name"]):
                         child_url = item_data[field["name"]]
                         for child_node in child_nodes:
-                            count = await _scrape_node(browser, child_node, all_nodes, developer_id, job_id, child_url)
+                            count = await _scrape_node(browser, child_node, all_nodes, developer_id, job_id, child_url, parent_shared=parent_shared)
                             total += count
 
         await page.close()

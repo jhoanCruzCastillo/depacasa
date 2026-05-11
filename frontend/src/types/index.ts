@@ -25,6 +25,7 @@ export interface Field {
   is_child_url: boolean
   order: number
   created_at: string
+  inherited_from?: string | null
 }
 
 export interface Selector {

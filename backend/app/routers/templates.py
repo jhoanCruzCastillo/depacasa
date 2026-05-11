@@ -136,8 +136,59 @@ async def list_fields_by_node(
     db: Session = Depends(get_db),
 ):
     """List all fields for a URL node"""
-    fields = db.query(Field).filter(Field.url_node_id == node_id).all()
-    return fields
+    node = db.query(UrlNode).filter(UrlNode.id == node_id).first()
+    if not node:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    # Child's own fields
+    child_fields = db.query(Field).filter(Field.url_node_id == node_id).all()
+
+    result = []
+    # Add child fields first (these take precedence)
+    for f in child_fields:
+        fd = {
+            "id": f.id,
+            "url_node_id": f.url_node_id,
+            "name": f.name,
+            "is_child_url": f.is_child_url,
+            "plain_text": f.plain_text,
+            "is_shared": f.is_shared,
+            "is_list": f.is_list,
+            "list_container": f.list_container,
+            "is_image": f.is_image,
+            "extract_attr": f.extract_attr,
+            "order": f.order,
+            "created_at": f.created_at,
+            "inherited_from": None,
+        }
+        result.append(fd)
+
+    # If this node has a parent (level-2 nodes), include parent's fields as inherited
+    if node.parent_id:
+        parent_fields = db.query(Field).filter(Field.url_node_id == node.parent_id).all()
+        child_names = {f.name for f in child_fields}
+        for pf in parent_fields:
+            # Skip parent fields that are overridden by child fields with same name
+            if pf.name in child_names:
+                continue
+            pf_d = {
+                "id": pf.id,
+                "url_node_id": pf.url_node_id,
+                "name": pf.name,
+                "is_child_url": pf.is_child_url,
+                "plain_text": pf.plain_text,
+                "is_shared": pf.is_shared,
+                "is_list": pf.is_list,
+                "list_container": pf.list_container,
+                "is_image": pf.is_image,
+                "extract_attr": pf.extract_attr,
+                "order": pf.order,
+                "created_at": pf.created_at,
+                "inherited_from": node.parent_id,
+            }
+            result.append(pf_d)
+
+    return result
 
 
 @router.put("/fields/{field_id}", response_model=FieldResponse)
