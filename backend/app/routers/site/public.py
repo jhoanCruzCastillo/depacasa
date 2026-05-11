@@ -218,6 +218,141 @@ def public_records_grouped(
     return {"developers": result_developers}
 
 
+@router.get("/catalog")
+def public_catalog(
+    skip: int = 0,
+    limit: int = 12,
+    search: str = "",
+    location: str = "",
+    project_id: str = "",
+    db: Session = Depends(get_db),
+):
+    """Paginated child records with parent data merged. Returns filter options too."""
+    import json
+    from collections import defaultdict
+
+    child_nodes = db.query(UrlNode).filter(UrlNode.parent_id.isnot(None)).all()
+    if not child_nodes:
+        return {"total": 0, "items": [], "locations": [], "projects": []}
+
+    parent_node_ids = list({n.parent_id for n in child_nodes})
+
+    parent_nodes_map = {
+        n.id: n
+        for n in db.query(UrlNode).filter(UrlNode.id.in_(parent_node_ids)).all()
+    }
+
+    # Template fields per parent node — these always override child values
+    parent_field_names: dict = defaultdict(set)
+    for f in db.query(Field).filter(Field.url_node_id.in_(parent_node_ids)).all():
+        parent_field_names[f.url_node_id].add(f.name)
+
+    # Most recent parent record per parent node
+    parent_records_map: dict = {}
+    for pid in parent_node_ids:
+        rec = (
+            db.query(ScrapedRecord)
+            .filter(ScrapedRecord.url_node_id == pid)
+            .order_by(ScrapedRecord.scraped_at.desc())
+            .first()
+        )
+        if rec:
+            parent_records_map[pid] = rec
+
+    all_items: list = []
+    all_locations: set = set()
+    all_projects: dict = {}  # parent_id_str -> name
+
+    for child_node in child_nodes:
+        parent_id = child_node.parent_id
+        parent_node = parent_nodes_map.get(parent_id)
+        if not parent_node:
+            continue
+
+        pfields = parent_field_names.get(parent_id, set())
+        parent_rec = parent_records_map.get(parent_id)
+        parent_data = dict(parent_rec.data) if parent_rec and parent_rec.data else {}
+
+        all_projects[str(parent_id)] = parent_node.name
+
+        child_recs = (
+            db.query(ScrapedRecord)
+            .filter(ScrapedRecord.url_node_id == child_node.id)
+            .order_by(ScrapedRecord.scraped_at.desc())
+            .all()
+        )
+
+        for child_rec in child_recs:
+            child_data = dict(child_rec.data) if child_rec.data else {}
+
+            # Merge: parent-template fields always win; others fill only if child is empty
+            merged = {**child_data}
+            for fname, fval in parent_data.items():
+                if fval is None:
+                    continue
+                if pfields and fname in pfields:
+                    merged[fname] = fval
+                else:
+                    cv = merged.get(fname)
+                    empty = (
+                        cv is None
+                        or (isinstance(cv, list) and not cv)
+                        or (isinstance(cv, str) and not cv.strip())
+                    )
+                    if empty:
+                        merged[fname] = fval
+
+            # Extract location for filtering/facets
+            loc = ""
+            for k in ("ubicacion", "ubicación", "location", "distrito", "ciudad", "zona"):
+                v = merged.get(k)
+                if v and isinstance(v, str) and v.strip():
+                    loc = v.strip()
+                    break
+            if loc:
+                all_locations.add(loc)
+
+            all_items.append({
+                "id": str(child_rec.id),
+                "data": merged,
+                "project_id": str(parent_id),
+                "project_name": parent_node.name,
+                "developer_id": str(child_rec.developer_id) if child_rec.developer_id else None,
+                "scraped_at": child_rec.scraped_at.isoformat() if child_rec.scraped_at else None,
+                "_loc": loc,
+            })
+
+    # Apply filters
+    filtered = all_items
+    if location:
+        filtered = [i for i in filtered if location.lower() in i["_loc"].lower()]
+    if project_id:
+        filtered = [i for i in filtered if i["project_id"] == project_id]
+    if search:
+        s = search.lower()
+        filtered = [
+            i for i in filtered
+            if s in json.dumps(i["data"], ensure_ascii=False).lower()
+            or s in i["project_name"].lower()
+        ]
+
+    for item in all_items + filtered:
+        item.pop("_loc", None)
+
+    total = len(filtered)
+    paginated = filtered[skip: skip + limit]
+
+    return {
+        "total": total,
+        "items": paginated,
+        "locations": sorted(all_locations),
+        "projects": sorted(
+            [{"id": pid, "name": name} for pid, name in all_projects.items()],
+            key=lambda x: x["name"],
+        ),
+    }
+
+
 @router.get("/hero")
 def public_hero(db: Session = Depends(get_db)):
     """Return records to show in the hero carousel."""
@@ -239,13 +374,15 @@ def public_hero(db: Session = Depends(get_db)):
         records.sort(key=lambda r: order_map.get(str(r.id), 999))
         return [{"id": str(r.id), "data": dict(r.data) if r.data else {}} for r in records]
 
-    # Fallback: return first N records from the featured level
-    level = (cfg.featured_level if cfg else None) or 2
-    limit = min((cfg.featured_limit if cfg else None) or 6, 10)
-    join_where = _level_join(level)
+    # Fallback: return parent-level (project) records — they have the richest images/data
     rows = db.execute(
-        text(f"SELECT sr.id, sr.data FROM scraped_records sr {join_where} ORDER BY sr.scraped_at DESC LIMIT :lim"),
-        {"lim": limit},
+        text(
+            "SELECT sr.id, sr.data FROM scraped_records sr "
+            "JOIN url_nodes un ON sr.url_node_id = un.id "
+            "WHERE un.parent_id IS NULL "
+            "ORDER BY sr.scraped_at DESC LIMIT :lim"
+        ),
+        {"lim": 6},
     ).fetchall()
     return [{"id": str(r[0]), "data": dict(r[1]) if r[1] else {}} for r in rows]
 
