@@ -206,11 +206,58 @@ async def get_developer_template(
     nodes = db.query(UrlNode).filter(UrlNode.developer_id == developer_id).order_by(UrlNode.order).all()
     result = []
     for node in nodes:
+        # Child's own fields
+        child_fields = sorted(node.fields, key=lambda x: x.order)
         fields_data = []
-        for f in sorted(node.fields, key=lambda x: x.order):
+        for f in child_fields:
             selectors_data = [{"id": str(s.id), "value": s.value, "order": s.order} for s in sorted(f.selectors, key=lambda x: x.order)]
-            fields_data.append({"id": str(f.id), "name": f.name, "is_child_url": f.is_child_url, "plain_text": f.plain_text, "is_shared": f.is_shared, "is_list": f.is_list, "list_container": f.list_container, "is_image": f.is_image, "extract_attr": f.extract_attr, "order": f.order, "selectors": selectors_data})
-        result.append({"id": str(node.id), "name": node.name, "url": node.url, "container_selector": node.container_selector, "parent_id": str(node.parent_id) if node.parent_id else None, "order": node.order, "fields": fields_data})
+            fields_data.append({
+                "id": str(f.id),
+                "name": f.name,
+                "is_child_url": f.is_child_url,
+                "plain_text": f.plain_text,
+                "is_shared": f.is_shared,
+                "is_list": f.is_list,
+                "list_container": f.list_container,
+                "is_image": f.is_image,
+                "extract_attr": f.extract_attr,
+                "order": f.order,
+                "selectors": selectors_data,
+                "inherited_from": None,
+            })
+
+        # If node has a parent, include parent's fields as inherited (unless overridden by child)
+        if node.parent_id:
+            parent_fields = db.query(Field).filter(Field.url_node_id == node.parent_id).all()
+            child_names = {f["name"] for f in fields_data}
+            for pf in parent_fields:
+                if pf.name in child_names:
+                    continue
+                sel_data = [{"id": str(s.id), "value": s.value, "order": s.order} for s in sorted(pf.selectors, key=lambda x: x.order)]
+                fields_data.append({
+                    "id": str(pf.id),
+                    "name": pf.name,
+                    "is_child_url": pf.is_child_url,
+                    "plain_text": pf.plain_text,
+                    "is_shared": pf.is_shared,
+                    "is_list": pf.is_list,
+                    "list_container": pf.list_container,
+                    "is_image": pf.is_image,
+                    "extract_attr": pf.extract_attr,
+                    "order": pf.order,
+                    "selectors": sel_data,
+                    "inherited_from": str(node.parent_id),
+                })
+
+        result.append({
+            "id": str(node.id),
+            "name": node.name,
+            "url": node.url,
+            "container_selector": node.container_selector,
+            "parent_id": str(node.parent_id) if node.parent_id else None,
+            "order": node.order,
+            "fields": fields_data,
+        })
     return {"developer_id": str(developer_id), "nodes": result}
 
 
