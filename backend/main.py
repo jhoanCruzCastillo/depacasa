@@ -32,6 +32,7 @@ import app.models.site_user  # noqa: F401
 import app.models.web_chat_session  # noqa: F401
 import app.models.user_preference  # noqa: F401
 import app.models.user_property_interaction  # noqa: F401
+import app.models.search_history  # noqa: F401
 
 logger = logging.getLogger(__name__)
 

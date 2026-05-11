@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Search, ChevronLeft, ChevronRight, Building2, LogIn, LogOut,
-  User, X, MapPin, BedDouble, Maximize2, SlidersHorizontal, Filter,
+  User, X, MapPin, BedDouble, Maximize2, SlidersHorizontal, Filter, Star,
 } from 'lucide-react'
 import ChatWidget from '../../components/chat/ChatWidget'
 import AuthModal from '../../components/auth/AuthModal'
@@ -124,10 +124,77 @@ function extractArea(data: Record<string, unknown>): string | null {
   return null
 }
 
+// ─── StarRating ───────────────────────────────────────────────────────────────
+
+function StarRating({ recordId, token, onLoginRequired }: {
+  recordId: string; token: string | null; onLoginRequired: () => void
+}) {
+  const [current, setCurrent] = useState<number>(0)
+  const [hover, setHover] = useState<number>(0)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  // Load existing rating on mount
+  useEffect(() => {
+    if (!token) return
+    API.get('/preferences/my-ratings', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => { if (r.data[recordId]) setCurrent(r.data[recordId]) })
+      .catch(() => {})
+  }, [recordId, token])
+
+  const handleRate = async (stars: number) => {
+    if (!token) { onLoginRequired(); return }
+    if (saving) return
+    setSaving(true)
+    try {
+      await API.post('/preferences/rate', { record_id: recordId, rating: stars }, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      setCurrent(stars)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1500)
+    } catch {
+      /* silent */
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const display = hover || current
+
+  return (
+    <div className="flex flex-col items-start gap-1 mt-1">
+      <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">
+        {saved ? '¡Calificación guardada!' : current ? `Tu calificación: ${current}/5` : 'Califica esta propiedad'}
+      </span>
+      <div className="flex gap-1">
+        {[1, 2, 3, 4, 5].map(s => (
+          <button
+            key={s}
+            disabled={saving}
+            onClick={() => handleRate(s)}
+            onMouseEnter={() => setHover(s)}
+            onMouseLeave={() => setHover(0)}
+            className="transition-transform hover:scale-110 disabled:opacity-50"
+          >
+            <Star
+              className="w-6 h-6"
+              fill={s <= display ? '#f59e0b' : 'none'}
+              stroke={s <= display ? '#f59e0b' : '#cbd5e1'}
+            />
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
 // ─── PropertyDetailModal ──────────────────────────────────────────────────────
 
-function PropertyDetailModal({ record, primaryColor, secondaryColor, onClose }: {
-  record: CatalogRecord; primaryColor: string; secondaryColor: string; onClose: () => void
+function PropertyDetailModal({ record, primaryColor, secondaryColor, token = null, onClose, onLoginRequired = () => {} }: {
+  record: CatalogRecord; primaryColor: string; secondaryColor: string
+  token?: string | null; onClose: () => void; onLoginRequired?: () => void
 }) {
   const [cur, setCur] = useState(0)
   const images = detectImages(record.data)
@@ -208,6 +275,11 @@ function PropertyDetailModal({ record, primaryColor, secondaryColor, onClose }: 
               )}
             </div>
 
+            {/* Star rating */}
+            <div className="mb-5 pb-5 border-b border-slate-100">
+              <StarRating recordId={record.id} token={token} onLoginRequired={onLoginRequired} />
+            </div>
+
             {/* All fields */}
             <div className="space-y-2">
               {others.map(e => (
@@ -234,8 +306,9 @@ function PropertyDetailModal({ record, primaryColor, secondaryColor, onClose }: 
 
 // ─── PropertyCard ─────────────────────────────────────────────────────────────
 
-function PropertyCard({ record, primaryColor, secondaryColor }: {
+function PropertyCard({ record, primaryColor, secondaryColor, token, onLoginRequired }: {
   record: CatalogRecord; primaryColor: string; secondaryColor: string
+  token: string | null; onLoginRequired: () => void
 }) {
   const [showModal, setShowModal] = useState(false)
   const images = detectImages(record.data)
@@ -333,7 +406,7 @@ function PropertyCard({ record, primaryColor, secondaryColor }: {
       {showModal && (
         <PropertyDetailModal
           record={record} primaryColor={primaryColor} secondaryColor={secondaryColor}
-          onClose={() => setShowModal(false)}
+          token={token} onClose={() => setShowModal(false)} onLoginRequired={onLoginRequired}
         />
       )}
     </>
@@ -630,13 +703,23 @@ export default function PublicSitePage() {
       .finally(() => setLoadingCatalog(false))
   }, [config, search, location, projectId, skip])
 
+  const saveSearchHistory = useCallback((q: string, loc: string, proj: string) => {
+    if (!token) return
+    if (!q && !loc && !proj) return
+    API.post('/preferences/search-history', { query: q || null, location: loc || null, project_id: proj || null, source: 'portal' }, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => {})
+  }, [token])
+
   const handleSearch = useCallback((q: string) => {
     setSearch(q); setSkip(0)
-  }, [])
+    saveSearchHistory(q, location, projectId)
+  }, [location, projectId, saveSearchHistory])
 
   const handleFilter = useCallback((loc: string, proj: string) => {
     setLocation(loc); setProjectId(proj); setSkip(0)
-  }, [])
+    saveSearchHistory(search, loc, proj)
+  }, [search, saveSearchHistory])
 
   const scrollToCatalog = () => catalogRef.current?.scrollIntoView({ behavior: 'smooth' })
 
@@ -785,6 +868,8 @@ export default function PublicSitePage() {
                 record={r}
                 primaryColor={config.primary_color}
                 secondaryColor={config.secondary_color}
+                token={token}
+                onLoginRequired={() => { setAuthTab('login'); setShowAuth(true) }}
               />
             ))}
           </div>

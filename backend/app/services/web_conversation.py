@@ -67,6 +67,23 @@ def _get_disliked_ids(site_user_id, db: Session) -> set[str]:
         return set()
 
 
+def _save_search_history(site_user_id, description: str, criteria: dict, db: Session) -> None:
+    try:
+        from app.models.search_history import SearchHistory
+        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
+        h = SearchHistory(
+            site_user_id=uid,
+            query=description[:500] if description else None,
+            location=criteria.get("location") or None,
+            project_id=None,
+            source="chatbot",
+        )
+        db.add(h)
+        db.flush()
+    except Exception as e:
+        logger.warning(f"[history] could not save search history: {e}")
+
+
 def _save_preferences(site_user_id, criteria: dict, description: str, db: Session) -> None:
     """Upsert user preferences from extracted criteria."""
     try:
@@ -212,9 +229,10 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
         criteria = {"keywords": description.split(), "location": ""}
     session.extracted_criteria = criteria
 
-    # Save preferences for registered users
+    # Save preferences + search history for registered users
     if session.site_user_id:
         _save_preferences(session.site_user_id, criteria, description, db)
+        _save_search_history(session.site_user_id, description, criteria, db)
 
     from app.models.chat_config import ChatConfig, DEFAULT_CONFIG_ID
     config = db.query(ChatConfig).filter(ChatConfig.id == DEFAULT_CONFIG_ID).first()
