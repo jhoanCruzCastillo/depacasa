@@ -1,56 +1,70 @@
 """Matchmaking service: scores scraped records against user criteria."""
 
 import re
+import unicodedata
 import logging
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-_CANDIDATE_LIMIT = 300
+_CANDIDATE_LIMIT = 500
+_RERANK_LIMIT = 20
+
+# ── Normalization ─────────────────────────────────────────────────────────────
+
+def _normalize(s: str) -> str:
+    """Lowercase + strip diacritical marks for accent-insensitive comparison."""
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', s.lower())
+        if unicodedata.category(c) != 'Mn'
+    )
+
 
 # ── Bedroom extraction ────────────────────────────────────────────────────────
 
-# Keys that suggest a field contains bedroom info
 _BED_KEY = re.compile(
-    r'dorm|dormitorio|habitacion|bedroom|cuarto|ambiente|recamara|alcoba|pieza',
+    r'dorm|dormitorio|habitacion|bedroom|cuarto|recamara|alcoba|pieza',
     re.IGNORECASE,
 )
+_BATH_KEY = re.compile(r'ba[ñn]o|bathroom|bath|aseo|servicio', re.IGNORECASE)
 
-# "2 dorms", "3 habitaciones", "2 dormitorios", "1 cuarto", "2 ambientes"
-_PAT_NUM_WORD = re.compile(
-    r'(\d+)\s*'
-    r'(?:dorm(?:itorio)?s?|hab(?:itacion(?:es)?)?|bedrooms?|cuartos?|ambientes?|recamaras?|alcobas?|piezas?)',
+_PAT_NUM_BED = re.compile(
+    r'(\d+)\s*(?:dorm(?:itorio)?s?|hab(?:itacion(?:es)?)?|bedrooms?|cuartos?|ambientes?|recamaras?|alcobas?|piezas?)',
     re.IGNORECASE,
 )
-
-# "dormitorios: 2", "habitaciones - 3", "dorms 2"
-_PAT_WORD_NUM = re.compile(
+_PAT_BED_NUM = re.compile(
     r'(?:dorm(?:itorio)?s?|hab(?:itacion(?:es)?)?|bedrooms?|cuartos?|ambientes?|recamaras?|alcobas?|piezas?)'
     r'\s*[:\-\s]\s*(\d+)',
     re.IGNORECASE,
 )
+_PAT_NUM_BATH = re.compile(r'(\d+)\s*(?:ba[ñn]os?|bathrooms?|aseos?)', re.IGNORECASE)
 
 
 def _extract_bedroom_counts(data: dict) -> set[int]:
-    """Recursively find all bedroom counts mentioned in a property data dict.
-
-    Handles nested structures like 'modelos' arrays/strings that mix
-    bedrooms, bathrooms and m2 in a single string.
-    """
+    """Recursively find bedroom counts in property data, excluding bathroom numbers."""
     counts: set[int] = set()
 
     def _scan_str(s: str) -> None:
-        for m in _PAT_NUM_WORD.finditer(s):
-            n = int(m.group(1))
-            if 0 < n <= 10:
-                counts.add(n)
-        for m in _PAT_WORD_NUM.finditer(s):
-            n = int(m.group(1))
-            if 0 < n <= 10:
-                counts.add(n)
+        bath_spans = [m.span() for m in _PAT_NUM_BATH.finditer(s)]
+
+        def _in_bath(pos: int) -> bool:
+            return any(a <= pos < b for a, b in bath_spans)
+
+        for m in _PAT_NUM_BED.finditer(s):
+            if not _in_bath(m.start()):
+                n = int(m.group(1))
+                if 0 < n <= 10:
+                    counts.add(n)
+        for m in _PAT_BED_NUM.finditer(s):
+            if not _in_bath(m.start()):
+                n = int(m.group(1))
+                if 0 < n <= 10:
+                    counts.add(n)
 
     def _walk(obj, key: str = '') -> None:
+        if _BATH_KEY.search(key):
+            return
         if isinstance(obj, (int, float)):
             if _BED_KEY.search(key):
                 n = int(obj)
@@ -58,7 +72,6 @@ def _extract_bedroom_counts(data: dict) -> set[int]:
                     counts.add(n)
         elif isinstance(obj, str):
             _scan_str(obj)
-            # If the KEY itself is bedroom-related, also pull bare digits from the value
             if _BED_KEY.search(key):
                 for m in re.finditer(r'\b(\d+)\b', obj):
                     n = int(m.group(1))
@@ -75,6 +88,23 @@ def _extract_bedroom_counts(data: dict) -> set[int]:
     return counts
 
 
+# ── SQL (level-2 records + LATERAL JOIN for parent data) ─────────────────────
+
+_LATERAL_BASE = """
+SELECT sr.id, sr.data, COALESCE(pd.parent_text, '') AS parent_text
+FROM scraped_records sr
+JOIN url_nodes un ON sr.url_node_id = un.id
+LEFT JOIN LATERAL (
+    SELECT psr.data::text AS parent_text
+    FROM scraped_records psr
+    WHERE psr.url_node_id = un.parent_id
+    ORDER BY psr.scraped_at DESC
+    LIMIT 1
+) pd ON true
+WHERE un.parent_id IS NOT NULL
+"""
+
+
 # ── Main API ──────────────────────────────────────────────────────────────────
 
 async def find_matches(
@@ -82,48 +112,39 @@ async def find_matches(
     criteria: dict,
     top_n: int,
     excluded_ids: set[str] | None = None,
+    raw_description: str = "",
 ) -> list[str]:
     """Return ordered list of ScrapedRecord UUID strings matching criteria.
 
-    excluded_ids: record IDs to skip (e.g. already seen / low-rated by this user).
-    Returns up to top_n * 5 so the user can paginate with 'ver más'.
+    Returns [] when no records pass the strict location+bedroom filter so the
+    caller can show a specific "no results" message instead of wrong results.
     """
     try:
+        import json
+
         location = (criteria.get("location") or "").strip()
+        loc_norm = _normalize(location) if location else ""
         keywords = list(criteria.get("keywords") or []) + list(criteria.get("features") or [])
-        keywords = [k for k in keywords if k and len(k) > 2]
+        keywords = [_normalize(k) for k in keywords if k and len(k) > 2]
         bedrooms: int | None = criteria.get("bedrooms")
         excluded = excluded_ids or set()
 
-        # Only level-2 records (child nodes: parent_id IS NOT NULL)
-        level2_join = (
-            "JOIN url_nodes un ON sr.url_node_id = un.id "
-            "WHERE un.parent_id IS NOT NULL"
-        )
+        rows = db.execute(
+            text(_LATERAL_BASE + "ORDER BY sr.scraped_at DESC LIMIT :lim"),
+            {"lim": _CANDIDATE_LIMIT},
+        ).fetchall()
 
-        if location:
-            rows = db.execute(
-                text(
-                    f"SELECT sr.id, sr.data FROM scraped_records sr "
-                    f"{level2_join} AND sr.data::text ILIKE :loc "
-                    "ORDER BY sr.scraped_at DESC LIMIT :lim"
-                ),
-                {"loc": f"%{location}%", "lim": _CANDIDATE_LIMIT},
-            ).fetchall()
-        else:
-            rows = db.execute(
-                text(
-                    f"SELECT sr.id, sr.data FROM scraped_records sr "
-                    f"{level2_join} "
-                    "ORDER BY sr.scraped_at DESC LIMIT :lim"
-                ),
-                {"lim": _CANDIDATE_LIMIT},
-            ).fetchall()
+        logger.info(
+            "matchmaking: location=%r bedrooms=%s keywords=%s candidates=%d",
+            location, bedrooms, keywords[:5], len(rows),
+        )
 
         if not rows:
             return []
 
-        scored: list[tuple[str, int]] = []
+        # Each entry: {id, loc_ok, bed_match, kw_score, total, data, parent}
+        # bed_match: 1=exact  0=unknown/adjacent  -1=mismatch
+        entries: list[dict] = []
 
         for row in rows:
             record_id = str(row[0])
@@ -132,39 +153,99 @@ async def find_matches(
 
             raw = row[1]
             data_dict: dict = dict(raw) if isinstance(raw, dict) else {}
+            parent_text: str = row[2] or ""
 
-            import json
-            data_text = json.dumps(data_dict, ensure_ascii=False).lower()
-            score = 0
+            child_json = json.dumps(data_dict, ensure_ascii=False)
+            child_norm = _normalize(child_json)
+            # parent_text is used only for Claude re-ranking context, NOT for location
+            # because all Lima projects share the same listing-page parent, making
+            # parent location data unreliable (it bleeds across unrelated projects).
+            kw_norm = child_norm   # keyword search on child only
 
-            # Keyword hits
-            for term in keywords:
-                if term.lower() in data_text:
-                    score += 1
+            # Location score — child data only (each child embeds its own description)
+            loc_ok = False
+            loc_score = 0
+            if location:
+                if loc_norm in child_norm:
+                    loc_ok = True
+                    loc_score = 20
+                else:
+                    loc_score = -30
 
-            # Location bonus
-            if location and location.lower() in data_text:
-                score += 3
+            # Keyword score
+            kw_score = sum(1 for kw in keywords if kw in kw_norm)
 
-            # Bedroom scoring (smart extraction)
+            # Bedroom score + match category
+            # bed_match: 1=exact  0=unknown  -1=any mismatch (adjacent or far)
+            bed_match = 0   # unknown (no bedroom info in child data)
+            bed_score = 0
             if bedrooms:
-                found = _extract_bedroom_counts(data_dict)
-                if found:
-                    if bedrooms in found:
-                        score += 5          # exact match
-                    elif any(abs(b - bedrooms) == 1 for b in found):
-                        score += 1          # adjacent (e.g. wants 2, has 2-3)
+                bed_counts = _extract_bedroom_counts(data_dict)
+                if bed_counts:
+                    if bedrooms in bed_counts:
+                        bed_match, bed_score = 1, 10     # exact → shown first
+                    elif any(abs(b - bedrooms) == 1 for b in bed_counts):
+                        bed_match, bed_score = -1, -5    # adjacent → excluded from strict filter, light penalty
                     else:
-                        score -= 4          # clear mismatch → push to bottom
-                # No bedroom info found → neutral (0), don't penalise
+                        bed_match, bed_score = -1, -20   # far mismatch → excluded, heavy penalty
 
-            scored.append((record_id, score))
+            entries.append({
+                "id": record_id,
+                "loc_ok": loc_ok,
+                "bed_match": bed_match,
+                "total": loc_score + kw_score + bed_score,
+                "data": data_dict,
+                "parent": parent_text[:300],
+            })
 
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [rid for rid, _ in scored[: top_n * 5]]
+        if not entries:
+            return []
+
+        # ── Step 1: filter by location (when specified) ───────────────────────
+        if location:
+            loc_entries = [e for e in entries if e["loc_ok"]]
+            if not loc_entries:
+                logger.info("matchmaking: no records found for location '%s'", location)
+                return []
+            entries = loc_entries
+
+        # ── Step 2: strict bedroom filter (when specified) ────────────────────
+        # Only discard known mismatches when exact/unknown alternatives exist.
+        if bedrooms:
+            good = [e for e in entries if e["bed_match"] >= 0]   # exact or unknown
+            if good:
+                entries = good   # prefer correct/unknown over known mismatch
+            else:
+                # All remaining records have a known bedroom mismatch → no results.
+                logger.info(
+                    "matchmaking: all location-matched records have bedroom mismatch "
+                    "(want %d)", bedrooms,
+                )
+                return []
+
+        # ── Step 3: rank by total score ───────────────────────────────────────
+        entries.sort(key=lambda e: e["total"], reverse=True)
+        top_slice = entries[:_RERANK_LIMIT]
+
+        # ── Step 4: Claude re-ranking ─────────────────────────────────────────
+        if top_slice and (location or bedrooms):
+            try:
+                from app.services.claude_service import rerank_properties
+                pairs = [
+                    (e["id"], {**e["data"], "_parent_desc": e["parent"]})
+                    for e in top_slice
+                ]
+                reranked = await rerank_properties(criteria, raw_description, pairs)
+                seen = set(reranked)
+                tail = [e["id"] for e in entries[_RERANK_LIMIT:] if e["id"] not in seen]
+                return (reranked + tail)[: top_n * 5]
+            except Exception as exc:
+                logger.warning("Claude re-ranking failed, using scored order: %s", exc)
+
+        return [e["id"] for e in entries[: top_n * 5]]
 
     except Exception as e:
-        logger.error(f"Matchmaking error: {e}", exc_info=True)
+        logger.error("Matchmaking error: %s", e, exc_info=True)
         return []
 
 
@@ -176,5 +257,5 @@ def get_record_data(db: Session, record_id: str) -> dict | None:
         ).fetchone()
         return dict(row[0]) if row else None
     except Exception as e:
-        logger.error(f"Error fetching record {record_id}: {e}")
+        logger.error("Error fetching record %s: %s", record_id, e)
         return None

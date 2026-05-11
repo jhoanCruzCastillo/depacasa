@@ -225,7 +225,7 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
     if session.site_user_id:
         excluded = _get_disliked_ids(session.site_user_id, db)
 
-    matches = await find_matches(db, criteria, top_n, excluded_ids=excluded)
+    matches = await find_matches(db, criteria, top_n, excluded_ids=excluded, raw_description=description)
     session.matched_record_ids = matches
     session.current_match_index = 0
     session.state = "presenting"
@@ -233,10 +233,31 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
     if not matches:
         session.state = "collecting_info"
         session.info_step = 4
-        return _text(
-            f"Lo siento, {session.name}, no encontré propiedades que coincidan 😕 "
-            "¿Quieres intentar con otros criterios? Descríbeme de nuevo lo que buscas."
-        )
+        loc = criteria.get("location") or ""
+        beds = criteria.get("bedrooms")
+        if beds and loc:
+            hab = "habitación" if beds == 1 else "habitaciones"
+            msg = (
+                f"Lo siento, {session.name}, no encontré propiedades de {beds} {hab} "
+                f"en {loc} 😕 ¿Quieres ajustar el número de habitaciones o buscar en otra zona?"
+            )
+        elif beds:
+            hab = "habitación" if beds == 1 else "habitaciones"
+            msg = (
+                f"Lo siento, {session.name}, no encontré propiedades de {beds} {hab} 😕 "
+                "¿Quieres intentar con otros criterios?"
+            )
+        elif loc:
+            msg = (
+                f"Lo siento, {session.name}, no encontré propiedades en {loc} 😕 "
+                "¿Quieres buscar en otra zona o ajustar los criterios?"
+            )
+        else:
+            msg = (
+                f"Lo siento, {session.name}, no encontré propiedades que coincidan 😕 "
+                "¿Quieres intentar con otros criterios? Descríbeme de nuevo lo que buscas."
+            )
+        return _text(msg)
 
     return await _show_property(session, db, matches[0])
 
