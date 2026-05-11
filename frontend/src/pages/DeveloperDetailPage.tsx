@@ -553,8 +553,32 @@ export default function DeveloperDetailPage() {
     })
   }
 
-  const openModal = (record: ScrapedRecord, nodeId: string) => {
-    setModalRecord(record)
+  const openModal = (record: ScrapedRecord, nodeId: string, parentRecord?: ScrapedRecord, parentNodeId?: string) => {
+    // If opened within a parent context, merge parent's shared fields into the child record
+    let mergedRecord: ScrapedRecord = record
+    try {
+      if (parentRecord && parentNodeId && nodeById[parentNodeId]) {
+        const parentNode = nodeById[parentNodeId]
+        const sharedFieldNames: string[] = (parentNode.fields || []).filter((f: any) => f?.is_shared).map((f: any) => f.name)
+        if (sharedFieldNames.length) {
+          const childData = { ...(record.data || {}) }
+          for (const fname of sharedFieldNames) {
+            const childVal = childData[fname]
+            const parentVal = parentRecord.data ? parentRecord.data[fname] : undefined
+            const emptyChild = childVal === undefined || childVal === null || (Array.isArray(childVal) && childVal.length === 0) || (typeof childVal === 'string' && childVal.trim() === '')
+            if ((childVal === undefined || emptyChild) && parentVal !== undefined) {
+              childData[fname] = parentVal
+            }
+          }
+          mergedRecord = { ...record, data: childData }
+        }
+      }
+    } catch (e) {
+      // guard: if anything fails, fallback to original record
+      mergedRecord = record
+    }
+
+    setModalRecord(mergedRecord)
     setModalNodeId(nodeId)
     setModalOpen(true)
   }
@@ -573,6 +597,8 @@ export default function DeveloperDetailPage() {
     level: number,
     sectionRecords: ScrapedRecord[],
     totalCount: number,
+    parentRecord?: ScrapedRecord,
+    parentNodeId?: string,
   ) => {
     const node = nodeById[nodeId]
     if (!node) return null
@@ -592,7 +618,7 @@ export default function DeveloperDetailPage() {
           selectedId={selectedId}
           onSelectForDrill={drillable ? (recId) => handleSelectRecord(nodeId, recId) : undefined}
           drillable={drillable}
-          onOpenDetail={(rec) => openModal(rec, nodeId)}
+          onOpenDetail={(rec) => openModal(rec, nodeId, parentRecord, parentNodeId)}
           imageFieldNames={imageFieldNames}
         />
 
@@ -602,7 +628,7 @@ export default function DeveloperDetailPage() {
               const childRecords = getRecordsForNode(child.id, selectedRecord, nodeId)
               return (
                 <div key={child.id}>
-                  {renderCatalogSection(child.id, level + 1, childRecords, childRecords.length)}
+                  {renderCatalogSection(child.id, level + 1, childRecords, childRecords.length, selectedRecord, nodeId)}
                 </div>
               )
             })}
