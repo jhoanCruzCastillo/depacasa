@@ -20,7 +20,7 @@ import Modal from '../components/ui/Modal'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface TemplateField { name: string; is_child_url: boolean; is_image?: boolean }
+interface TemplateField { name: string; is_child_url: boolean; is_image?: boolean; is_shared?: boolean; inherited_from?: string | null }
 interface TemplateNode {
   id: string; name: string; parent_id: string | null; order?: number; fields?: TemplateField[]
 }
@@ -554,57 +554,19 @@ export default function DeveloperDetailPage() {
     })
   }
 
+  // record arrives already merged by renderCatalogSection; we only need correct imageFieldNames
   const openModal = (record: ScrapedRecord, nodeId: string) => {
     try {
-      // attempt to merge shared fields from selected parent (non-intrusive)
       const node = nodeById[nodeId]
-      if (node && node.parent_id) {
+      if (node?.parent_id) {
         const parentId = node.parent_id
-        const parentSelectedId = selectedByNodeId[parentId]
-        if (parentSelectedId) {
-          const parentRec = (recordsByNodeId[parentId] || []).find(r => r.id === parentSelectedId)
-          if (parentRec) {
-            // determine shared fields from template (prefer templateNodes if available)
-            const parentTemplate = templateNodes.find(n => n.id === parentId) || nodeById[parentId]
-            const sharedFieldNames: string[] = (parentTemplate?.fields || []).filter((f: any) => f?.is_shared).map((f: any) => f.name)
-
-            if (sharedFieldNames.length) {
-              const childData = { ...(record.data || {}) }
-              for (const fname of sharedFieldNames) {
-                const childVal = childData[fname]
-                const parentVal = parentRec.data ? parentRec.data[fname] : undefined
-                const emptyChild = childVal === undefined || childVal === null || (Array.isArray(childVal) && childVal.length === 0) || (typeof childVal === 'string' && childVal.trim() === '')
-                if ((childVal === undefined || emptyChild) && parentVal !== undefined) {
-                  childData[fname] = parentVal
-                }
-              }
-              record = { ...record, data: childData }
-
-              // compute merged image field names so FieldValue renders inherited images correctly
-              const childImageNames = imageFieldNamesByNodeId[nodeId] || new Set<string>()
-              const mergedImages = new Set<string>(childImageNames)
-              for (const fname of sharedFieldNames) {
-                const val = parentRec.data ? parentRec.data[fname] : undefined
-                if (val !== undefined) {
-                  // if value looks like image (single or array), treat as image field for modal
-                  const cand = Array.isArray(val) ? val.find(v => looksLikeImage(v)) : val
-                  if (cand && looksLikeImage(cand)) mergedImages.add(fname)
-                }
-              }
-              setModalImageFieldNames(mergedImages)
-            } else {
-              setModalImageFieldNames(imageFieldNamesByNodeId[nodeId])
-            }
-          } else {
-            setModalImageFieldNames(imageFieldNamesByNodeId[nodeId])
-          }
-        } else {
-          setModalImageFieldNames(imageFieldNamesByNodeId[nodeId])
-        }
+        const childImageNames = imageFieldNamesByNodeId[nodeId] || new Set<string>()
+        const parentImageNames = imageFieldNamesByNodeId[parentId] || new Set<string>()
+        setModalImageFieldNames(new Set([...childImageNames, ...parentImageNames]))
       } else {
         setModalImageFieldNames(imageFieldNamesByNodeId[nodeId])
       }
-    } catch (e) {
+    } catch {
       setModalImageFieldNames(imageFieldNamesByNodeId[nodeId])
     }
 
@@ -627,6 +589,8 @@ export default function DeveloperDetailPage() {
     level: number,
     sectionRecords: ScrapedRecord[],
     totalCount: number,
+    parentRecord?: ScrapedRecord,
+    parentNodeId?: string,
   ) => {
     const node = nodeById[nodeId]
     if (!node) return null
@@ -634,14 +598,50 @@ export default function DeveloperDetailPage() {
     const drillable = childNodes.length > 0
     const selectedId = selectedByNodeId[nodeId]
     const selectedRecord = sectionRecords.find(r => r.id === selectedId)
-    const imageFieldNames = imageFieldNamesByNodeId[nodeId]
+    // For child nodes: merge parent data into child records.
+    // Fields defined in the parent template → always use parent value (project-level data).
+    // Fields not in parent template → fill from parent only when child is empty.
+    let imageFieldNames: Set<string> = imageFieldNamesByNodeId[nodeId] || new Set()
+    let displayRecords = sectionRecords
+
+    if (parentRecord && parentNodeId) {
+      const parentData = parentRecord.data || {}
+      const parentTemplateNode = templateNodes.find(n => n.id === parentNodeId)
+      const parentFieldNames = new Set(
+        (parentTemplateNode?.fields || []).map((f: TemplateField) => f.name)
+      )
+      const parentImageFields = imageFieldNamesByNodeId[parentNodeId]
+      if (parentImageFields?.size) {
+        imageFieldNames = new Set([...imageFieldNames, ...parentImageFields])
+      }
+      displayRecords = sectionRecords.map(childRec => {
+        const childData = { ...(childRec.data || {}) }
+        for (const [fname, parentVal] of Object.entries(parentData)) {
+          if (parentVal == null) continue
+          if (parentFieldNames.size > 0 && parentFieldNames.has(fname)) {
+            // Project-level field: parent value always wins
+            childData[fname] = parentVal
+          } else {
+            // Child-specific field: only fill when child is empty
+            const childVal = childData[fname]
+            const emptyChild = childVal == null ||
+              (Array.isArray(childVal) && childVal.length === 0) ||
+              (typeof childVal === 'string' && (childVal.trim() === '' || childVal.trim() === 'null'))
+            if (emptyChild) {
+              childData[fname] = parentVal
+            }
+          }
+        }
+        return { ...childRec, data: childData }
+      })
+    }
 
     return (
       <div key={nodeId} className="space-y-4">
         <SectionCatalog
           title={node.name}
           level={level}
-          records={sectionRecords}
+          records={displayRecords}
           totalCount={totalCount}
           selectedId={selectedId}
           onSelectForDrill={drillable ? (recId) => handleSelectRecord(nodeId, recId) : undefined}
@@ -656,7 +656,7 @@ export default function DeveloperDetailPage() {
               const childRecords = getRecordsForNode(child.id, selectedRecord, nodeId)
               return (
                 <div key={child.id}>
-                  {renderCatalogSection(child.id, level + 1, childRecords, childRecords.length)}
+                  {renderCatalogSection(child.id, level + 1, childRecords, childRecords.length, selectedRecord, nodeId)}
                 </div>
               )
             })}

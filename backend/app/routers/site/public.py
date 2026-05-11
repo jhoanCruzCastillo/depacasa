@@ -3,9 +3,14 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from uuid import UUID
 
 from database import get_db
 from app.models.site_config import SiteConfig, DEFAULT_SITE_CONFIG_ID, DEFAULT_CARD_FIELDS
+from app.models.developer import Developer
+from app.models.url_node import UrlNode
+from app.models.scraped_record import ScrapedRecord
+from app.models.field import Field
 
 router = APIRouter()
 
@@ -102,6 +107,115 @@ def public_records(
         for r in rows
     ]
     return {"total": int(total), "items": items}
+
+
+@router.get("/records/grouped")
+def public_records_grouped(
+    search: str = "",
+    db: Session = Depends(get_db),
+):
+    """Return records grouped by developer and project (parent url_node), with inherited parent fields."""
+    from app.models.field import Field
+    
+    # Get all developers
+    developers = db.query(Developer).all()
+    result_developers = []
+    
+    for dev in developers:
+        # Get all url_nodes for this developer
+        root_nodes = db.query(UrlNode).filter(
+            UrlNode.developer_id == dev.id,
+            UrlNode.parent_id == None
+        ).order_by(UrlNode.order).all()
+        
+        dev_result = {
+            "id": str(dev.id),
+            "name": dev.name,
+            "projects": [],
+            "loose_properties": []
+        }
+        
+        # For each root node (project), get its child nodes' records and merge with parent data
+        for project_node in root_nodes:
+            project_obj = {
+                "id": str(project_node.id),
+                "name": project_node.name,
+                "records": []
+            }
+            
+            # Get child nodes of this project
+            child_nodes = db.query(UrlNode).filter(
+                UrlNode.parent_id == project_node.id
+            ).all()
+            
+            # Get shared fields from project ONCE (not per child_node)
+            shared_fields = db.query(Field).filter(
+                Field.url_node_id == project_node.id,
+                Field.is_shared == True
+            ).all()
+            shared_field_names = {f.name for f in shared_fields}
+            
+            # Get parent records ONCE for this project
+            parent_records = db.query(ScrapedRecord).filter(
+                ScrapedRecord.url_node_id == project_node.id
+            ).order_by(ScrapedRecord.scraped_at.desc()).all()
+            
+            # For each child node, get its records and merge with parent record data
+            for child_node in child_nodes:
+                child_records = db.query(ScrapedRecord).filter(
+                    ScrapedRecord.url_node_id == child_node.id
+                ).order_by(ScrapedRecord.scraped_at.desc()).all()
+                
+                # For each child record, merge with parent records (match by checking all parents)
+                for child_rec in child_records:
+                    if search and search.lower() not in str(child_rec.data).lower():
+                        continue
+                        
+                    child_data = dict(child_rec.data) if child_rec.data else {}
+                    
+                    # Merge shared fields from ALL parent records (use most complete parent)
+                    if parent_records and shared_field_names:
+                        for parent_rec in parent_records:
+                            parent_data = dict(parent_rec.data) if parent_rec.data else {}
+                            for fname in shared_field_names:
+                                # Only add if not already in child and exists in parent
+                                if fname in parent_data and fname not in child_data:
+                                    child_data[fname] = parent_data[fname]
+                                    break  # Use first parent that has this field
+                    
+                    # Use the most recent parent record
+                    most_recent_parent = parent_records[0] if parent_records else None
+                    
+                    project_obj["records"].append({
+                        "id": str(child_rec.id),
+                        "data": child_data,
+                        "parent_data": dict(most_recent_parent.data) if most_recent_parent and most_recent_parent.data else {},
+                        "scraped_at": child_rec.scraped_at.isoformat() if child_rec.scraped_at else None
+                    })
+            
+            # Only add project if it has records
+            if project_obj["records"]:
+                dev_result["projects"].append(project_obj)
+            
+            # Also get direct records from root node (loose properties under this project)
+            root_records = db.query(ScrapedRecord).filter(
+                ScrapedRecord.url_node_id == project_node.id
+            ).order_by(ScrapedRecord.scraped_at.desc()).all()
+            
+            for rec in root_records:
+                if search and search.lower() not in str(rec.data).lower():
+                    continue
+                dev_result["loose_properties"].append({
+                    "id": str(rec.id),
+                    "data": dict(rec.data) if rec.data else {},
+                    "scraped_at": rec.scraped_at.isoformat() if rec.scraped_at else None
+                })
+        
+        # Only add developer if it has projects or properties
+        if dev_result["projects"] or dev_result["loose_properties"]:
+            result_developers.append(dev_result)
+    
+    return {"developers": result_developers}
 
 
 @router.get("/hero")

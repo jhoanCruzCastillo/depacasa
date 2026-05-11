@@ -360,8 +360,6 @@ function HeroCarousel({ records, config, onScrollDown }: {
   )
 }
 
-// ─── Featured section (horizontal strip) ─────────────────────────────────────
-
 function FeaturedSection({ records, config }: { records: PublicRecord[]; config: SiteConfig }) {
   const ref = useRef<HTMLDivElement>(null)
   const scroll = (dir: 'l' | 'r') => ref.current?.scrollBy({ left: dir === 'l' ? -320 : 320, behavior: 'smooth' })
@@ -396,6 +394,97 @@ function FeaturedSection({ records, config }: { records: PublicRecord[]; config:
   )
 }
 
+// ─── Developer catalog section ────────────────────────────────────────────────
+
+function DeveloperCatalogSection({
+  developers, primaryColor, secondaryColor, fieldKeys
+}: {
+  developers: any[]
+  primaryColor: string
+  secondaryColor: string
+  fieldKeys?: string[]
+}) {
+  const [expandedDev, setExpandedDev] = useState<string | null>(null)
+  
+  if (!developers || developers.length === 0) {
+    return (
+      <div className="text-center py-20 text-slate-400">
+        <Building2 className="w-12 h-12 mx-auto mb-3 opacity-30" />
+        <p className="font-medium">No se encontraron propiedades</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-8">
+      {developers.map(dev => (
+        <div key={dev.id} className="space-y-4">
+          {/* Developer header */}
+          <button
+            onClick={() => setExpandedDev(expandedDev === dev.id ? null : dev.id)}
+            className="w-full flex items-center justify-between px-6 py-4 rounded-xl border border-slate-200 bg-white hover:shadow-md transition-shadow group"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold text-sm"
+                style={{ backgroundColor: primaryColor }}>
+                {dev.name.charAt(0).toUpperCase()}
+              </div>
+              <div className="text-left">
+                <h3 className="font-bold text-slate-800">{dev.name}</h3>
+                <p className="text-xs text-slate-400">
+                  {dev.projects.length} proyecto{dev.projects.length !== 1 ? 's' : ''} • {dev.loose_properties.length} propiedade{dev.loose_properties.length !== 1 ? 's' : ''} suelta{dev.loose_properties.length !== 1 ? 's' : ''}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className={`w-5 h-5 text-slate-400 transition-transform ${expandedDev === dev.id ? 'rotate-90' : ''}`} />
+          </button>
+
+          {/* Developer projects and properties */}
+          {expandedDev === dev.id && (
+            <div className="space-y-4 pl-4 border-l-2 border-slate-200">
+              {/* Projects */}
+              {dev.projects.map((project: any) => (
+                <div key={project.id} className="space-y-3">
+                  <h4 className="font-semibold text-slate-700 text-sm">{project.name}</h4>
+                  <div className={`grid gap-4 ${colsClass('3')}`}>
+                    {project.records.map((rec: any) => (
+                      <PropertyCard
+                        key={rec.id}
+                        record={{ id: rec.id, data: rec.data, scraped_at: rec.scraped_at }}
+                        fieldKeys={fieldKeys}
+                        primaryColor={primaryColor}
+                        secondaryColor={secondaryColor}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              {/* Loose properties */}
+              {dev.loose_properties.length > 0 && (
+                <div className="space-y-3">
+                  <h4 className="font-semibold text-slate-700 text-sm">Propiedades sueltas</h4>
+                  <div className={`grid gap-4 ${colsClass('3')}`}>
+                    {dev.loose_properties.map((rec: any) => (
+                      <PropertyCard
+                        key={rec.id}
+                        record={{ id: rec.id, data: rec.data, scraped_at: rec.scraped_at }}
+                        fieldKeys={fieldKeys}
+                        primaryColor={primaryColor}
+                        secondaryColor={secondaryColor}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function PublicSitePage() {
@@ -405,11 +494,9 @@ export default function PublicSitePage() {
   const [config, setConfig] = useState<SiteConfig | null>(null)
   const [heroRecords, setHeroRecords] = useState<PublicRecord[]>([])
   const [featuredRecords, setFeaturedRecords] = useState<PublicRecord[]>([])
-  const [catalogRecords, setCatalogRecords] = useState<PublicRecord[]>([])
-  const [catalogTotal, setCatalogTotal] = useState(0)
+  const [groupedData, setGroupedData] = useState<any>(null)
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
-  const [page, setPage] = useState(0)
   const [loadingCfg, setLoadingCfg] = useState(true)
   const [loadingCatalog, setLoadingCatalog] = useState(false)
   const catalogRef = useRef<HTMLElement>(null)
@@ -434,21 +521,19 @@ export default function PublicSitePage() {
       .finally(() => setLoadingCfg(false))
   }, [])
 
-  // Load catalog on page/query/config change
-  const loadCatalog = useCallback(() => {
+  // Load grouped records when query changes
+  useEffect(() => {
     if (!config) return
     setLoadingCatalog(true)
-    API.get('/public/records', {
-      params: { skip: page * LIMIT, limit: LIMIT, search: query, level: config.catalog_level || 2 }
+    API.get('/public/records/grouped', {
+      params: query ? { search: query } : {}
     })
-      .then(r => { setCatalogRecords(r.data.items); setCatalogTotal(r.data.total) })
-      .catch(() => {})
+      .then(r => setGroupedData(r.data))
+      .catch(() => setGroupedData(null))
       .finally(() => setLoadingCatalog(false))
-  }, [config, page, query])
+  }, [config, query])
 
-  useEffect(() => { loadCatalog() }, [loadCatalog])
-
-  const doSearch = () => { setPage(0); setQuery(search) }
+  const doSearch = () => { setQuery(search) }
 
   const scrollToCatalog = () => catalogRef.current?.scrollIntoView({ behavior: 'smooth' })
 
@@ -460,7 +545,6 @@ export default function PublicSitePage() {
     )
   }
 
-  const totalPages = Math.ceil(catalogTotal / LIMIT)
   const fieldKeys = config.catalog_field_keys?.length ? config.catalog_field_keys : undefined
 
   return (
@@ -535,7 +619,7 @@ export default function PublicSitePage() {
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
             <div>
               <h2 className="text-xl font-bold text-slate-800">{config.catalog_title}</h2>
-              <p className="text-sm text-slate-400 mt-0.5">{catalogTotal} propiedad{catalogTotal !== 1 ? 'es' : ''}</p>
+              <p className="text-sm text-slate-400 mt-0.5">Propiedades agrupadas por desarrolladora y proyecto</p>
             </div>
             {/* Mobile search */}
             <div className="flex gap-2 sm:hidden">
@@ -552,45 +636,13 @@ export default function PublicSitePage() {
             <div className="flex justify-center py-20">
               <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : catalogRecords.length === 0 ? (
-            <div className="text-center py-20 text-slate-400">
-              <Building2 className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p className="font-medium">No se encontraron propiedades</p>
-              {query && <button onClick={() => { setQuery(''); setSearch(''); setPage(0) }} className="mt-2 text-sm text-blue-600 hover:underline">Limpiar búsqueda</button>}
-            </div>
           ) : (
-            <div className={`grid gap-5 ${colsClass(config.catalog_columns)}`}>
-              {catalogRecords.map(r => (
-                <PropertyCard key={r.id} record={r} fieldKeys={fieldKeys}
-                  primaryColor={config.primary_color} secondaryColor={config.secondary_color} />
-              ))}
-            </div>
-          )}
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-center gap-2 mt-10">
-              <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
-                className="px-4 py-2 rounded-xl text-sm border border-slate-200 disabled:opacity-40 hover:bg-slate-50 transition-colors flex items-center gap-1">
-                <ChevronLeft className="w-4 h-4" /> Anterior
-              </button>
-              <div className="flex gap-1">
-                {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
-                  const p = totalPages <= 7 ? i : i === 0 ? 0 : i === 6 ? totalPages - 1 : page - 2 + i
-                  return p >= 0 && p < totalPages ? (
-                    <button key={p} onClick={() => setPage(p)}
-                      className={`w-9 h-9 rounded-xl text-sm font-medium transition-colors ${p === page ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                      style={p === page ? { backgroundColor: config.primary_color } : {}}>
-                      {p + 1}
-                    </button>
-                  ) : null
-                })}
-              </div>
-              <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
-                className="px-4 py-2 rounded-xl text-sm border border-slate-200 disabled:opacity-40 hover:bg-slate-50 transition-colors flex items-center gap-1">
-                Siguiente <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
+            <DeveloperCatalogSection
+              developers={groupedData?.developers || []}
+              primaryColor={config.primary_color}
+              secondaryColor={config.secondary_color}
+              fieldKeys={fieldKeys}
+            />
           )}
         </section>
       )}
