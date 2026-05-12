@@ -481,7 +481,6 @@ export default function ChatUsersPage() {
                     {[
                       { icon: Mail, label: 'Correo', value: detailProfile.user.email },
                       { icon: User, label: 'Nombre', value: detailProfile.user.name || '—' },
-                      { icon: Globe, label: 'País', value: detailProfile.user.country || '—' },
                       { icon: Phone, label: 'Teléfono', value: detailProfile.user.phone || '—' },
                       {
                         icon: Clock,
@@ -511,7 +510,11 @@ export default function ChatUsersPage() {
                       { icon: User, label: 'Nombre completo', value: detailProfile.lead?.full_name || '—' },
                       { icon: Phone, label: 'WhatsApp', value: detailProfile.lead?.whatsapp || '—' },
                       { icon: Tag, label: 'Documento', value: detailProfile.lead?.document_number || '—' },
-                      { icon: Globe, label: 'País residencia', value: detailProfile.lead?.country_of_residence || '—' },
+                      {
+                        icon: Globe,
+                        label: 'País residencia',
+                        value: detailProfile.lead?.country_of_residence || detailProfile.user.country || '—',
+                      },
                       { icon: Eye, label: 'Record interesado', value: detailProfile.lead?.record_id || '—' },
                       {
                         icon: Clock,

@@ -287,6 +287,32 @@ def _is_viewed_request(text: str) -> bool:
     )
 
 
+def _is_interested_list_request(text: str) -> bool:
+    t = _normalize_text(text)
+    patterns = [
+        "propiedades a las cuales tengo interes",
+        "propiedades que me interesan",
+        "propiedades de interes",
+        "mis propiedades de interes",
+        "ver mis intereses",
+        "ver propiedades interesadas",
+    ]
+    return any(p in t for p in patterns)
+
+
+def _is_mark_current_property_interest(text: str) -> bool:
+    t = _normalize_text(text)
+    if "lo quiero" in t:
+        return True
+    if "me interesa" in t:
+        return True
+    if "interesa esta" in t or "interesa este" in t:
+        return True
+    if "quiero esta" in t or "quiero este" in t:
+        return True
+    return False
+
+
 def _extract_rating_from_text(text: str) -> int | None:
     t = _normalize_text(text)
     m = re.search(r"\b([1-5])\s*estrella", t)
@@ -550,6 +576,56 @@ def _get_viewed_ranked_ids(site_user_id, db: Session) -> list[str]:
         return []
 
 
+def _get_interested_record_ids(site_user_id, db: Session) -> list[str]:
+    try:
+        from app.models.user_property_interaction import UserPropertyInteraction
+        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
+        rows = (
+            db.query(UserPropertyInteraction)
+            .filter(
+                UserPropertyInteraction.site_user_id == uid,
+                UserPropertyInteraction.interested.is_(True),
+            )
+            .order_by(
+                UserPropertyInteraction.rated_at.desc().nullslast(),
+                UserPropertyInteraction.updated_at.desc().nullslast(),
+                UserPropertyInteraction.created_at.desc(),
+            )
+            .all()
+        )
+        ids: list[str] = []
+        seen: set[str] = set()
+        for r in rows:
+            rid = str(r.record_id)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            ids.append(rid)
+        return ids
+    except Exception as e:
+        logger.warning(f"[tracking] could not fetch interested ids: {e}")
+        return []
+
+
+async def _show_interested_properties(session: WebChatSession, db: Session) -> dict:
+    if not session.site_user_id:
+        return _text(
+            "No tengo un usuario identificado para recuperar tus intereses. "
+            "Si quieres, primero te muestro propiedades y marcamos las que te gusten."
+        )
+    interested_ids = _get_interested_record_ids(session.site_user_id, db)
+    if not interested_ids:
+        return _text("Aun no tienes propiedades marcadas como interesadas.")
+
+    clean = _clean_criteria(session.extracted_criteria)
+    session.extracted_criteria = {**clean, "_list_mode": "interested"}
+    session.matched_record_ids = interested_ids
+    session.current_match_index = 0
+    session.state = "presenting"
+    session.info_step = 7
+    return await _show_property(session, db, interested_ids[0])
+
+
 async def _build_alternative_bedroom_pool(
     db: Session,
     criteria: dict,
@@ -783,8 +859,10 @@ async def _process(session: WebChatSession, text: str, db: Session) -> dict:
     if session.state == "presenting":
         return await _handle_presenting(session, text, db)
     if session.state == "contact_requested":
-        return _text("Tu solicitud ya fue registrada 😊 Un asesor se pondrá en contacto contigo muy pronto.")
-    return _text("No entendí tu mensaje. ¿Puedes intentarlo de nuevo?")
+        if session.site_user_id and _is_interested_list_request(text):
+            return await _show_interested_properties(session, db)
+        return _text("Tu solicitud ya fue registrada. Un asesor se pondra en contacto contigo muy pronto.")
+    return _text("No entendi tu mensaje. Puedes intentarlo de nuevo?")
 
 
 async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict:
@@ -798,6 +876,9 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
         session.info_step = 4
 
     if step == 4:
+        if session.site_user_id and _is_interested_list_request(user_text):
+            return await _show_interested_properties(session, db)
+
         if session.site_user_id and _is_viewed_request(user_text):
             viewed_ids = _get_viewed_ranked_ids(session.site_user_id, db)
             if not viewed_ids:
@@ -827,6 +908,9 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
     if step == 8:
         current_criteria = _clean_criteria(session.extracted_criteria)
         has_saved_criteria = _has_actionable_criteria(current_criteria)
+
+        if session.site_user_id and _is_interested_list_request(user_text):
+            return await _show_interested_properties(session, db)
 
         if session.site_user_id and _is_viewed_request(user_text):
             viewed_ids = _get_viewed_ranked_ids(session.site_user_id, db)
@@ -1197,6 +1281,9 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
 async def _handle_presenting(session: WebChatSession, text: str, db: Session) -> dict:
     t = _normalize_text(text)
 
+    if session.site_user_id and _is_interested_list_request(text):
+        return await _show_interested_properties(session, db)
+
     rating = _extract_rating_from_text(text)
     if rating and session.site_user_id and session.matched_record_ids:
         idx = session.current_match_index
@@ -1214,7 +1301,7 @@ async def _handle_presenting(session: WebChatSession, text: str, db: Session) ->
     if any(k in t for k in ["siguiente", "ver siguiente", "otra", "ver otra", "no me convence", "next", "skip"]):
         return await _next_property(session, db)
 
-    if any(k in t for k in ["interesa", "quiero", "lo quiero", "me gusta", "asesor", "contactar"]):
+    if _is_mark_current_property_interest(text) or any(k in t for k in ["me gusta", "asesor", "contactar"]):
         return _do_interested(session, text, db)
 
     if _looks_like_search_update(text):
@@ -1232,6 +1319,14 @@ async def _next_property(session: WebChatSession, db: Session) -> dict:
     session.current_match_index += 1
     if session.current_match_index >= len(session.matched_record_ids):
         ctx = session.extracted_criteria or {}
+        list_mode = ctx.get("_list_mode")
+        if list_mode == "interested":
+            clean = _clean_criteria(ctx)
+            session.extracted_criteria = clean
+            session.state = "collecting_info"
+            session.info_step = 4
+            return _text("Ya te mostre todas las propiedades que marcaste con interes.")
+
         deferred_alt_ids = list(ctx.get("_deferred_alt_ids") or [])
         if deferred_alt_ids:
             loc = (ctx.get("_deferred_alt_loc") or "").strip()
@@ -1383,5 +1478,16 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
 
     idx = session.current_match_index + 1
     total = len(session.matched_record_ids)
-    msg = _compose_property_message(session, idx, total)
+    ctx = session.extracted_criteria or {}
+    if ctx.get("_list_mode") == "interested":
+        if idx == 1:
+            msg = (
+                f"Aqui tienes tus propiedades de interes ({total} en total). "
+                "Te muestro la primera:"
+            )
+        else:
+            msg = "Aqui va la siguiente propiedad que marcaste con interes:"
+    else:
+        msg = _compose_property_message(session, idx, total)
     return _property_card(msg, idx, total, record_id, data, state="presenting")
+
