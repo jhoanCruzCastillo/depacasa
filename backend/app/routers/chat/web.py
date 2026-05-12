@@ -32,16 +32,23 @@ async def new_session(request: Request, db: Session = Depends(get_db)):
 @router.post("/web/sessions/{session_id}/message")
 async def send_message(session_id: str, body: MessageIn, db: Session = Depends(get_db)):
     try:
-        UUID(session_id)
+        sid = UUID(session_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid session_id")
-    result = await handle_message(session_id, body.content, db)
-    session = db.query(WebChatSession).filter(WebChatSession.id == UUID(session_id)).first()
-    return {
-        "state": session.state if session else "unknown",
-        "message": result["message"],
-        "card": result["card"],
-    }
+    try:
+        result = await handle_message(session_id, body.content, db)
+        session = db.query(WebChatSession).filter(WebChatSession.id == sid).first()
+        return {
+            "state": session.state if session else "unknown",
+            "message": result["message"],
+            "card": result.get("card"),
+        }
+    except Exception:
+        return {
+            "state": "collecting_info",
+            "message": "Ocurrió un error. Por favor, intenta nuevamente.",
+            "card": None,
+        }
 
 
 @router.get("/web/sessions/{session_id}")
