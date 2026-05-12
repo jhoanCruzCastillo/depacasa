@@ -13,6 +13,8 @@ from app.services.email_service import send_email
 from app.models.user_preference import UserPreference
 from app.models.user_property_interaction import UserPropertyInteraction
 from app.models.search_history import SearchHistory
+from app.models.scraped_record import ScrapedRecord
+from app.models.web_chat_session import WebChatSession
 
 router = APIRouter(prefix="/api/site-users", tags=["site-users"])
 
@@ -39,6 +41,73 @@ def _out(u: SiteUser) -> dict:
         "phone": u.phone,
         "wants_newsletter": u.wants_newsletter,
         "created_at": u.created_at.isoformat() if u.created_at else None,
+    }
+
+
+def _norm_key(key: str) -> str:
+    return (
+        (key or "")
+        .strip()
+        .lower()
+        .replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("ñ", "n")
+    )
+
+
+def _first_scalar_by_keys(obj, keys: set[str]) -> Optional[str]:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if _norm_key(str(k)) in keys and isinstance(v, (str, int, float)):
+                value = str(v).strip()
+                if value:
+                    return value
+        for v in obj.values():
+            found = _first_scalar_by_keys(v, keys)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _first_scalar_by_keys(item, keys)
+            if found:
+                return found
+    return None
+
+
+def _summarize_record(record: Optional[ScrapedRecord]) -> dict:
+    if not record:
+        return {
+            "source_url": None,
+            "property_title": None,
+            "property_model": None,
+            "property_location": None,
+            "property_price": None,
+        }
+
+    data = record.data if isinstance(record.data, dict) else {}
+    title = _first_scalar_by_keys(
+        data,
+        {"titulo", "title", "nombre", "name", "proyecto", "project", "project_name"},
+    )
+    model = _first_scalar_by_keys(data, {"modelo", "model", "tipo", "tipologia", "tipologia_modelo"})
+    location = _first_scalar_by_keys(
+        data,
+        {"ubicacion", "direccion", "distrito", "zona", "location", "address"},
+    )
+    price = _first_scalar_by_keys(
+        data,
+        {"precio", "price", "precio_desde", "from_price", "monto"},
+    )
+
+    return {
+        "source_url": record.source_url,
+        "property_title": title,
+        "property_model": model,
+        "property_location": location,
+        "property_price": price,
     }
 
 
@@ -109,6 +178,11 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
         .limit(20)
         .all()
     )
+    record_ids = [i.record_id for i in interactions if i.record_id]
+    record_map = {}
+    if record_ids:
+        rows = db.query(ScrapedRecord).filter(ScrapedRecord.id.in_(record_ids)).all()
+        record_map = {r.id: r for r in rows}
 
     history = (
         db.query(SearchHistory)
@@ -118,8 +192,34 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
         .all()
     )
 
+    lead_data: dict = {}
+    lead_updated_at = None
+    sessions = (
+        db.query(WebChatSession)
+        .filter(WebChatSession.site_user_id == user_id)
+        .order_by(WebChatSession.updated_at.desc().nullslast(), WebChatSession.created_at.desc())
+        .limit(25)
+        .all()
+    )
+    for s in sessions:
+        criteria = s.extracted_criteria if isinstance(s.extracted_criteria, dict) else {}
+        candidate = criteria.get("_lead")
+        if isinstance(candidate, dict) and candidate:
+            lead_data = candidate
+            lead_updated_at = s.updated_at or s.created_at
+            break
+
     return {
         "user": _out(u),
+        "lead": {
+            "full_name": lead_data.get("full_name"),
+            "whatsapp": lead_data.get("whatsapp"),
+            "document_number": lead_data.get("document_number"),
+            "country_of_residence": lead_data.get("country_of_residence"),
+            "record_id": str(lead_data.get("record_id")) if lead_data.get("record_id") else None,
+            "rating": lead_data.get("rating"),
+            "updated_at": lead_updated_at.isoformat() if lead_updated_at else None,
+        },
         "preferences": {
             "location": pref.location,
             "bedrooms": pref.bedrooms,
@@ -137,6 +237,9 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
                 "interested": i.interested,
                 "seen_in_chat": i.seen_in_chat,
                 "rated_at": i.rated_at.isoformat() if i.rated_at else None,
+                "seen_at": i.seen_at.isoformat() if i.seen_at else None,
+                "created_at": i.created_at.isoformat() if i.created_at else None,
+                **_summarize_record(record_map.get(i.record_id)),
             }
             for i in interactions
         ],

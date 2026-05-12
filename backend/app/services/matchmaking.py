@@ -41,6 +41,17 @@ _PAT_BED_NUM = re.compile(
 _PAT_NUM_BATH = re.compile(r'(\d+)\s*(?:ba[ñn]os?|bathrooms?|aseos?)', re.IGNORECASE)
 
 
+_PRICE_KEY = re.compile(r'precio|price|costo|valor|monto|importe|usd|dolar|sol|pen', re.IGNORECASE)
+_PRICE_WITH_CCY = re.compile(
+    r'(?:us\$|usd|dolares?|d[oó]lares?|s\/\.?|soles?|pen)\s*([0-9][0-9\.,\s]{0,15})(?:\s*(k|mil|m|mm|millon(?:es)?))?',
+    re.IGNORECASE,
+)
+_PRICE_BARE = re.compile(
+    r'([0-9][0-9\.,\s]{3,15})(?:\s*(k|mil|m|mm|millon(?:es)?))?',
+    re.IGNORECASE,
+)
+
+
 def _extract_bedroom_counts(data: dict) -> set[int]:
     """Recursively find bedroom counts in property data, excluding bathroom numbers."""
     counts: set[int] = set()
@@ -88,6 +99,88 @@ def _extract_bedroom_counts(data: dict) -> set[int]:
     return counts
 
 
+def _parse_price_amount(raw: str, suffix: str | None = None) -> float | None:
+    token = (raw or "").strip()
+    if not token:
+        return None
+    token = re.sub(r"[^\d,.\s]", "", token).replace(" ", "")
+    if not token:
+        return None
+
+    if "." in token and "," in token:
+        token = token.replace(".", "").replace(",", "")
+    elif "," in token:
+        parts = token.split(",")
+        token = "".join(parts) if len(parts[-1]) == 3 else token.replace(",", ".")
+    elif "." in token:
+        parts = token.split(".")
+        token = "".join(parts) if len(parts[-1]) == 3 else token
+
+    try:
+        value = float(token)
+    except ValueError:
+        return None
+
+    sfx = (suffix or "").lower()
+    if sfx in {"k", "mil"}:
+        value *= 1_000
+    elif sfx in {"m", "mm", "millon", "millones"}:
+        value *= 1_000_000
+    if value < 1_000:
+        return None
+    return value
+
+
+def _extract_price_values(data: dict) -> list[float]:
+    prices: list[float] = []
+
+    def _add_candidate(v):
+        if isinstance(v, (int, float)):
+            num = float(v)
+            if num >= 1_000:
+                prices.append(num)
+            return
+        if not isinstance(v, str):
+            return
+
+        text = v.strip()
+        if not text:
+            return
+
+        found = False
+        for m in _PRICE_WITH_CCY.finditer(text):
+            parsed = _parse_price_amount(m.group(1), m.group(2))
+            if parsed:
+                prices.append(parsed)
+                found = True
+        if found:
+            return
+
+        for m in _PRICE_BARE.finditer(text):
+            parsed = _parse_price_amount(m.group(1), m.group(2))
+            if parsed:
+                prices.append(parsed)
+
+    def _walk(obj, key: str = "") -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                _walk(v, k)
+            return
+        if isinstance(obj, list):
+            for item in obj:
+                _walk(item, key)
+            return
+
+        key_hint = bool(_PRICE_KEY.search(key or ""))
+        if key_hint:
+            _add_candidate(obj)
+        elif isinstance(obj, str) and _PRICE_WITH_CCY.search(obj):
+            _add_candidate(obj)
+
+    _walk(data)
+    return sorted({round(p, 2) for p in prices})
+
+
 # ── SQL (level-2 records + LATERAL JOIN for parent data) ─────────────────────
 
 _LATERAL_BASE = """
@@ -127,6 +220,11 @@ async def find_matches(
         keywords = list(criteria.get("keywords") or []) + list(criteria.get("features") or [])
         keywords = [_normalize(k) for k in keywords if k and len(k) > 2]
         bedrooms: int | None = criteria.get("bedrooms")
+        min_price = criteria.get("min_price")
+        max_price = criteria.get("max_price")
+        min_price = float(min_price) if isinstance(min_price, (int, float)) else None
+        max_price = float(max_price) if isinstance(max_price, (int, float)) else None
+        has_price_filter = min_price is not None or max_price is not None
         excluded = excluded_ids or set()
 
         rows = db.execute(
@@ -135,8 +233,8 @@ async def find_matches(
         ).fetchall()
 
         logger.info(
-            "matchmaking: location=%r bedrooms=%s keywords=%s candidates=%d",
-            location, bedrooms, keywords[:5], len(rows),
+            "matchmaking: location=%r bedrooms=%s min_price=%s max_price=%s keywords=%s candidates=%d",
+            location, bedrooms, min_price, max_price, keywords[:5], len(rows),
         )
 
         if not rows:
@@ -189,11 +287,29 @@ async def find_matches(
                     else:
                         bed_match, bed_score = -1, -20   # far mismatch → excluded, heavy penalty
 
+            # Price score + strict match category
+            # price_match: 1=in range, 0=unknown price, -1=known out of range
+            price_match = 0
+            price_score = 0
+            best_price: float | None = None
+            if has_price_filter:
+                prices = _extract_price_values(data_dict)
+                if prices:
+                    best_price = min(prices)
+                    too_low = min_price is not None and best_price < min_price
+                    too_high = max_price is not None and best_price > max_price
+                    if too_low or too_high:
+                        price_match, price_score = -1, -20
+                    else:
+                        price_match, price_score = 1, 8
+
             entries.append({
                 "id": record_id,
                 "loc_ok": loc_ok,
                 "bed_match": bed_match,
-                "total": loc_score + kw_score + bed_score,
+                "price_match": price_match,
+                "price": best_price,
+                "total": loc_score + kw_score + bed_score + price_score,
                 "data": data_dict,
                 "parent": parent_text[:300],
             })
@@ -208,6 +324,17 @@ async def find_matches(
                 logger.info("matchmaking: no records found for location '%s'", location)
                 return []
             entries = loc_entries
+
+        if has_price_filter:
+            in_budget = [e for e in entries if e["price_match"] == 1]
+            if in_budget:
+                entries = in_budget
+            else:
+                logger.info(
+                    "matchmaking: no records found in price range min=%s max=%s",
+                    min_price, max_price,
+                )
+                return []
 
         # ── Step 2: strict bedroom filter (when specified) ────────────────────
         # Only discard known mismatches when exact/unknown alternatives exist.
@@ -228,7 +355,7 @@ async def find_matches(
         top_slice = entries[:_RERANK_LIMIT]
 
         # ── Step 4: Claude re-ranking ─────────────────────────────────────────
-        if top_slice and (location or bedrooms):
+        if top_slice and (location or bedrooms or has_price_filter):
             try:
                 from app.services.claude_service import rerank_properties
                 pairs = [
@@ -251,11 +378,45 @@ async def find_matches(
 
 def get_record_data(db: Session, record_id: str) -> dict | None:
     try:
-        row = db.execute(
-            text("SELECT data FROM scraped_records WHERE id = :id"),
+        child = db.execute(
+            text(
+                """
+                SELECT sr.data, sr.source_url, un.parent_id
+                FROM scraped_records sr
+                JOIN url_nodes un ON sr.url_node_id = un.id
+                WHERE sr.id = :id
+                """
+            ),
             {"id": record_id},
         ).fetchone()
-        return dict(row[0]) if row else None
+        if not child:
+            return None
+
+        child_data = dict(child[0]) if isinstance(child[0], dict) else {}
+        source_url = child[1]
+        parent_id = child[2]
+
+        parent_data: dict = {}
+        if parent_id and source_url:
+            parent = db.execute(
+                text(
+                    """
+                    SELECT srp.data
+                    FROM scraped_records srp
+                    WHERE srp.url_node_id = :parent_id
+                      AND srp.data->>'url_propiedad' = :source_url
+                    ORDER BY srp.scraped_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"parent_id": parent_id, "source_url": source_url},
+            ).fetchone()
+            if parent and isinstance(parent[0], dict):
+                parent_data = dict(parent[0])
+
+        # Child values prevail over parent values when keys repeat.
+        merged = {**parent_data, **child_data}
+        return merged
     except Exception as e:
         logger.error("Error fetching record %s: %s", record_id, e)
         return None

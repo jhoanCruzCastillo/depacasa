@@ -75,6 +75,48 @@ def _fallback_phone(raw: str) -> str:
 _FALLBACKS = {0: _fallback_email, 1: _fallback_name, 2: _fallback_country, 3: _fallback_phone}
 
 
+def _digits_only(raw: str | None) -> str:
+    return re.sub(r"\D", "", raw or "")
+
+
+def _extract_labeled_value(text: str, labels: list[str]) -> str | None:
+    if not text:
+        return None
+    label_group = "|".join(re.escape(l) for l in labels)
+    m = re.search(
+        rf"(?:^|[\n,;])\s*(?:{label_group})\s*[:\-]\s*([^\n,;]+)",
+        text,
+        re.IGNORECASE,
+    )
+    return m.group(1).strip() if m else None
+
+
+def _normalize_document(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    token = re.sub(r"\s+", "", raw).upper()
+    if not re.search(r"\d", token):
+        return None
+    if token.isdigit() and len(token) == 9:
+        # Very likely a mobile number, not an identity document.
+        return None
+    if len(token) < 5 or len(token) > 20:
+        return None
+    return token
+
+
+def _normalize_whatsapp(raw: str | None, document: str | None = None) -> str | None:
+    if not raw:
+        return None
+    token = raw.strip()
+    digits = _digits_only(token)
+    if len(digits) < 9 or len(digits) > 15:
+        return None
+    if document and digits == _digits_only(document):
+        return None
+    return f"+{digits}" if token.startswith("+") else digits
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 async def extract_user_field(step: int, raw: str) -> str:
@@ -119,6 +161,90 @@ async def extract_user_field(step: int, raw: str) -> str:
         return _FALLBACKS[step](raw)
 
 
+def _fallback_contact_fields(raw: str) -> dict:
+    text = (raw or "").strip()
+    phone = _extract_labeled_value(
+        text,
+        ["whatsapp", "wsp", "ws", "telefono", "tel", "celular", "cel", "phone"],
+    )
+    phone = _normalize_whatsapp(phone)
+
+    doc = _normalize_document(
+        _extract_labeled_value(
+            text,
+            [
+                "dni", "ce", "carnet", "carné", "doc", "documento", "pasaporte",
+                "rut", "curp", "ine", "nie", "cedula", "cédula",
+            ],
+        )
+    )
+    if not doc:
+        for m in re.finditer(r"\b[A-Za-z0-9\-]{5,20}\b", text):
+            token = _normalize_document(m.group(0))
+            if token:
+                doc = token
+                break
+
+    if not phone:
+        phone = _normalize_whatsapp(_fallback_phone(text), document=doc)
+
+    name = None
+    if text and not any(ch.isdigit() for ch in text):
+        parts = [p for p in re.split(r"\s+", text) if p]
+        if len(parts) >= 2:
+            name = " ".join(w.capitalize() for w in parts[:6])
+
+    return {
+        "full_name": name,
+        "whatsapp": phone,
+        "document_number": doc,
+    }
+
+
+_CONTACT_SYSTEM = """\
+Extrae datos de contacto desde un mensaje de chat inmobiliario.
+Responde SOLO JSON valido (sin markdown) con este formato exacto:
+{"full_name": "string o null", "whatsapp": "string o null", "document_number": "string o null"}
+
+Reglas:
+- full_name: nombre completo de persona si existe.
+- whatsapp: telefono del usuario, limpio, con digitos y opcional '+'.
+- document_number: documento de identidad si existe.
+- Si el texto tiene etiquetas como "dni:", "documento:", "whatsapp:" o similares, respeta esas etiquetas.
+- Nunca pongas un DNI/CURP/RUT/INE/Cedula en "whatsapp".
+- Si un campo no aparece claramente, usa null.
+- No inventes valores.
+"""
+
+
+async def extract_contact_fields(raw: str) -> dict:
+    """Extract possible lead contact fields from a mixed free-text message."""
+    try:
+        response = _get_client().messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=200,
+            system=_CONTACT_SYSTEM,
+            messages=[{"role": "user", "content": raw}],
+        )
+        txt = response.content[0].text.strip()
+        if txt.startswith("```"):
+            txt = txt.split("```")[1]
+            if txt.startswith("json"):
+                txt = txt[4:]
+        parsed = json.loads(txt.strip())
+        full_name = parsed.get("full_name")
+        document = _normalize_document(parsed.get("document_number"))
+        whatsapp = _normalize_whatsapp(parsed.get("whatsapp"), document=document)
+        return {
+            "full_name": full_name,
+            "whatsapp": whatsapp,
+            "document_number": document,
+        }
+    except Exception as e:
+        logger.warning(f"extract_contact_fields Claude error: {e} ??? using fallback")
+        return _fallback_contact_fields(raw)
+
+
 _CRITERIA_SYSTEM = """\
 Eres un asistente inmobiliario experto. Extrae criterios de búsqueda de la \
 descripción del usuario y responde SOLO con JSON válido, sin markdown ni texto extra.
@@ -140,6 +266,37 @@ Reglas estrictas:
 """
 
 
+def _merge_unique_terms(base: list[str], additions: list[str]) -> list[str]:
+    seen = {_norm(x) for x in base if isinstance(x, str)}
+    merged = [x for x in base if isinstance(x, str) and x.strip()]
+    for term in additions:
+        key = _norm(term)
+        if key not in seen:
+            merged.append(term)
+            seen.add(key)
+    return merged
+
+
+def _enrich_criteria_semantics(criteria: dict, description: str) -> dict:
+    """Infer implicit preferences from user language and enrich features/keywords."""
+    out = dict(criteria or {})
+    features = list(out.get("features") or [])
+    keywords = list(out.get("keywords") or [])
+    desc = _norm(description or "")
+
+    exercise_signals = [
+        "ejercicio", "ejercicios", "entrenar", "entrenamiento", "deporte",
+        "actividad fisica", "fitness", "gym", "gimnasio", "correr", "running",
+    ]
+    if any(sig in desc for sig in exercise_signals):
+        features = _merge_unique_terms(features, ["gimnasio", "área deportiva"])
+        keywords = _merge_unique_terms(keywords, ["gimnasio", "gym", "área deportiva", "deporte"])
+
+    out["features"] = features
+    out["keywords"] = keywords
+    return out
+
+
 async def extract_criteria(description: str) -> dict:
     """Extract structured property criteria from a natural language description."""
     try:
@@ -154,10 +311,11 @@ async def extract_criteria(description: str) -> dict:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        return json.loads(raw.strip())
+        parsed = json.loads(raw.strip())
+        return _enrich_criteria_semantics(parsed, description)
     except Exception as e:
         logger.warning(f"Criteria extraction failed: {e} — using regex fallback")
-        return _fallback_criteria(description)
+        return _enrich_criteria_semantics(_fallback_criteria(description), description)
 
 
 async def rerank_properties(

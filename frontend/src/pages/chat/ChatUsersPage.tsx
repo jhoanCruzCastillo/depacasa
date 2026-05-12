@@ -34,6 +34,23 @@ interface Interaction {
   interested: boolean
   seen_in_chat: boolean
   rated_at: string | null
+  seen_at: string | null
+  created_at: string | null
+  source_url: string | null
+  property_title: string | null
+  property_model: string | null
+  property_location: string | null
+  property_price: string | null
+}
+
+interface LeadData {
+  full_name: string | null
+  whatsapp: string | null
+  document_number: string | null
+  country_of_residence: string | null
+  record_id: string | null
+  rating: number | null
+  updated_at: string | null
 }
 
 interface SearchEntry {
@@ -46,6 +63,7 @@ interface SearchEntry {
 
 interface UserProfile {
   user: SiteUser
+  lead: LeadData
   preferences: UserPreference | null
   interactions: Interaction[]
   search_history: SearchEntry[]
@@ -465,6 +483,43 @@ export default function ChatUsersPage() {
                       { icon: User, label: 'Nombre', value: detailProfile.user.name || '—' },
                       { icon: Globe, label: 'País', value: detailProfile.user.country || '—' },
                       { icon: Phone, label: 'Teléfono', value: detailProfile.user.phone || '—' },
+                      {
+                        icon: Clock,
+                        label: 'Registro',
+                        value: detailProfile.user.created_at
+                          ? new Date(detailProfile.user.created_at).toLocaleString('es-PE')
+                          : '—',
+                      },
+                      { icon: Send, label: 'Newsletter', value: detailProfile.user.wants_newsletter ? 'Sí' : 'No' },
+                    ].map(({ icon: Icon, label, value }) => (
+                      <div key={label} className="flex items-start gap-2.5 bg-slate-50 rounded-xl p-3">
+                        <Icon className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
+                        <div>
+                          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{label}</p>
+                          <p className="text-sm text-slate-700 font-medium break-all">{value}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                {/* Lead data */}
+                <section>
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Datos capturados por chatbot</h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    {[
+                      { icon: User, label: 'Nombre completo', value: detailProfile.lead?.full_name || '—' },
+                      { icon: Phone, label: 'WhatsApp', value: detailProfile.lead?.whatsapp || '—' },
+                      { icon: Tag, label: 'Documento', value: detailProfile.lead?.document_number || '—' },
+                      { icon: Globe, label: 'País residencia', value: detailProfile.lead?.country_of_residence || '—' },
+                      { icon: Eye, label: 'Record interesado', value: detailProfile.lead?.record_id || '—' },
+                      {
+                        icon: Clock,
+                        label: 'Última captura',
+                        value: detailProfile.lead?.updated_at
+                          ? new Date(detailProfile.lead.updated_at).toLocaleString('es-PE')
+                          : '—',
+                      },
                     ].map(({ icon: Icon, label, value }) => (
                       <div key={label} className="flex items-start gap-2.5 bg-slate-50 rounded-xl p-3">
                         <Icon className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
@@ -556,6 +611,44 @@ export default function ChatUsersPage() {
                 )}
 
                 {/* Interactions / ratings */}
+                {detailProfile.interactions.filter(i => i.seen_in_chat).length > 0 && (
+                  <section>
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Propiedades vistas en chat</h3>
+                    <div className="space-y-2">
+                      {detailProfile.interactions
+                        .filter(i => i.seen_in_chat)
+                        .map(i => (
+                          <div key={`seen-${i.record_id}`} className="bg-slate-50 rounded-xl px-4 py-3 space-y-1.5">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-sm font-medium text-slate-700 truncate">
+                                {i.property_title || i.property_model || i.property_location || i.record_id}
+                              </p>
+                              {i.seen_at && (
+                                <span className="text-[10px] text-slate-400 whitespace-nowrap">
+                                  {new Date(i.seen_at).toLocaleDateString('es-PE')}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-500 font-mono truncate">{i.record_id}</p>
+                            {i.property_price && (
+                              <p className="text-xs text-slate-500">Precio: {i.property_price}</p>
+                            )}
+                            {i.source_url && (
+                              <a
+                                href={i.source_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs text-blue-600 hover:underline break-all inline-block"
+                              >
+                                {i.source_url}
+                              </a>
+                            )}
+                          </div>
+                        ))}
+                    </div>
+                  </section>
+                )}
+
                 {detailProfile.interactions.filter(i => i.rating !== null || i.interested).length > 0 && (
                   <section>
                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Propiedades calificadas</h3>
