@@ -2,14 +2,21 @@ import { useState, useRef, useEffect } from 'react'
 import {
   MessageCircle, X, Send, Star, ChevronRight, ChevronLeft,
   Heart, Building2, MapPin, BedDouble, Bath, Maximize2,
-  GalleryHorizontal, DollarSign,
+  GalleryHorizontal, DollarSign, Eye,
 } from 'lucide-react'
 import API from '../../services/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface CardField { key: string; label: string; type: string }
-interface PropertyCard { index: number; total: number; record_id: string; data: Record<string, unknown> }
+interface PropertyCard {
+  index: number
+  total: number
+  record_id: string
+  property_identifier?: string
+  seen_by_user_before?: boolean | null
+  data: Record<string, unknown>
+}
 interface Message { role: 'user' | 'assistant'; content: string; card: PropertyCard | null }
 interface SiteUser { id: string; email: string; name: string | null }
 
@@ -306,6 +313,13 @@ function PropertyCardView({
   const areaF = text.find(f => f.role === 'area')
   const descFields = text.filter(f => f.role === 'desc')
   const otherFields = text.filter(f => f.role === 'other')
+  const propertyIdentifier = card.property_identifier || card.record_id
+  const seenFlag = card.seen_by_user_before
+  const seenLabel = seenFlag === null || seenFlag === undefined
+    ? 'Estado de vista: no disponible'
+    : seenFlag
+      ? 'Ya vista por ti'
+      : 'Nueva para ti'
 
   return (
     <>
@@ -332,6 +346,17 @@ function PropertyCardView({
               {images.length}
             </span>
           )}
+        </div>
+
+        {/* Property meta */}
+        <div className="px-4 py-2 border-t border-slate-100 bg-slate-50/70 space-y-1">
+          <p className="text-[11px] text-slate-500">
+            ID propiedad: <span className="font-mono text-slate-700 break-all">{propertyIdentifier}</span>
+          </p>
+          <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
+            <Eye className="w-3.5 h-3.5 text-slate-400" />
+            {seenLabel}
+          </p>
         </div>
 
         {/* Images */}

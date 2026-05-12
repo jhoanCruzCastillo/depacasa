@@ -24,10 +24,25 @@ def _text(msg: str) -> dict:
     return {"message": msg, "card": None, "state": "collecting_info"}
 
 
-def _property_card(msg: str, index: int, total: int, record_id: str, data: dict, state: str = "presenting") -> dict:
+def _property_card(
+    msg: str,
+    index: int,
+    total: int,
+    record_id: str,
+    data: dict,
+    state: str = "presenting",
+    seen_by_user_before: bool | None = None,
+) -> dict:
     return {
         "message": msg,
-        "card": {"index": index, "total": total, "record_id": record_id, "data": data},
+        "card": {
+            "index": index,
+            "total": total,
+            "record_id": record_id,
+            "property_identifier": record_id,
+            "seen_by_user_before": seen_by_user_before,
+            "data": data,
+        },
         "state": state,
     }
 
@@ -268,16 +283,40 @@ def _fallback_not_understood() -> dict:
 
 def _is_new_unseen_request(text: str) -> bool:
     t = _normalize_text(text)
-    return (
-        "propiedades nuevas" in t
-        or "no vistas" in t
-        or "no he visto" in t
-        or t.strip() in {"1", "uno", "nuevas", "nueva"}
-    )
+    if t.strip() in {"1", "uno", "nuevas", "nueva"}:
+        return True
+
+    patterns = [
+        "propiedades nuevas",
+        "nuevas propiedades",
+        "no vistas",
+        "no he visto",
+        "aun no he visto",
+        "aun no vi",
+        "aun no veo",
+        "todavia no he visto",
+        "todavia no vi",
+        "que aun no he visto",
+        "que aun no veo",
+        "sin ver",
+        "que no vi",
+        "que no he visto",
+        "no me mostraste",
+    ]
+    if any(p in t for p in patterns):
+        return True
+
+    # Fallback semantico: combinacion de "ver/visto" + negacion en frases de propiedades.
+    about_properties = any(k in t for k in ["propiedad", "propiedades", "opcion", "opciones"])
+    has_see_verb = any(k in t for k in ["ver", "veo", "vi", "visto"])
+    has_negation = any(k in t for k in ["no", "aun", "todavia", "nunca"])
+    return about_properties and has_see_verb and has_negation
 
 
 def _is_viewed_request(text: str) -> bool:
     t = _normalize_text(text)
+    if _is_new_unseen_request(text):
+        return False
     return (
         "ya revisaste" in t
         or "ya vistas" in t
@@ -311,6 +350,22 @@ def _is_mark_current_property_interest(text: str) -> bool:
     if "quiero esta" in t or "quiero este" in t:
         return True
     return False
+
+
+def _is_adjust_search_intent(text: str) -> bool:
+    t = _normalize_text(text)
+    hints = [
+        "ajustar busqueda",
+        "ajustar la busqueda",
+        "ajustar parametros",
+        "ajustar filtros",
+        "cambiar parametros",
+        "cambiar filtros",
+        "modificar parametros",
+        "nueva busqueda",
+        "quiero ajustar",
+    ]
+    return any(h in t for h in hints)
 
 
 def _extract_rating_from_text(text: str) -> int | None:
@@ -607,6 +662,13 @@ def _get_interested_record_ids(site_user_id, db: Session) -> list[str]:
         return []
 
 
+def _get_exhausted_revisit_ids(ctx: dict | None) -> list[str]:
+    ids = (ctx or {}).get("_exhausted_unseen_ids")
+    if not isinstance(ids, list):
+        return []
+    return [str(x) for x in ids if x]
+
+
 async def _show_interested_properties(session: WebChatSession, db: Session) -> dict:
     if not session.site_user_id:
         return _text(
@@ -693,6 +755,28 @@ def _upsert_interaction(site_user_id, record_id: str, db: Session, **fields) -> 
         db.flush()
     except Exception as e:
         logger.warning(f"[tracking] could not upsert interaction: {e}")
+
+
+def _seen_in_chat_before(site_user_id, record_id: str, db: Session) -> bool | None:
+    """Return whether the user had already seen this record before current display."""
+    try:
+        from app.models.user_property_interaction import UserPropertyInteraction
+        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
+        rid = UUID(record_id)
+        row = (
+            db.query(UserPropertyInteraction.seen_in_chat)
+            .filter(
+                UserPropertyInteraction.site_user_id == uid,
+                UserPropertyInteraction.record_id == rid,
+            )
+            .first()
+        )
+        if not row:
+            return False
+        return bool(row[0])
+    except Exception as e:
+        logger.warning(f"[tracking] could not inspect seen flag: {e}")
+        return None
 
 
 def _get_disliked_ids(site_user_id, db: Session) -> set[str]:
@@ -876,6 +960,27 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
         session.info_step = 4
 
     if step == 4:
+        exhausted_revisit_ids = _get_exhausted_revisit_ids(ctx)
+        if exhausted_revisit_ids and _looks_like_search_update(user_text):
+            clean = _clean_criteria(ctx)
+            if _is_new_unseen_request(user_text):
+                session.extracted_criteria = {**clean, "_result_mode": "new_unseen"}
+            else:
+                session.extracted_criteria = clean
+            session.info_step = 5
+            return await _start_search(session, user_text, db)
+        if exhausted_revisit_ids and _is_viewed_request(user_text):
+            session.matched_record_ids = exhausted_revisit_ids
+            session.current_match_index = 0
+            session.state = "presenting"
+            session.info_step = 7
+            return await _show_property(session, db, exhausted_revisit_ids[0])
+        if exhausted_revisit_ids and _is_adjust_search_intent(user_text):
+            return _text(
+                "Perfecto. Dime quÃ© quieres ajustar (zona, dormitorios, presupuesto o caracterÃ­sticas) "
+                "y busco nuevas opciones."
+            )
+
         if session.site_user_id and _is_interested_list_request(user_text):
             return await _show_interested_properties(session, db)
 
@@ -899,7 +1004,8 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
             clean = _clean_criteria(ctx)
             session.extracted_criteria = {**clean, "_result_mode": "new_unseen"}
             session.info_step = 5
-            return await _start_search(session, session.ideal_description or user_text, db)
+            seed = user_text if _looks_like_search_update(user_text) else (session.ideal_description or user_text)
+            return await _start_search(session, seed, db)
 
         session.ideal_description = user_text
         session.info_step = 5
@@ -908,6 +1014,27 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
     if step == 8:
         current_criteria = _clean_criteria(session.extracted_criteria)
         has_saved_criteria = _has_actionable_criteria(current_criteria)
+        exhausted_revisit_ids = _get_exhausted_revisit_ids(ctx)
+
+        if exhausted_revisit_ids and _looks_like_search_update(user_text):
+            if _is_new_unseen_request(user_text):
+                session.extracted_criteria = {**current_criteria, "_result_mode": "new_unseen"}
+            else:
+                session.extracted_criteria = current_criteria
+            session.info_step = 5
+            return await _start_search(session, user_text, db)
+        if exhausted_revisit_ids and _is_viewed_request(user_text):
+            session.matched_record_ids = exhausted_revisit_ids
+            session.current_match_index = 0
+            session.state = "presenting"
+            session.info_step = 7
+            return await _show_property(session, db, exhausted_revisit_ids[0])
+        if exhausted_revisit_ids and _is_adjust_search_intent(user_text):
+            session.info_step = 4
+            return _text(
+                "Perfecto. Dime quÃ© quieres ajustar (zona, dormitorios, presupuesto o caracterÃ­sticas) "
+                "y busco nuevas opciones."
+            )
 
         if session.site_user_id and _is_interested_list_request(user_text):
             return await _show_interested_properties(session, db)
@@ -925,7 +1052,8 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
         if session.site_user_id and _is_new_unseen_request(user_text):
             session.extracted_criteria = {**current_criteria, "_result_mode": "new_unseen"}
             session.info_step = 5
-            return await _start_search(session, session.ideal_description or user_text, db)
+            seed = user_text if _looks_like_search_update(user_text) else (session.ideal_description or user_text)
+            return await _start_search(session, seed, db)
 
         if _looks_like_search_update(user_text):
             session.info_step = 5
@@ -1127,12 +1255,16 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
     top_n = config.top_n_properties if config else 3
 
     # Exclude properties this user has already disliked
+    disliked_excluded: set[str] = set()
     excluded: set[str] = set()
     seen_source_urls: set[str] = set()
+    viewed_ids_set: set[str] = set()
     if session.site_user_id:
-        excluded = _get_disliked_ids(session.site_user_id, db)
+        disliked_excluded = _get_disliked_ids(session.site_user_id, db)
+        excluded = set(disliked_excluded)
         if existing_mode == "new_unseen":
-            excluded = excluded.union(set(_get_viewed_record_ids(session.site_user_id, db)))
+            viewed_ids_set = set(_get_viewed_record_ids(session.site_user_id, db))
+            excluded = excluded.union(viewed_ids_set)
             seen_source_urls = _get_viewed_source_urls(session.site_user_id, db)
 
     matches = await find_matches(db, merged, top_n, excluded_ids=excluded, raw_description=full_desc)
@@ -1174,6 +1306,32 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
         loc = merged.get("location") or ""
         beds = merged.get("bedrooms")
         name_part = f", {session.name}" if session.name else ""
+
+        if existing_mode == "new_unseen" and session.site_user_id:
+            all_for_criteria = await find_matches(
+                db,
+                merged,
+                max(top_n * 8, 20),
+                excluded_ids=disliked_excluded,
+                raw_description=full_desc,
+            )
+            if all_for_criteria:
+                revisit_ids = [rid for rid in all_for_criteria if rid in viewed_ids_set]
+                if not revisit_ids:
+                    revisit_ids = all_for_criteria
+                session.state = "collecting_info"
+                session.info_step = 4
+                session.extracted_criteria = {
+                    **{k: v for k, v in merged.items() if not str(k).startswith("_")},
+                    "_result_mode": existing_mode,
+                    "_exhausted_unseen_ids": revisit_ids,
+                }
+                return _text(
+                    "Ya viste todas las propiedades disponibles con esas caracteristicas. "
+                    "Elige una opcion:\n"
+                    "1. Ajustar mis parametros de busqueda.\n"
+                    "2. Volver a ver las propiedades."
+                )
 
         # ── Relaxed search: find something close to offer proactively ─────────
         relaxed_matches: list[str] = []
@@ -1468,8 +1626,11 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
     if not data:
         return await _next_property(session, db)
 
+    seen_by_user_before: bool | None = None
+
     # Track that this user saw this property
     if session.site_user_id:
+        seen_by_user_before = _seen_in_chat_before(session.site_user_id, record_id, db)
         _upsert_interaction(
             session.site_user_id, record_id, db,
             seen_in_chat=True,
@@ -1489,5 +1650,13 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
             msg = "Aqui va la siguiente propiedad que marcaste con interes:"
     else:
         msg = _compose_property_message(session, idx, total)
-    return _property_card(msg, idx, total, record_id, data, state="presenting")
+    return _property_card(
+        msg,
+        idx,
+        total,
+        record_id,
+        data,
+        state="presenting",
+        seen_by_user_before=seen_by_user_before,
+    )
 
