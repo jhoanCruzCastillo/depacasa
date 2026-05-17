@@ -1,4 +1,4 @@
-"""Web chatbot conversation handler — session-based, AI-powered."""
+﻿"""Web chatbot conversation handler â€” session-based, AI-powered."""
 
 import re
 import logging
@@ -7,18 +7,19 @@ from datetime import datetime, timezone
 from uuid import UUID
 from sqlalchemy.orm import Session
 from app.models.web_chat_session import WebChatSession, WebChatMessage
-from app.services.matchmaking import find_matches, get_record_data
+from app.services.lead_notification_service import notify_active_advisor_for_lead
+from app.services.matchmaking import find_matches, get_record_data, _extract_bedroom_counts
 
 logger = logging.getLogger(__name__)
 
 _GREETING = (
     "Hola. Soy tu asistente inmobiliario. "
-    "Estoy aqu? para ayudarte a encontrar una propiedad que encaje contigo. "
-    "?Qu? est?s buscando exactamente?"
+    "Estoy aquí para ayudarte a encontrar una propiedad que encaje contigo. "
+    "¿Qué estás buscando exactamente?"
 )
 
 
-# ── Response builders ──────────────────────────────────────────────────────────
+# â”€â”€ Response builders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _text(msg: str) -> dict:
     return {"message": msg, "card": None, "state": "collecting_info"}
@@ -191,7 +192,14 @@ def _is_affirmative_message(text: str) -> bool:
         return False
     if norm in yes_words:
         return True
-    return norm.split()[0] in yes_words
+    tokens = re.findall(r"[a-z0-9]+", norm)
+    if not tokens:
+        return False
+    if tokens[0] in yes_words:
+        return True
+    if tokens[0] in {"si", "sí"}:
+        return True
+    return any(w in norm for w in ["verlas", "ver opciones", "mostrar opciones", "quiero ver", "si, ver", "si ver"])
 
 
 def _is_negative_message(text: str) -> bool:
@@ -217,9 +225,51 @@ def _looks_like_search_update(text: str) -> bool:
     hints = [
         "departamento", "depa", "propiedad", "casa", "dormitorio", "habitacion",
         "cuarto", "presupuesto", "precio", "zona", "distrito", "ubicacion",
-        "miraflores", "surco",
+        "miraflores", "surco", "cerca", "cercano", "cercana", "alrededor",
     ]
     return any(h in norm for h in hints)
+
+
+def _merge_unique_terms(base: list[str] | None, extra: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for term in (base or []) + (extra or []):
+        value = str(term or "").strip()
+        if not value:
+            continue
+        key = _normalize_text(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
+def _extract_nearby_preferences(text: str) -> list[str]:
+    t = _normalize_text(text)
+    patterns = [
+        r"cerca\s+(?:a|de|del)?\s+([a-z0-9\s\-]{3,40})",
+        r"cercano\s+(?:a|de|del)?\s+([a-z0-9\s\-]{3,40})",
+        r"cercana\s+(?:a|de|del)?\s+([a-z0-9\s\-]{3,40})",
+        r"alrededor\s+de\s+([a-z0-9\s\-]{3,40})",
+    ]
+    stop_words = {
+        "zona", "ciudad", "distrito", "ubicacion", "presupuesto", "precio",
+        "dormitorio", "dormitorios", "habitacion", "habitaciones", "cuarto", "cuartos",
+    }
+
+    out: list[str] = []
+    for pattern in patterns:
+        for m in re.finditer(pattern, t, re.IGNORECASE):
+            raw = re.split(r"[,\.;\n]", m.group(1))[0].strip()
+            raw = re.sub(r"\s+", " ", raw).strip(" -")
+            if not raw:
+                continue
+            if raw in stop_words:
+                continue
+            phrase = f"cerca de {raw}"
+            out.append(phrase)
+    return _merge_unique_terms([], out)
 
 
 def _format_budget(min_price: float | None, max_price: float | None) -> str | None:
@@ -251,6 +301,68 @@ def _summarize_preferences(criteria: dict | None) -> str:
     if not parts:
         return "sin criterios guardados todavia"
     return ", ".join(parts)
+
+
+def _extract_project_status_value(data: dict | None) -> str | None:
+    if not isinstance(data, dict):
+        return None
+
+    key_hints = {"estado", "status", "situacion", "disponibilidad", "etapa", "fase"}
+    values: list[str] = []
+
+    def _walk(obj, key: str = "") -> None:
+        norm_key = _normalize_text(key or "")
+        if isinstance(obj, str):
+            text = obj.strip()
+            if not text:
+                return
+            if any(h in norm_key for h in key_hints):
+                values.append(text)
+            return
+        if isinstance(obj, (int, float)):
+            if any(h in norm_key for h in key_hints):
+                values.append(str(obj))
+            return
+        if isinstance(obj, list):
+            for item in obj:
+                _walk(item, key)
+            return
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                _walk(v, str(k))
+
+    _walk(data)
+    if values:
+        return values[0][:120]
+
+    # Fallback semantico por si la clave no es estandar.
+    all_text = " ".join(str(v) for v in data.values() if isinstance(v, (str, int, float)))
+    if any(token in _normalize_text(all_text) for token in ["lanzamiento", "preventa", "construccion", "entrega"]):
+        return all_text[:120]
+    return None
+
+
+def _build_project_status_warning(data: dict | None) -> str | None:
+    status = _extract_project_status_value(data)
+    if not status:
+        return None
+    st = _normalize_text(status)
+
+    ready_tokens = ["entrega inmediata", "listo para entrega", "entrega en curso", "inmediata"]
+    not_ready_tokens = [
+        "proximo lanzamiento", "proximo", "lanzamiento",
+        "preventa", "pre venta",
+        "en construccion", "en obra", "por lanzar",
+    ]
+
+    if any(t in st for t in ready_tokens):
+        return None
+    if any(t in st for t in not_ready_tokens):
+        return (
+            f"Importante: este proyecto figura como \"{status}\". "
+            "Podría no estar listo para entrega inmediata."
+        )
+    return None
 
 
 def _is_scope_message(text: str) -> bool:
@@ -361,11 +473,55 @@ def _is_adjust_search_intent(text: str) -> bool:
         "ajustar filtros",
         "cambiar parametros",
         "cambiar filtros",
+        "cambiar zona",
+        "cambiar ciudad",
+        "cambiar zona o ciudad",
+        "otra zona",
+        "otra ciudad",
         "modificar parametros",
         "nueva busqueda",
         "quiero ajustar",
     ]
     return any(h in t for h in hints)
+
+
+def _contains_adjustment_details(text: str) -> bool:
+    t = _normalize_text(text)
+    if not t.strip():
+        return False
+
+    if _extract_explicit_bedrooms(text):
+        return True
+    pmin, pmax = _extract_explicit_price_limits(text)
+    if pmin is not None or pmax is not None:
+        return True
+
+    # Explicit location value, e.g. "zona miraflores", "ciudad arequipa", "en surco".
+    if re.search(
+        r"\b(?:zona|ciudad|distrito|ubicacion|localidad)\s+(?:a|en|de)?\s*[a-z0-9][a-z0-9\-\s]{2,}",
+        t,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(r"\ben\s+[a-z0-9][a-z0-9\-\s]{2,}", t, re.IGNORECASE):
+        return True
+
+    # Bare location token after an adjustment prompt, e.g. "Miraflores".
+    tokens = re.findall(r"[a-z0-9]+", t)
+    ignored = {
+        "si", "no", "ok", "okay", "hola", "gracias",
+        "ajustar", "ajuste", "cambiar", "cambio", "filtro", "filtros",
+        "parametro", "parametros", "busqueda", "zona", "ciudad", "distrito", "ubicacion",
+    }
+    if 1 <= len(tokens) <= 3 and not any(tok in ignored for tok in tokens):
+        return True
+    return False
+
+
+def _is_generic_adjust_request(text: str) -> bool:
+    if not _is_adjust_search_intent(text):
+        return False
+    return not _contains_adjustment_details(text)
 
 
 def _extract_rating_from_text(text: str) -> int | None:
@@ -523,6 +679,150 @@ def _extract_full_name(text: str) -> str | None:
     if len(parts) < 2:
         return None
     return " ".join(w.capitalize() for w in parts[:6])
+
+
+def _get_latest_saved_lead(site_user_id, db: Session, exclude_session_id: UUID | None = None) -> dict:
+    try:
+        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
+        q = db.query(WebChatSession).filter(WebChatSession.site_user_id == uid)
+        if exclude_session_id:
+            q = q.filter(WebChatSession.id != exclude_session_id)
+        rows = (
+            q.order_by(WebChatSession.updated_at.desc().nullslast(), WebChatSession.created_at.desc())
+            .limit(30)
+            .all()
+        )
+        for s in rows:
+            criteria = s.extracted_criteria if isinstance(s.extracted_criteria, dict) else {}
+            candidate = criteria.get("_lead")
+            if isinstance(candidate, dict) and candidate:
+                return dict(candidate)
+    except Exception as e:
+        logger.warning(f"[lead] could not load latest lead: {e}")
+    return {}
+
+
+def _hydrate_lead_from_db(session: WebChatSession, lead: dict, db: Session) -> dict:
+    merged = dict(lead or {})
+
+    if session.country and not merged.get("country_of_residence"):
+        merged["country_of_residence"] = session.country
+    if session.name and not merged.get("full_name"):
+        merged["full_name"] = session.name
+    if session.phone and not merged.get("whatsapp"):
+        merged["whatsapp"] = session.phone
+
+    su = None
+    if session.site_user_id:
+        try:
+            from app.models.site_user import SiteUser
+            su = db.query(SiteUser).filter(SiteUser.id == session.site_user_id).first()
+        except Exception as e:
+            logger.warning(f"[lead] could not load site user: {e}")
+
+    if su:
+        if su.country and not merged.get("country_of_residence"):
+            merged["country_of_residence"] = su.country
+        if su.name and not merged.get("full_name"):
+            merged["full_name"] = su.name
+
+    latest_saved = (
+        _get_latest_saved_lead(session.site_user_id, db, exclude_session_id=session.id)
+        if session.site_user_id else {}
+    )
+    if latest_saved.get("country_of_residence") and not merged.get("country_of_residence"):
+        merged["country_of_residence"] = latest_saved.get("country_of_residence")
+    if latest_saved.get("full_name") and not merged.get("full_name"):
+        merged["full_name"] = latest_saved.get("full_name")
+    if latest_saved.get("document_number") and not merged.get("document_number"):
+        merged["document_number"] = latest_saved.get("document_number")
+    if latest_saved.get("whatsapp") and not merged.get("whatsapp"):
+        merged["whatsapp"] = latest_saved.get("whatsapp")
+
+    lead_country = merged.get("country_of_residence")
+    doc = _normalize_document(merged.get("document_number"))
+    if doc:
+        merged["document_number"] = doc
+    elif merged.get("document_number"):
+        merged.pop("document_number", None)
+
+    if not merged.get("whatsapp") and su and su.phone:
+        merged["whatsapp"] = su.phone
+
+    whatsapp = _normalize_whatsapp(merged.get("whatsapp"), country=lead_country, document=doc)
+    if whatsapp:
+        merged["whatsapp"] = whatsapp
+    elif merged.get("whatsapp"):
+        merged.pop("whatsapp", None)
+
+    return merged
+
+
+def _get_missing_lead_fields(lead: dict) -> list[str]:
+    missing: list[str] = []
+    if not lead.get("country_of_residence"):
+        missing.append("pais de residencia")
+    if not lead.get("full_name"):
+        missing.append("nombres y apellidos")
+    if not lead.get("whatsapp"):
+        missing.append("WhatsApp")
+    if not lead.get("document_number"):
+        missing.append(_country_to_doc_label(lead.get("country_of_residence")))
+    return missing
+
+
+def _build_contact_request_message(lead: dict) -> str:
+    missing = _get_missing_lead_fields(lead)
+    if not missing:
+        return "Listo, con tus datos guardados ya puedo registrar tu solicitud."
+    if len(missing) == 1:
+        return f"Perfecto. Ya tengo casi todo. Solo comparteme tu {missing[0]} para contactarte."
+    return (
+        "Perfecto. Para que un asesor pueda contactarte, me faltan estos datos:\n"
+        + "\n".join(f"- {item}" for item in missing)
+    )
+
+
+def _finalize_lead_request(session: WebChatSession, clean: dict, lead: dict, db: Session) -> dict:
+    lead_country = lead.get("country_of_residence") or session.country
+    session.name = lead.get("full_name") or session.name
+    session.phone = lead.get("whatsapp") or session.phone
+    if lead_country:
+        session.country = lead_country
+
+    if session.site_user_id:
+        try:
+            from app.models.site_user import SiteUser
+            su = db.query(SiteUser).filter(SiteUser.id == session.site_user_id).first()
+            if su:
+                su.name = su.name or lead.get("full_name")
+                stored_phone = _normalize_whatsapp(
+                    su.phone,
+                    country=lead_country,
+                    document=lead.get("document_number"),
+                )
+                if lead.get("whatsapp") and (not su.phone or not stored_phone):
+                    su.phone = lead.get("whatsapp")
+                su.country = su.country or lead_country
+        except Exception as e:
+            logger.warning(f"[lead] could not persist contact data: {e}")
+
+    record_id = lead.get("record_id")
+    if session.site_user_id and record_id:
+        _upsert_interaction(session.site_user_id, record_id, db, interested=True)
+
+    sent_to_advisor, lead = notify_active_advisor_for_lead(session, db, lead)
+    if sent_to_advisor and session.site_user_id and record_id:
+        _upsert_interaction(session.site_user_id, record_id, db, sent_by_email=True)
+    session.extracted_criteria = {**clean, "_lead": lead}
+
+    session.info_step = 4
+    session.state = "collecting_info"
+    return _text(
+        "Listo, ya registré tu interés en esta propiedad. "
+        "Un asesor podrá contactarte por WhatsApp para darte más información. "
+        "Si quieres, también puedo seguir mostrándote opciones similares."
+    )
 
 
 def _get_viewed_record_ids(site_user_id, db: Session) -> list[str]:
@@ -736,7 +1036,7 @@ async def _build_alternative_bedroom_pool(
     return alt_ids, sorted(alt_bed_values)
 
 
-# ── Interaction tracking helpers ───────────────────────────────────────────────
+# â”€â”€ Interaction tracking helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _upsert_interaction(site_user_id, record_id: str, db: Session, **fields) -> None:
     """Create or update a UserPropertyInteraction row."""
@@ -875,7 +1175,28 @@ def _load_saved_preferences(site_user_id, db: Session) -> tuple[dict, str]:
         return {}, ""
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
+async def _attach_quick_replies(
+    session: WebChatSession,
+    result: dict,
+    user_message: str = "",
+) -> dict:
+    try:
+        from app.services.claude_service import generate_quick_replies
+        options = await generate_quick_replies(
+            assistant_message=str(result.get("message") or ""),
+            state=str(result.get("state") or session.state or "collecting_info"),
+            has_card=bool(result.get("card")),
+            user_message=user_message or "",
+            has_saved_criteria=_has_actionable_criteria(session.extracted_criteria),
+        )
+        result["quick_replies"] = options or []
+    except Exception as e:
+        logger.warning(f"[quick_replies] could not generate options: {e}")
+        result["quick_replies"] = []
+    return result
+
+
+# â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def create_session(db: Session, site_user=None) -> tuple[WebChatSession, dict]:
     session = WebChatSession()
@@ -908,7 +1229,10 @@ async def create_session(db: Session, site_user=None) -> tuple[WebChatSession, d
     db.add(WebChatMessage(session_id=session.id, role="assistant", content=greeting))
     db.commit()
     db.refresh(session)
-    return session, _text(greeting)
+    initial = _text(greeting)
+    initial["state"] = session.state
+    initial = await _attach_quick_replies(session, initial)
+    return session, initial
 
 
 async def handle_message(session_id: str, user_content: str, db: Session) -> dict:
@@ -922,6 +1246,7 @@ async def handle_message(session_id: str, user_content: str, db: Session) -> dic
 
         result = await _process(session, text, db)
         result.setdefault("state", session.state)
+        result = await _attach_quick_replies(session, result, text)
 
         db.add(WebChatMessage(session_id=session.id, role="assistant", content=result["message"]))
         db.commit()
@@ -935,7 +1260,7 @@ async def handle_message(session_id: str, user_content: str, db: Session) -> dic
         return _text("Ocurrió un error procesando tu mensaje. Por favor, intenta nuevamente.")
 
 
-# ── FSM ────────────────────────────────────────────────────────────────────────
+# â”€â”€ FSM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _process(session: WebChatSession, text: str, db: Session) -> dict:
     if session.state == "collecting_info":
@@ -960,6 +1285,13 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
         session.info_step = 4
 
     if step == 4:
+        if _is_generic_adjust_request(user_text):
+            session.info_step = 11
+            return _text(
+                "Perfecto. Indícame los nuevos parámetros para ajustar la búsqueda "
+                "(por ejemplo: zona/ciudad, dormitorios o presupuesto)."
+            )
+
         exhausted_revisit_ids = _get_exhausted_revisit_ids(ctx)
         if exhausted_revisit_ids and _looks_like_search_update(user_text):
             clean = _clean_criteria(ctx)
@@ -977,7 +1309,7 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
             return await _show_property(session, db, exhausted_revisit_ids[0])
         if exhausted_revisit_ids and _is_adjust_search_intent(user_text):
             return _text(
-                "Perfecto. Dime quÃ© quieres ajustar (zona, dormitorios, presupuesto o caracterÃ­sticas) "
+                "Perfecto. Dime qué quieres ajustar (zona, dormitorios, presupuesto o características) "
                 "y busco nuevas opciones."
             )
 
@@ -988,7 +1320,7 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
             viewed_ids = _get_viewed_ranked_ids(session.site_user_id, db)
             if not viewed_ids:
                 return _text(
-                    "A?n no tienes propiedades vistas registradas. "
+                    "Aún no tienes propiedades vistas registradas. "
                     "Si quieres, te muestro propiedades nuevas con tus preferencias actuales."
                 )
             session.matched_record_ids = viewed_ids
@@ -1016,6 +1348,13 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
         has_saved_criteria = _has_actionable_criteria(current_criteria)
         exhausted_revisit_ids = _get_exhausted_revisit_ids(ctx)
 
+        if _is_generic_adjust_request(user_text):
+            session.info_step = 11
+            return _text(
+                "Perfecto. Indícame los cambios que quieres aplicar "
+                "(zona/ciudad, dormitorios, presupuesto, etc.)."
+            )
+
         if exhausted_revisit_ids and _looks_like_search_update(user_text):
             if _is_new_unseen_request(user_text):
                 session.extracted_criteria = {**current_criteria, "_result_mode": "new_unseen"}
@@ -1032,7 +1371,7 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
         if exhausted_revisit_ids and _is_adjust_search_intent(user_text):
             session.info_step = 4
             return _text(
-                "Perfecto. Dime quÃ© quieres ajustar (zona, dormitorios, presupuesto o caracterÃ­sticas) "
+                "Perfecto. Dime qué quieres ajustar (zona, dormitorios, presupuesto o características) "
                 "y busco nuevas opciones."
             )
 
@@ -1042,7 +1381,7 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
         if session.site_user_id and _is_viewed_request(user_text):
             viewed_ids = _get_viewed_ranked_ids(session.site_user_id, db)
             if not viewed_ids:
-                return _text("A?n no tengo propiedades vistas para mostrarte. ?Buscamos opciones nuevas?")
+                return _text("Aún no tengo propiedades vistas para mostrarte. ¿Buscamos opciones nuevas?")
             session.matched_record_ids = viewed_ids
             session.current_match_index = 0
             session.state = "presenting"
@@ -1064,21 +1403,29 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
                 session.info_step = 5
                 return await _start_search(session, session.ideal_description or user_text, db)
             session.info_step = 4
-            return _text("Perfecto. Cu?ntame qu? est?s buscando exactamente para iniciar la b?squeda.")
+            return _text("Perfecto. Cuéntame qué estás buscando exactamente para iniciar la búsqueda.")
 
         if _is_negative_message(user_text):
             session.info_step = 4
-            return _text("Listo. Cuando quieras, dime qu? propiedad buscas y arrancamos.")
+            return _text("Listo. Cuando quieras, dime qué propiedad buscas y arrancamos.")
 
         summary = _summarize_preferences(current_criteria if has_saved_criteria else {})
         if has_saved_criteria:
             return _text(
                 f"Si quieres, busco con tus preferencias ({summary}). "
-                "Tambi?n puedes responder 1 (nuevas/no vistas) o 2 (vistas)."
+                "También puedes responder 1 (nuevas/no vistas) o 2 (vistas)."
             )
-        return _text("?Quieres que empecemos una b?squeda? Puedes contarme zona, dormitorios y presupuesto.")
+        return _text("¿Quieres que empecemos una búsqueda? Puedes contarme zona, dormitorios y presupuesto.")
 
     if step == 6:
+        if _is_generic_adjust_request(user_text):
+            session.matched_record_ids = []
+            session.current_match_index = 0
+            session.info_step = 11
+            return _text(
+                "Perfecto. Dime qué parámetros quieres cambiar y hago el ajuste."
+            )
+
         if _is_affirmative_message(user_text) and session.matched_record_ids:
             session.state = "presenting"
             session.info_step = 7
@@ -1094,9 +1441,23 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
         session.current_match_index = 0
         session.info_step = 4
         return _text(
-            "Entendido. Mantendr? los filtros actuales. "
-            "Si quieres, dime qu? ajustamos (zona, dormitorios, presupuesto)."
+            "Entendido. Mantendré los filtros actuales. "
+            "Si quieres, dime qué ajustamos (zona, dormitorios, presupuesto)."
         )
+
+    if step == 11:
+        if not user_text:
+            return _text(
+                "Te leo. Compárteme los nuevos parámetros para ajustar la búsqueda "
+                "(zona/ciudad, dormitorios, presupuesto, etc.)."
+            )
+        if _is_generic_adjust_request(user_text) or _is_affirmative_message(user_text) or _is_negative_message(user_text):
+            return _text(
+                "Perfecto, quedo atento. Escríbeme los parámetros concretos que quieres ajustar "
+                "(por ejemplo: 'zona Arequipa, 3 dormitorios, hasta 450000')."
+            )
+        session.info_step = 5
+        return await _start_search(session, user_text, db)
 
     if step == 9:
         country = user_text[:80]
@@ -1115,18 +1476,13 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
         lead["country_of_residence"] = country
         session.extracted_criteria = {**clean, "_lead": lead}
         session.info_step = 10
-        doc_label = _country_to_doc_label(country)
-        return _text(
-            "Perfecto, gracias. Ahora comparteme estos datos para que un asesor pueda contactarte:\n"
-            "Nombres y apellidos completos:\n"
-            "WhatsApp:\n"
-            f"{doc_label}:"
-        )
+        return _text(_build_contact_request_message(lead))
 
     if step == 10:
         from app.services.claude_service import extract_contact_fields
         clean = _clean_criteria(ctx)
         lead = dict((ctx or {}).get("_lead") or {})
+        lead = _hydrate_lead_from_db(session, lead, db)
         lead_country = lead.get("country_of_residence") or session.country
 
         ai_contact = await extract_contact_fields(user_text)
@@ -1163,52 +1519,14 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
         if document:
             lead["document_number"] = document
 
-        missing = []
-        if not lead.get("full_name"):
-            missing.append("nombres y apellidos")
-        if not lead.get("whatsapp"):
-            missing.append("WhatsApp")
-        if not lead.get("document_number"):
-            missing.append(_country_to_doc_label(lead.get("country_of_residence")))
+        missing = _get_missing_lead_fields(lead)
 
         session.extracted_criteria = {**clean, "_lead": lead}
 
         if missing:
-            if len(missing) == 1:
-                return _text(f"Gracias. Solo me falta tu {missing[0]} para completar la solicitud.")
-            return _text("Gracias. Para completar la solicitud aun me faltan: " + ", ".join(missing) + ".")
+            return _text("Gracias. " + _build_contact_request_message(lead))
 
-        session.name = lead.get("full_name") or session.name
-        session.phone = lead.get("whatsapp") or session.phone
-
-        if session.site_user_id:
-            try:
-                from app.models.site_user import SiteUser
-                su = db.query(SiteUser).filter(SiteUser.id == session.site_user_id).first()
-                if su:
-                    su.name = su.name or lead.get("full_name")
-                    stored_phone = _normalize_whatsapp(
-                        su.phone,
-                        country=lead_country,
-                        document=lead.get("document_number"),
-                    )
-                    if lead.get("whatsapp") and (not su.phone or not stored_phone):
-                        su.phone = lead.get("whatsapp")
-                    su.country = su.country or lead.get("country_of_residence")
-            except Exception as e:
-                logger.warning(f"[lead] could not persist contact data: {e}")
-
-        record_id = lead.get("record_id")
-        if session.site_user_id and record_id:
-            _upsert_interaction(session.site_user_id, record_id, db, interested=True)
-
-        session.info_step = 4
-        session.state = "collecting_info"
-        return _text(
-            "Listo, ya registr? tu inter?s en esta propiedad. "
-            "Un asesor podr? contactarte por WhatsApp para darte m?s informaci?n. "
-            "Si quieres, tambi?n puedo seguir mostr?ndote opciones similares."
-        )
+        return _finalize_lead_request(session, clean, lead, db)
 
     return _fallback_not_understood()
 
@@ -1230,6 +1548,10 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
         new_criteria["min_price"] = explicit_min_price
     if explicit_max_price is not None:
         new_criteria["max_price"] = explicit_max_price
+    nearby_prefs = _extract_nearby_preferences(description)
+    if nearby_prefs:
+        new_criteria["features"] = _merge_unique_terms(list(new_criteria.get("features") or []), nearby_prefs)
+        new_criteria["keywords"] = _merge_unique_terms(list(new_criteria.get("keywords") or []), nearby_prefs)
 
     # Merge: keep all previous criteria (strip internal _relax_* keys); new non-empty values override
     prev = _clean_criteria(session.extracted_criteria)
@@ -1238,6 +1560,8 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
         if v is None or v == "" or (isinstance(v, list) and not v):
             continue
         merged[k] = v
+    merged["features"] = _merge_unique_terms(list(prev.get("features") or []), list(merged.get("features") or []))
+    merged["keywords"] = _merge_unique_terms(list(prev.get("keywords") or []), list(merged.get("keywords") or []))
     # Build full description context: original intent + current adjustment
     original = session.ideal_description or ""
     if original and description != original:
@@ -1333,7 +1657,7 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
                     "2. Volver a ver las propiedades."
                 )
 
-        # ── Relaxed search: find something close to offer proactively ─────────
+        # â”€â”€ Relaxed search: find something close to offer proactively â”€â”€â”€â”€â”€â”€â”€â”€â”€
         relaxed_matches: list[str] = []
         offer_msg = ""
         relax_type = ""   # "loc_only" | "beds_only" | "no_beds" | "no_loc"
@@ -1348,8 +1672,9 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
             if relaxed_matches:
                 relax_type = "loc_only"   # location has properties, just not matching beds
                 offer_msg = (
-                    f"No encontré propiedades de {beds} {hab} en {loc}, "
-                    f"pero sí tenemos {len(relaxed_matches)} opciones disponibles en {loc}. "
+                    f"No encontré coincidencias confirmadas de {beds} {hab} en {loc}, "
+                    f"pero sí encontré {len(relaxed_matches)} opciones en {loc} con otra configuración "
+                    "o sin dato claro de dormitorios. "
                     f"¿Te gustaría verlas{name_part}? 😊"
                 )
             else:
@@ -1361,8 +1686,8 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
                 if relaxed_matches:
                     relax_type = "beds_only"   # location truly has nothing; beds available elsewhere
                     offer_msg = (
-                        f"No encontré propiedades de {beds} {hab} en {loc}, "
-                        f"pero sí tenemos {len(relaxed_matches)} de {beds} {hab} en otras zonas. "
+                        f"No encontré coincidencias confirmadas de {beds} {hab} en {loc}, "
+                        f"pero sí tengo {len(relaxed_matches)} opciones en otras zonas. "
                         f"¿Te gustaría verlas{name_part}? 😊"
                     )
         elif beds:
@@ -1406,7 +1731,7 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
             }
             return _text(offer_msg)
 
-        # ── Truly nothing found ───────────────────────────────────────────────
+        # â”€â”€ Truly nothing found â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         session.state = "collecting_info"
         session.info_step = 4
         if beds and loc:
@@ -1462,6 +1787,14 @@ async def _handle_presenting(session: WebChatSession, text: str, db: Session) ->
     if _is_mark_current_property_interest(text) or any(k in t for k in ["me gusta", "asesor", "contactar"]):
         return _do_interested(session, text, db)
 
+    if _is_generic_adjust_request(text):
+        session.state = "collecting_info"
+        session.info_step = 11
+        return _text(
+            "Perfecto. Antes de buscar de nuevo, compárteme los parámetros que quieres ajustar "
+            "(zona/ciudad, dormitorios, presupuesto, etc.)."
+        )
+
     if _looks_like_search_update(text):
         session.state = "collecting_info"
         session.info_step = 5
@@ -1508,8 +1841,8 @@ async def _next_property(session: WebChatSession, db: Session) -> dict:
             session.state = "collecting_info"
             session.info_step = 6
             return _text(
-                f"Encontr? m?s opciones en {loc} con diferentes n?meros de habitaciones. "
-                f"?Quieres que te muestre estas {count} alternativas tambi?n?"
+                f"Encontré más opciones en {loc} con diferentes números de habitaciones. "
+                f"¿Quieres que te muestre estas {count} alternativas también?"
             )
 
         session.state = "collecting_info"
@@ -1545,9 +1878,16 @@ def _do_interested(session: WebChatSession, text: str, db: Session) -> dict:
         lead["record_id"] = record_id
     if rating:
         lead["rating"] = rating
-    session.extracted_criteria = {**clean, "_lead": lead}
 
-    if not (session.country or "").strip():
+    lead = _hydrate_lead_from_db(session, lead, db)
+
+    session.extracted_criteria = {**clean, "_lead": lead}
+    missing = _get_missing_lead_fields(lead)
+
+    if not missing:
+        return _finalize_lead_request(session, clean, lead, db)
+
+    if not (lead.get("country_of_residence") or session.country or "").strip():
         session.info_step = 9
         session.state = "collecting_info"
         return _text(
@@ -1557,37 +1897,60 @@ def _do_interested(session: WebChatSession, text: str, db: Session) -> dict:
 
     session.info_step = 10
     session.state = "collecting_info"
-    doc_label = _country_to_doc_label(session.country)
-    return _text(
-        "Perfecto. Ahora comparteme estos datos para que un asesor pueda contactarte:\n"
-        "Nombres y apellidos completos:\n"
-        "WhatsApp:\n"
-        f"{doc_label}:"
-    )
+    return _text(_build_contact_request_message(lead))
 
 
-def _compose_property_message(session: WebChatSession, idx: int, total: int) -> str:
+def _compose_property_message(session: WebChatSession, idx: int, total: int, data: dict | None = None) -> str:
     """Build a context-aware message that describes what was found."""
     criteria = dict(session.extracted_criteria or {})
     name = session.name or ""
     loc = (criteria.get("location") or "").strip()
     beds: int | None = criteria.get("bedrooms")
+    relax_type = str(criteria.get("_relax_type") or "").strip()
     raw_kw = list(criteria.get("keywords") or []) + list(criteria.get("features") or [])
     keywords = [k.strip() for k in raw_kw if isinstance(k, str) and len(k.strip()) > 2]
+    bed_counts = _extract_bedroom_counts(data or {}) if isinstance(data, dict) else set()
+    has_confirmed_requested_beds = bool(beds and bed_counts and beds in bed_counts)
 
     _ORDINALS = ["", "primera", "segunda", "tercera", "cuarta", "quinta",
                  "sexta", "séptima", "octava", "novena", "décima"]
 
     if idx == 1:
-        # First property — rich intro summarising the search
+        name_part = f", {name}" if name else ""
+        if relax_type:
+            if relax_type == "loc_only":
+                return (
+                    f"Aquí tienes una alternativa en {loc}{name_part}. "
+                    "No pude confirmar coincidencia exacta de dormitorios en todos los casos, "
+                    "pero podrían interesarte 🏠"
+                )
+            if relax_type == "beds_only":
+                return (
+                    f"Aquí va una alternativa fuera de {loc}{name_part} "
+                    "para ampliar opciones según tu búsqueda 🏠"
+                )
+            if relax_type in {"no_beds", "alt_bedrooms_same_loc"}:
+                return f"Aquí va una alternativa con distinta configuración de dormitorios{name_part} 🏠"
+            if relax_type == "no_loc":
+                return f"Aquí va una alternativa en otra zona{name_part} 🏠"
+
+        # First property â€” rich intro summarising the search
         feature_parts: list[str] = []
         if loc:
             feature_parts.append(f"en {loc}")
-        if beds:
+        if beds and has_confirmed_requested_beds:
             hab = "dormitorio" if beds == 1 else "dormitorios"
             feature_parts.append(f"con {beds} {hab}")
         # Include up to 3 meaningful keywords
-        meaningful = [k for k in keywords if len(k) > 3][:3]
+        generic_terms = {
+            "propiedad", "propiedades", "departamento", "departamentos",
+            "depa", "depas", "casa", "casas", "inmueble", "inmuebles",
+            "zona", "ciudad", "distrito",
+        }
+        meaningful = [
+            k for k in keywords
+            if len(k) > 3 and _normalize_text(k) not in generic_terms
+        ][:3]
         if meaningful:
             if len(meaningful) == 1:
                 feature_parts.append(f"cerca de {meaningful[0]}")
@@ -1598,7 +1961,6 @@ def _compose_property_message(session: WebChatSession, idx: int, total: int) -> 
                     f"con acceso a {meaningful[0]}, {meaningful[1]} y {meaningful[2]}"
                 )
 
-        name_part = f", {name}" if name else ""
         if feature_parts:
             desc = " ".join(feature_parts)
             plural = "propiedades" if total > 1 else "propiedad"
@@ -1613,9 +1975,13 @@ def _compose_property_message(session: WebChatSession, idx: int, total: int) -> 
             f"Aquí va la primera:"
         )
     else:
-        # Subsequent properties — shorter but still contextual
+        # Subsequent properties â€” shorter but still contextual
         ordinal = _ORDINALS[idx] if idx < len(_ORDINALS) else f"número {idx}"
         name_part = f", {name}" if name else ""
+        if relax_type:
+            if loc:
+                return f"Aquí va la {ordinal} alternativa en {loc}{name_part} 🏠"
+            return f"Esta es la {ordinal} alternativa{name_part} 🏠"
         if loc:
             return f"Aquí va la {ordinal} opción en {loc}{name_part} 🏠"
         return f"Esta es la {ordinal} opción{name_part} 🏠"
@@ -1649,7 +2015,10 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
         else:
             msg = "Aqui va la siguiente propiedad que marcaste con interes:"
     else:
-        msg = _compose_property_message(session, idx, total)
+        msg = _compose_property_message(session, idx, total, data=data)
+        status_warning = _build_project_status_warning(data)
+        if status_warning:
+            msg = f"{msg}\n\n{status_warning}"
     return _property_card(
         msg,
         idx,
@@ -1659,4 +2028,7 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
         state="presenting",
         seen_by_user_before=seen_by_user_before,
     )
+
+
+
 

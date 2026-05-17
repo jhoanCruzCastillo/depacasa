@@ -245,6 +245,111 @@ async def extract_contact_fields(raw: str) -> dict:
         return _fallback_contact_fields(raw)
 
 
+def _sanitize_quick_replies(options: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in options:
+        if not isinstance(raw, str):
+            continue
+        opt = " ".join(raw.strip().split())
+        if not opt:
+            continue
+        if len(opt) > 64:
+            opt = opt[:64].rstrip()
+        key = _norm(opt)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(opt)
+        if len(out) >= 4:
+            break
+    return out
+
+
+def _fallback_quick_replies(
+    assistant_message: str,
+    state: str,
+    has_card: bool,
+    has_saved_criteria: bool,
+) -> list[str]:
+    msg = _norm(assistant_message or "")
+    st = (state or "").strip().lower()
+
+    if has_card:
+        return ["Ver siguiente", "Lo quiero", "Quiero ajustar filtros"]
+
+    if "elige una opcion" in msg or ("1." in assistant_message and "2." in assistant_message):
+        return ["1", "2", "Quiero ajustar busqueda"]
+
+    if "solo me falta" in msg or "aun me faltan" in msg:
+        return ["Te comparto mis datos", "Prefiero continuar buscando"]
+
+    if "ya viste todas" in msg:
+        return ["Ajustar mis parametros de busqueda", "Volver a ver las propiedades"]
+
+    if st == "contact_requested":
+        return ["Ver propiedades similares", "Ver propiedades que me interesan"]
+
+    if has_saved_criteria:
+        return ["Si, adelante", "Ver propiedades no vistas", "Ver propiedades vistas"]
+    return ["Si, adelante", "No por ahora", "Quiero ajustar la busqueda"]
+
+
+_QUICK_REPLIES_SYSTEM = """\
+Genera opciones de respuesta rapida para un chatbot inmobiliario en espanol.
+Responde SOLO JSON valido sin markdown con este formato:
+{"options": ["opcion 1", "opcion 2", "opcion 3"]}
+
+Reglas:
+- Entre 2 y 4 opciones.
+- Opciones cortas (max 64 caracteres).
+- Accionables y clickeables.
+- Deben encajar con el ultimo mensaje del asistente y el estado conversacional.
+- Incluye opciones tipo Si/No cuando aplique.
+- No inventes datos.
+"""
+
+
+async def generate_quick_replies(
+    assistant_message: str,
+    state: str,
+    has_card: bool = False,
+    user_message: str = "",
+    has_saved_criteria: bool = False,
+) -> list[str]:
+    fallback = _fallback_quick_replies(
+        assistant_message=assistant_message,
+        state=state,
+        has_card=has_card,
+        has_saved_criteria=has_saved_criteria,
+    )
+    try:
+        payload = {
+            "assistant_message": assistant_message,
+            "state": state,
+            "has_card": has_card,
+            "user_message": user_message,
+            "has_saved_criteria": has_saved_criteria,
+        }
+        response = _get_client().messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=220,
+            system=_QUICK_REPLIES_SYSTEM,
+            messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+        )
+        txt = response.content[0].text.strip()
+        if txt.startswith("```"):
+            txt = txt.split("```")[1]
+            if txt.startswith("json"):
+                txt = txt[4:]
+        parsed = json.loads(txt.strip())
+        options = _sanitize_quick_replies(list(parsed.get("options") or []))
+        return options or fallback
+    except Exception as e:
+        logger.warning(f"generate_quick_replies Claude error: {e} — using fallback")
+        return fallback
+
+
 _CRITERIA_SYSTEM = """\
 Eres un asistente inmobiliario experto. Extrae criterios de búsqueda de la \
 descripción del usuario y responde SOLO con JSON válido, sin markdown ni texto extra.

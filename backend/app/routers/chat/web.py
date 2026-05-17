@@ -1,4 +1,4 @@
-"""Web chatbot API — session-based, structured card responses."""
+﻿"""Web chatbot API - session-based, structured card responses."""
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -26,6 +26,7 @@ async def new_session(request: Request, db: Session = Depends(get_db)):
         "state": session.state,
         "message": result["message"],
         "card": result["card"],
+        "quick_replies": result.get("quick_replies", []),
     }
 
 
@@ -42,12 +43,14 @@ async def send_message(session_id: str, body: MessageIn, db: Session = Depends(g
             "state": session.state if session else "unknown",
             "message": result["message"],
             "card": result.get("card"),
+            "quick_replies": result.get("quick_replies", []),
         }
     except Exception:
         return {
             "state": "collecting_info",
-            "message": "Ocurrió un error. Por favor, intenta nuevamente.",
+            "message": "Ocurrio un error. Por favor, intenta nuevamente.",
             "card": None,
+            "quick_replies": [],
         }
 
 

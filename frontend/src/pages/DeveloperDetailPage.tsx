@@ -50,6 +50,21 @@ const sectionPalette = [
   { bg: 'bg-amber-50', border: 'border-amber-200', accent: 'text-amber-700', indent: 'border-l-amber-300' },
 ]
 
+function getPropertyIdentifier(record: ScrapedRecord): string {
+  const data = record.data || {}
+  const candidateKeys = [
+    'property_identifier', 'property_id', 'id_propiedad', 'codigo_propiedad',
+    'codigo', 'id_unidad', 'unidad_id', 'sku', 'code',
+  ]
+  for (const key of candidateKeys) {
+    const value = data[key]
+    if (value !== null && value !== undefined && String(value).trim()) {
+      return String(value).trim()
+    }
+  }
+  return record.id
+}
+
 // ─── FieldValue ───────────────────────────────────────────────────────────────
 // Renders: media paths as images, arrays as chips/gallery, URLs as links, text as text
 
@@ -252,6 +267,7 @@ function CatalogCard({
   imageFieldNames?: Set<string>
 }) {
   const keys = Object.keys(record.data || {})
+  const propertyIdentifier = getPropertyIdentifier(record)
 
   // Separate image fields from text fields; pick the first image as the hero.
   // When imageFieldNames is defined (template known), only fields in the set are treated as images.
@@ -306,6 +322,14 @@ function CatalogCard({
           </Badge>
           <span className="text-xs text-gray-400">
             {new Date(record.scraped_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' })}
+          </span>
+        </div>
+        <div className="mb-3 flex gap-2 items-start">
+          <span className="text-xs font-medium text-gray-400 uppercase tracking-wide w-24 flex-shrink-0 truncate pt-0.5">
+            ID propiedad
+          </span>
+          <span className="text-xs text-gray-700 font-mono break-all leading-relaxed">
+            {propertyIdentifier}
           </span>
         </div>
 
@@ -830,3 +854,4 @@ export default function DeveloperDetailPage() {
     </div>
   )
 }
+

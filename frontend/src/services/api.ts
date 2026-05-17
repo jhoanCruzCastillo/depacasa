@@ -142,6 +142,7 @@ export const updateChatTemplate = (id: string, data: {
 export const deleteChatTemplate = (id: string) => API.delete(`/chat/templates/${id}`)
 
 export const getChatAdvisors = () => API.get('/chat/advisors')
+export const getChatAdvisorClients = (advisorId: string) => API.get(`/chat/advisors/${advisorId}/clients`)
 export const createChatAdvisor = (data: {
   name: string; phone?: string; email?: string; whatsapp_number?: string; is_active?: boolean
 }) => API.post('/chat/advisors', data)

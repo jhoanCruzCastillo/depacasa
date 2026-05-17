@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+﻿import { useState, useRef, useEffect } from 'react'
 import {
   MessageCircle, X, Send, Star, ChevronRight, ChevronLeft,
   Heart, Building2, MapPin, BedDouble, Bath, Maximize2,
@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import API from '../../services/api'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 interface CardField { key: string; label: string; type: string }
 interface PropertyCard {
@@ -17,7 +17,12 @@ interface PropertyCard {
   seen_by_user_before?: boolean | null
   data: Record<string, unknown>
 }
-interface Message { role: 'user' | 'assistant'; content: string; card: PropertyCard | null }
+interface Message {
+  role: 'user' | 'assistant'
+  content: string
+  card: PropertyCard | null
+  quick_replies?: string[]
+}
 interface SiteUser { id: string; email: string; name: string | null }
 
 interface Props {
@@ -30,7 +35,7 @@ interface Props {
   onRequestAuth?: (tab: 'login' | 'register') => void
 }
 
-// ─── Image extraction ─────────────────────────────────────────────────────────
+// â”€â”€â”€ Image extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|webp|gif|avif|bmp|svg)(\?.*)?$/i
 const HTTP = /^https?:\/\//
@@ -65,7 +70,7 @@ function extractAllImages(data: Record<string, unknown>): string[] {
   return out
 }
 
-// ─── Field categorization ─────────────────────────────────────────────────────
+// â”€â”€â”€ Field categorization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const ROLE: Record<string, string> = {
   name: 'title', nombre: 'title', proyecto: 'title', project_name: 'title',
@@ -80,9 +85,9 @@ const ROLE: Record<string, string> = {
   bathrooms: 'bathrooms', banos: 'bathrooms', baths: 'bathrooms', wc: 'bathrooms',
   area: 'area', m2: 'area', size: 'area', sqft: 'area',
   metros: 'area', superficie: 'area', metraje: 'area', area_m2: 'area',
-  description: 'desc', descripcion: 'desc', descripción: 'desc',
+  description: 'desc', descripcion: 'desc', "descripci\u00f3n": 'desc',
   details: 'desc', detalles: 'desc', info: 'desc', information: 'desc', sobre: 'desc',
-  caracteristicas: 'desc', características: 'desc', resumen: 'desc', acerca: 'desc',
+  caracteristicas: 'desc', "caracter\u00edsticas": 'desc', resumen: 'desc', acerca: 'desc',
 }
 
 interface TF { key: string; label: string; value: string; role: string }
@@ -126,7 +131,7 @@ function extractFields(data: Record<string, unknown>, images: string[]) {
   return { text, lists }
 }
 
-// ─── Lightbox ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Lightbox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Lightbox({ images, start, onClose }: { images: string[]; start: number; onClose: () => void }) {
   const [cur, setCur] = useState(start)
@@ -196,7 +201,7 @@ function Lightbox({ images, start, onClose }: { images: string[]; start: number;
   )
 }
 
-// ─── Image Carousel (inside card) ─────────────────────────────────────────────
+// â”€â”€â”€ Image Carousel (inside card) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function ImageCarousel({ images, onOpen }: { images: string[]; onOpen: (i: number) => void }) {
   const [cur, setCur] = useState(0)
@@ -260,7 +265,7 @@ function ImageCarousel({ images, onOpen }: { images: string[]; onOpen: (i: numbe
   )
 }
 
-// ─── Star Rating ───────────────────────────────────────────────────────────────
+// â”€â”€â”€ Star Rating â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function StarRating({ rating, onChange }: { rating: number; onChange: (r: number) => void }) {
   const [hover, setHover] = useState(0)
@@ -286,7 +291,7 @@ function StarRating({ rating, onChange }: { rating: number; onChange: (r: number
   )
 }
 
-// ─── Full Property Card ────────────────────────────────────────────────────────
+// â”€â”€â”€ Full Property Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function PropertyCardView({
   card, cardFields, primaryColor, secondaryColor, onNext, onInterested, readonly,
@@ -417,7 +422,7 @@ function PropertyCardView({
           </div>
         )}
 
-        {/* Lists / arrays → chips */}
+        {/* Lists / arrays â†’ chips */}
         {lists.length > 0 && (
           <div className="px-4 pb-2 space-y-1.5">
             {lists.map(l => (
@@ -439,7 +444,7 @@ function PropertyCardView({
           </div>
         )}
 
-        {/* Other fields — single column, full text */}
+        {/* Other fields â€” single column, full text */}
         {otherFields.length > 0 && (
           <div className="px-4 pb-2 border-t border-slate-100 pt-2 space-y-2">
             {otherFields.map(f => (
@@ -487,7 +492,7 @@ function PropertyCardView({
   )
 }
 
-// ─── Markdown-lite renderer ────────────────────────────────────────────────────
+// â”€â”€â”€ Markdown-lite renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Md({ text }: { text: string }) {
   return (
@@ -501,7 +506,7 @@ function Md({ text }: { text: string }) {
   )
 }
 
-// ─── Main Widget ───────────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Widget â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export default function ChatWidget({
   buttonLabel = '¿Necesitas ayuda?',
@@ -534,9 +539,9 @@ export default function ChatWidget({
       })
       setSessionId(res.data.session_id)
       setState(res.data.state)
-      setMessages([{ role: 'assistant', content: res.data.message, card: res.data.card }])
+      setMessages([{ role: 'assistant', content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }])
     } catch {
-      setMessages([{ role: 'assistant', content: 'Error al iniciar la sesión. Recarga la página.', card: null }])
+      setMessages([{ role: 'assistant', content: 'Error al iniciar la sesión. Recarga la página.', card: null, quick_replies: [] }])
     }
   }
 
@@ -552,13 +557,13 @@ export default function ChatWidget({
     try {
       const res = await API.post(`/chat/web/sessions/${sessionId}/message`, { content })
       setMessages(m => {
-        const next = [...m, { role: 'assistant' as const, content: res.data.message, card: res.data.card }]
+        const next = [...m, { role: 'assistant' as const, content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }]
         if (res.data.card && !user && !showRegBanner) setShowRegBanner(true)
         return next
       })
       setState(res.data.state)
     } catch {
-      setMessages(m => [...m, { role: 'assistant', content: 'Ocurrió un error. Intenta nuevamente.', card: null }])
+      setMessages(m => [...m, { role: 'assistant', content: 'Ocurrió un error. Intenta nuevamente.', card: null, quick_replies: [] }])
     } finally {
       setLoading(false)
       setTimeout(() => inputRef.current?.focus(), 0)
@@ -580,6 +585,12 @@ export default function ChatWidget({
 
   const handleInterested = (rating: number) => {
     const text = rating > 0 ? `Lo quiero, le doy ${rating} estrellas` : 'Lo quiero'
+    setMessages(m => [...m, { role: 'user', content: text, card: null }])
+    sendRaw(text)
+  }
+
+  const handleQuickReply = (text: string) => {
+    if (!text || !sessionId || loading) return
     setMessages(m => [...m, { role: 'user', content: text, card: null }])
     sendRaw(text)
   }
@@ -653,6 +664,19 @@ export default function ChatWidget({
                         onInterested={handleInterested}
                         readonly={i !== lastIdx || isDone}
                       />
+                    )}
+                    {i === lastIdx && !loading && (msg.quick_replies || []).length > 0 && (
+                      <div className="flex flex-wrap gap-2 pl-1">
+                        {(msg.quick_replies || []).slice(0, 4).map((opt, idx) => (
+                          <button
+                            key={`${i}-${idx}-${opt}`}
+                            onClick={() => handleQuickReply(opt)}
+                            className="px-3 py-1.5 text-xs rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-colors"
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
                     )}
                   </>
                 )}
@@ -735,3 +759,4 @@ export default function ChatWidget({
     </>
   )
 }
+
