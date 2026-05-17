@@ -9,6 +9,15 @@ from sqlalchemy.orm import Session
 from app.models.web_chat_session import WebChatSession, WebChatMessage
 from app.services.lead_notification_service import notify_active_advisor_for_lead
 from app.services.matchmaking import find_matches, get_record_data, _extract_bedroom_counts
+from app.services.preference_service import (
+    build_preferences_v2_from_criteria,
+    criteria_from_preferences_v2,
+    default_preferences_v2,
+    merge_consolidated_context,
+    summarize_preferences_v2,
+)
+from app.services.chatbot_intents.context import IntentRuntime
+from app.services.chatbot_intents.engine import candidate_intents_for_state, dispatch_intents
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +110,89 @@ def _extract_explicit_bedrooms(description: str) -> int | None:
     return matches[-1][1]
 
 
+def _extract_explicit_bathrooms(description: str) -> int | None:
+    desc = _normalize_text(description)
+    pattern = re.compile(
+        r"(\d+|un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho)\s*"
+        r"(?:banos?|bath(?:rooms?)?|aseos?)",
+        re.IGNORECASE,
+    )
+    m = pattern.search(desc)
+    if not m:
+        return None
+    token = m.group(1).lower()
+    val = _BED_WORDS.get(token)
+    if val is None and token.isdigit():
+        val = int(token)
+    return val if val and 0 < val <= 10 else None
+
+
+def _extract_explicit_area_range(description: str) -> tuple[int | None, int | None, int | None]:
+    text = _normalize_text(description)
+    range_m = re.search(
+        r"(?:entre|de)\s*(\d{2,4})\s*(?:m2|metros?(?:\s+cuadrados?)?|mt2)\s*(?:y|-|a)\s*(\d{2,4})",
+        text,
+        re.IGNORECASE,
+    )
+    if range_m:
+        first = int(range_m.group(1))
+        second = int(range_m.group(2))
+        return min(first, second), max(first, second), None
+
+    exact_m = re.search(
+        r"(\d{2,4})\s*(?:m2|metros?(?:\s+cuadrados?)?|mt2)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if exact_m:
+        return None, None, int(exact_m.group(1))
+    return None, None, None
+
+
+def _extract_common_areas(text: str) -> list[str]:
+    norm = _normalize_text(text)
+    catalog = {
+        "gimnasio": ["gimnasio", "gym", "area deportiva", "zona deportiva"],
+        "piscina": ["piscina", "pool"],
+        "parrilla": ["parrilla", "zona bbq", "bbq"],
+        "cowork": ["cowork", "coworking"],
+        "juegos": ["juegos para ninos", "zona de juegos", "juegos infantiles"],
+        "pet friendly": ["pet friendly", "mascotas"],
+        "terraza": ["terraza", "roof top", "rooftop"],
+        "sum": ["sum", "salon de usos multiples"],
+    }
+    found: list[str] = []
+    for label, variants in catalog.items():
+        if any(v in norm for v in variants):
+            found.append(label)
+    return found
+
+
+def _extract_preference_mode(text: str, aliases: list[str], default: str = "preferencia") -> str:
+    norm = _normalize_text(text)
+    if not any(alias in norm for alias in aliases):
+        return default
+    if any(
+        token in norm
+        for token in [
+            "obligatorio",
+            "si o si",
+            "si o sí",
+            "indispensable",
+            "no negociable",
+            "debe tener",
+            "tiene que tener",
+        ]
+    ):
+        return "obligatorio"
+    if any(
+        token in norm
+        for token in ["preferencia", "preferible", "idealmente", "de ser posible", "si es posible"]
+    ):
+        return "preferencia"
+    return default
+
+
 def _parse_money_amount(raw: str, suffix: str | None = None) -> float | None:
     token = (raw or "").strip()
     if not token:
@@ -175,9 +267,18 @@ def _clean_criteria(criteria: dict | None) -> dict:
 
 def _has_actionable_criteria(criteria: dict | None) -> bool:
     c = _clean_criteria(criteria)
-    if c.get("location") or c.get("bedrooms") or c.get("min_price") or c.get("max_price"):
+    if (
+        c.get("location")
+        or c.get("bedrooms")
+        or c.get("bathrooms")
+        or c.get("area_exact")
+        or c.get("area_min")
+        or c.get("area_max")
+        or c.get("min_price")
+        or c.get("max_price")
+    ):
         return True
-    if c.get("features") or c.get("keywords"):
+    if c.get("features") or c.get("keywords") or c.get("nearby_zones") or c.get("common_areas"):
         return True
     return False
 
@@ -290,14 +391,28 @@ def _summarize_preferences(criteria: dict | None) -> str:
     parts: list[str] = []
     loc = (c.get("location") or "").strip()
     beds = c.get("bedrooms")
+    baths = c.get("bathrooms")
     if loc:
         parts.append(f"zona: {loc}")
     if beds:
         hab = "dormitorio" if beds == 1 else "dormitorios"
         parts.append(f"{beds} {hab}")
+    if baths:
+        btxt = "baño" if baths == 1 else "baños"
+        parts.append(f"{baths} {btxt}")
+    if c.get("area_exact"):
+        parts.append(f"{c.get('area_exact')} m2")
+    elif c.get("area_min") or c.get("area_max"):
+        parts.append(f"área {c.get('area_min', '?')}–{c.get('area_max', '?')} m2")
     budget = _format_budget(c.get("min_price"), c.get("max_price"))
     if budget:
         parts.append(f"presupuesto {budget}")
+    nearby = c.get("nearby_zones") or []
+    if nearby:
+        parts.append(f"zonas cercanas: {', '.join(nearby[:2])}")
+    common = c.get("common_areas") or []
+    if common:
+        parts.append(f"áreas comunes: {', '.join(common[:2])}")
     if not parts:
         return "sin criterios guardados todavia"
     return ", ".join(parts)
@@ -681,6 +796,108 @@ def _extract_full_name(text: str) -> str | None:
     return " ".join(w.capitalize() for w in parts[:6])
 
 
+def _extract_first_url(text: str) -> str | None:
+    if not text:
+        return None
+    m = re.search(r"(/media/[^\s<>\]\)\"']+)", text, re.IGNORECASE)
+    if m:
+        return m.group(1).rstrip(".,;)")
+    m = re.search(r"(https?://[^\s<>\]\)\"']+)", text, re.IGNORECASE)
+    if m:
+        return m.group(1).rstrip(".,;)")
+    m = re.search(r"\b(?:www\.)[^\s<>\]\)\"']+\b", text, re.IGNORECASE)
+    if m:
+        return f"https://{m.group(0).rstrip('.,;)')}"
+    return None
+
+
+def _extract_financial_capacity_doc(text: str) -> str | None:
+    url = _extract_first_url(text or "")
+    if url:
+        return url
+
+    labeled = _extract_labeled_value(
+        text or "",
+        [
+            "sustento",
+            "sustento financiero",
+            "capacidad financiera",
+            "documento financiero",
+            "documento",
+            "enlace",
+            "link",
+            "url",
+            "archivo",
+            "pdf",
+        ],
+    )
+    url = _extract_first_url(labeled or "")
+    if url:
+        return url
+
+    token_match = re.search(
+        r"\b([A-Za-z0-9_\-/\.]{8,}\.(?:pdf|png|jpg|jpeg|webp|heic|doc|docx))\b",
+        text or "",
+        re.IGNORECASE,
+    )
+    if token_match:
+        return token_match.group(1)
+    return None
+
+
+def _looks_like_financial_doc_text(text: str) -> bool:
+    norm = _normalize_text(text or "")
+    return any(
+        token in norm
+        for token in [
+            "sustento financiero",
+            "capacidad financiera",
+            "preaprobacion",
+            "pre aprobacion",
+            "aprobacion bancaria",
+            "estado de cuenta",
+            "declaracion de renta",
+            "declaracion jurada",
+            "pdf",
+            "documento",
+            "enlace",
+            "link",
+            "/media/",
+            "drive.google.com",
+            "dropbox",
+            "onedrive",
+        ]
+    )
+
+
+def _is_house_interest_context(session: WebChatSession, record_id: str | None, db: Session) -> bool:
+    source_parts: list[str] = []
+    if session.ideal_description:
+        source_parts.append(str(session.ideal_description))
+    criteria = session.extracted_criteria if isinstance(session.extracted_criteria, dict) else {}
+    source_parts.extend(str(v) for v in (criteria.get("keywords") or []) if v)
+    source_parts.extend(str(v) for v in (criteria.get("features") or []) if v)
+
+    if record_id:
+        data = get_record_data(db, record_id) or {}
+        if isinstance(data, dict):
+            for value in data.values():
+                if isinstance(value, (str, int, float)):
+                    source_parts.append(str(value))
+
+    text = _normalize_text(" ".join(source_parts))
+    house_tokens = ["casa", "house", "chalet", "townhouse", "duplex", "duplex"]
+    return any(token in text for token in house_tokens)
+
+
+def _build_financial_doc_request_message() -> str:
+    return (
+        "Excelente. Para continuar con tu solicitud, necesito un sustento de capacidad de compra "
+        "(por ejemplo preaprobacion bancaria, credito aprobado o ayuda social).\n\n"
+        "Comparte el enlace del documento (PDF/JPG/Drive) para continuar."
+    )
+
+
 def _get_latest_saved_lead(site_user_id, db: Session, exclude_session_id: UUID | None = None) -> dict:
     try:
         uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
@@ -738,6 +955,10 @@ def _hydrate_lead_from_db(session: WebChatSession, lead: dict, db: Session) -> d
         merged["document_number"] = latest_saved.get("document_number")
     if latest_saved.get("whatsapp") and not merged.get("whatsapp"):
         merged["whatsapp"] = latest_saved.get("whatsapp")
+    if latest_saved.get("financial_capacity_doc") and not merged.get("financial_capacity_doc"):
+        merged["financial_capacity_doc"] = latest_saved.get("financial_capacity_doc")
+    if latest_saved.get("requires_financial_capacity_doc") and not merged.get("requires_financial_capacity_doc"):
+        merged["requires_financial_capacity_doc"] = latest_saved.get("requires_financial_capacity_doc")
 
     lead_country = merged.get("country_of_residence")
     doc = _normalize_document(merged.get("document_number"))
@@ -784,6 +1005,14 @@ def _build_contact_request_message(lead: dict) -> str:
 
 
 def _finalize_lead_request(session: WebChatSession, clean: dict, lead: dict, db: Session) -> dict:
+    must_have_financial_doc = bool(lead.get("requires_financial_capacity_doc") or lead.get("record_id"))
+    if must_have_financial_doc and not lead.get("financial_capacity_doc"):
+        lead["requires_financial_capacity_doc"] = True
+        session.extracted_criteria = {**clean, "_lead": lead}
+        session.info_step = 12
+        session.state = "collecting_info"
+        return _text(_build_financial_doc_request_message())
+
     lead_country = lead.get("country_of_residence") or session.country
     session.name = lead.get("full_name") or session.name
     session.phone = lead.get("whatsapp") or session.phone
@@ -815,6 +1044,23 @@ def _finalize_lead_request(session: WebChatSession, clean: dict, lead: dict, db:
     if sent_to_advisor and session.site_user_id and record_id:
         _upsert_interaction(session.site_user_id, record_id, db, sent_by_email=True)
     session.extracted_criteria = {**clean, "_lead": lead}
+    if session.site_user_id:
+        _save_preferences(
+            session.site_user_id,
+            {**clean, "_lead": lead},
+            session.ideal_description or "",
+            db,
+            extra_context={
+                "lead_profile": {
+                    "full_name": lead.get("full_name"),
+                    "country": lead.get("country_of_residence"),
+                    "whatsapp": lead.get("whatsapp"),
+                    "document": lead.get("document_number"),
+                    "financial_capacity_doc": lead.get("financial_capacity_doc"),
+                },
+                "conversation_memory": {"last_intent": "capturar_datos_contacto"},
+            },
+        )
 
     session.info_step = 4
     session.state = "collecting_info"
@@ -1123,7 +1369,13 @@ def _save_search_history(site_user_id, description: str, criteria: dict, db: Ses
         logger.warning(f"[history] could not save search history: {e}")
 
 
-def _save_preferences(site_user_id, criteria: dict, description: str, db: Session) -> None:
+def _save_preferences(
+    site_user_id,
+    criteria: dict,
+    description: str,
+    db: Session,
+    extra_context: dict | None = None,
+) -> None:
     """Upsert user preferences from extracted criteria."""
     try:
         from app.models.user_preference import UserPreference
@@ -1134,13 +1386,21 @@ def _save_preferences(site_user_id, criteria: dict, description: str, db: Sessio
             if not pref:
                 pref = UserPreference(site_user_id=uid)
                 db.add(pref)
-            pref.location = criteria.get("location") or pref.location
-            pref.bedrooms = criteria.get("bedrooms") or pref.bedrooms
-            pref.min_price = criteria.get("min_price") or pref.min_price
-            pref.max_price = criteria.get("max_price") or pref.max_price
-            pref.features = criteria.get("features") or pref.features
-            pref.keywords = criteria.get("keywords") or pref.keywords
+            if criteria.get("location"):
+                pref.location = criteria.get("location")
+            if criteria.get("bedrooms") is not None:
+                pref.bedrooms = criteria.get("bedrooms")
+            if criteria.get("min_price") is not None:
+                pref.min_price = criteria.get("min_price")
+            if criteria.get("max_price") is not None:
+                pref.max_price = criteria.get("max_price")
+            if criteria.get("features"):
+                pref.features = criteria.get("features")
+            if criteria.get("keywords"):
+                pref.keywords = criteria.get("keywords")
             pref.raw_description = description
+            pref.preferences_v2 = build_preferences_v2_from_criteria(criteria, pref.preferences_v2)
+            pref.context = merge_consolidated_context(pref.context, criteria, description, extra_context)
             db.flush()
             sp.commit()
         except Exception:
@@ -1150,14 +1410,55 @@ def _save_preferences(site_user_id, criteria: dict, description: str, db: Sessio
         logger.warning(f"[prefs] could not save preferences: {e}")
 
 
-def _load_saved_preferences(site_user_id, db: Session) -> tuple[dict, str]:
+def _track_behavior_signal(site_user_id, signal_key: str, record_id: str | None, db: Session) -> None:
+    if not record_id:
+        return
     try:
         from app.models.user_preference import UserPreference
         uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
         pref = db.query(UserPreference).filter_by(site_user_id=uid).first()
         if not pref:
-            return {}, ""
-        criteria = {
+            return
+
+        current_context = pref.context if isinstance(pref.context, dict) else {}
+        behavior = dict(current_context.get("behavior_signals") or {})
+        bucket = list(behavior.get(signal_key) or [])
+        if record_id not in bucket:
+            bucket.append(record_id)
+        behavior[signal_key] = bucket[-100:]
+        pref.context = merge_consolidated_context(
+            current_context,
+            {},
+            pref.raw_description or "",
+            extra_context={"behavior_signals": behavior},
+        )
+        db.flush()
+    except Exception as e:
+        logger.warning(f"[prefs] could not track behavior signal {signal_key}: {e}")
+
+
+def _load_saved_preferences(site_user_id, db: Session) -> tuple[dict, str, dict, str]:
+    try:
+        from app.models.user_preference import UserPreference
+        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
+        pref = db.query(UserPreference).filter_by(site_user_id=uid).first()
+        if not pref:
+            return {}, "", default_preferences_v2(), ""
+
+        context = pref.context if isinstance(pref.context, dict) else {}
+        if isinstance(pref.preferences_v2, dict) and pref.preferences_v2:
+            criteria = criteria_from_preferences_v2(pref.preferences_v2, context)
+            summary = summarize_preferences_v2(pref.preferences_v2, context)
+            description = (
+                (context.get("conversation_memory") or {}).get("last_search_description")
+                if isinstance(context.get("conversation_memory"), dict)
+                else None
+            ) or pref.raw_description or ""
+            clean = {k: v for k, v in criteria.items() if v not in (None, "", []) and v != {}}
+            return clean, description, pref.preferences_v2, summary
+
+        # Backward compatibility path for legacy rows.
+        legacy_criteria = {
             "location": pref.location,
             "bedrooms": pref.bedrooms,
             "min_price": pref.min_price,
@@ -1165,14 +1466,16 @@ def _load_saved_preferences(site_user_id, db: Session) -> tuple[dict, str]:
             "features": pref.features or [],
             "keywords": pref.keywords or [],
         }
-        clean = {
-            k: v for k, v in criteria.items()
+        legacy_clean = {
+            k: v for k, v in legacy_criteria.items()
             if v not in (None, "", []) and v != {}
         }
-        return clean, pref.raw_description or ""
+        pref_v2 = build_preferences_v2_from_criteria(legacy_clean, None)
+        summary = summarize_preferences_v2(pref_v2, context)
+        return legacy_clean, pref.raw_description or "", pref_v2, summary
     except Exception as e:
         logger.warning(f"[prefs] could not load preferences: {e}")
-        return {}, ""
+        return {}, "", default_preferences_v2(), ""
 
 
 async def _attach_quick_replies(
@@ -1200,29 +1503,51 @@ async def _attach_quick_replies(
 
 async def create_session(db: Session, site_user=None) -> tuple[WebChatSession, dict]:
     session = WebChatSession()
+    rehydrated = False
+    context_summary = ""
 
     if site_user:
+        active_sessions = (
+            db.query(WebChatSession)
+            .filter(
+                WebChatSession.site_user_id == site_user.id,
+                WebChatSession.is_active.is_(True),
+            )
+            .all()
+        )
+        for old_session in active_sessions:
+            old_session.is_active = False
+            old_session.inactivated_at = datetime.now(timezone.utc)
+            old_session.state = "inactivo"
+
         session.site_user_id = site_user.id
         session.email = site_user.email
         session.name = site_user.name
         session.country = site_user.country
         session.phone = site_user.phone
+        session.is_active = True
 
     session.info_step = 4
     greeting = _GREETING
 
-    if site_user and site_user.name:
-        saved_criteria, saved_desc = _load_saved_preferences(site_user.id, db)
-        session.extracted_criteria = saved_criteria
-        session.ideal_description = saved_desc or session.ideal_description
-        session.info_step = 8
-        summary = _summarize_preferences(saved_criteria)
-        greeting = (
-            f"Hola de nuevo, {site_user.name}. Tengo guardada tu busqueda anterior: {summary}.\n"
-            "Quieres que continuemos con cual opcion?\n"
-            "1. Ver propiedades nuevas o que aun no has visto.\n"
-            "2. Volver a ver propiedades que ya revisaste."
-        )
+    if site_user:
+        saved_criteria, saved_desc, pref_v2, summary = _load_saved_preferences(site_user.id, db)
+        if _has_actionable_criteria(saved_criteria):
+            session.extracted_criteria = saved_criteria
+            session.ideal_description = saved_desc or session.ideal_description
+            session.info_step = 8
+            rehydrated = True
+            context_summary = summary
+            user_name = site_user.name or "de nuevo"
+            greeting = (
+                f"Hola {user_name}. Rehidrate tu contexto anterior: {summary}.\n"
+                "¿Cómo quieres continuar?\n"
+                "1. Ver propiedades nuevas o que aun no has visto.\n"
+                "2. Volver a ver propiedades que ya revisaste.\n"
+                "3. Ajustar tu búsqueda."
+            )
+        elif isinstance(pref_v2, dict):
+            context_summary = summarize_preferences_v2(pref_v2, {})
 
     db.add(session)
     db.flush()
@@ -1231,6 +1556,8 @@ async def create_session(db: Session, site_user=None) -> tuple[WebChatSession, d
     db.refresh(session)
     initial = _text(greeting)
     initial["state"] = session.state
+    initial["rehydrated"] = rehydrated
+    initial["context_summary"] = context_summary
     initial = await _attach_quick_replies(session, initial)
     return session, initial
 
@@ -1240,6 +1567,11 @@ async def handle_message(session_id: str, user_content: str, db: Session) -> dic
         session = db.query(WebChatSession).filter(WebChatSession.id == UUID(session_id)).first()
         if not session:
             return _text("Sesión no encontrada.")
+        if session.site_user_id and not session.is_active:
+            return _text(
+                "Esta sesión ya no está activa porque abriste un chat nuevo. "
+                "Continúa en tu sesión más reciente."
+            )
 
         text = user_content.strip()
         db.add(WebChatMessage(session_id=session.id, role="user", content=text))
@@ -1260,6 +1592,219 @@ async def handle_message(session_id: str, user_content: str, db: Session) -> dic
         return _text("Ocurrió un error procesando tu mensaje. Por favor, intenta nuevamente.")
 
 
+def _wants_next_property(text: str) -> bool:
+    t = _normalize_text(text)
+    return any(k in t for k in ["siguiente", "ver siguiente", "otra", "ver otra", "no me convence", "next", "skip"])
+
+
+def _is_property_detail_request(text: str) -> bool:
+    t = _normalize_text(text)
+    patterns = [
+        "detalle",
+        "detalles",
+        "mas info",
+        "mas informacion",
+        "informacion",
+        "precio",
+        "m2",
+        "metros",
+        "bano",
+        "dormitorio",
+        "habitacion",
+        "direccion",
+    ]
+    return any(p in t for p in patterns)
+
+
+def _rate_current_property(session: WebChatSession, rating: int, db: Session) -> str:
+    if rating and session.site_user_id and session.matched_record_ids:
+        idx = session.current_match_index
+        if idx < len(session.matched_record_ids):
+            record_id = session.matched_record_ids[idx]
+            _upsert_interaction(
+                session.site_user_id,
+                record_id,
+                db,
+                rating=rating,
+                rated_at=datetime.now(timezone.utc),
+            )
+            _track_behavior_signal(session.site_user_id, "rated_record_ids", record_id, db)
+            if rating <= 2:
+                _track_behavior_signal(session.site_user_id, "discarded_record_ids", record_id, db)
+    return _rating_feedback(rating)
+
+
+async def _handle_contact_capture_step(session: WebChatSession, user_text: str, db: Session) -> dict | None:
+    step = session.info_step
+    ctx = session.extracted_criteria or {}
+
+    if step == 12:
+        clean = _clean_criteria(ctx)
+        lead = dict((ctx or {}).get("_lead") or {})
+        lead = _hydrate_lead_from_db(session, lead, db)
+
+        doc_ref = _extract_financial_capacity_doc(user_text)
+        if not doc_ref:
+            if _is_negative_message(user_text):
+                return _text(
+                    "Entiendo. Para continuar con la evaluacion del perfil necesito ese documento. "
+                    "Cuando lo tengas, comparte el enlace del archivo."
+                )
+            return _text(
+                "No pude identificar el documento de sustento financiero. "
+                "Comparte un enlace valido (PDF/JPG/Drive) para registrarlo."
+            )
+
+        lead["financial_capacity_doc"] = doc_ref
+        lead["requires_financial_capacity_doc"] = True
+        session.extracted_criteria = {**clean, "_lead": lead}
+
+        missing = _get_missing_lead_fields(lead)
+        if missing:
+            if not (lead.get("country_of_residence") or session.country or "").strip():
+                session.info_step = 9
+            else:
+                session.info_step = 10
+            session.state = "collecting_info"
+            return _text(
+                "Perfecto, ya registré tu sustento financiero. "
+                + _build_contact_request_message(lead)
+            )
+
+        return _finalize_lead_request(session, clean, lead, db)
+
+    if step == 9:
+        country = user_text[:80]
+        session.country = country
+        if session.site_user_id:
+            try:
+                from app.models.site_user import SiteUser
+                su = db.query(SiteUser).filter(SiteUser.id == session.site_user_id).first()
+                if su and not su.country:
+                    su.country = country
+            except Exception as e:
+                logger.warning(f"[lead] could not persist country: {e}")
+
+        clean = _clean_criteria(ctx)
+        lead = dict((ctx or {}).get("_lead") or {})
+        lead["country_of_residence"] = country
+        session.extracted_criteria = {**clean, "_lead": lead}
+        session.info_step = 10
+        return _text(_build_contact_request_message(lead))
+
+    if step == 10:
+        from app.services.claude_service import extract_contact_fields
+        clean = _clean_criteria(ctx)
+        lead = dict((ctx or {}).get("_lead") or {})
+        lead = _hydrate_lead_from_db(session, lead, db)
+        lead_country = lead.get("country_of_residence") or session.country
+
+        ai_contact = await extract_contact_fields(user_text)
+        ai_name = (ai_contact.get("full_name") or "").strip() or None
+        ai_whatsapp = (ai_contact.get("whatsapp") or "").strip() or None
+        ai_document = (ai_contact.get("document_number") or "").strip() or None
+
+        doc_from_text = _extract_document(user_text)
+        document = _normalize_document(ai_document) or doc_from_text or _normalize_document(lead.get("document_number"))
+        if document and "peru" in _normalize_text(lead_country or ""):
+            if document.isdigit() and not _looks_like_peru_dni(document):
+                document = _normalize_document(lead.get("document_number"))
+        whatsapp = (
+            _normalize_whatsapp(ai_whatsapp, country=lead_country, document=document)
+            or _extract_whatsapp(user_text, country=lead_country, document=document)
+            or _normalize_whatsapp(lead.get("whatsapp"), country=lead_country, document=document)
+        )
+        full_name = ai_name or _extract_full_name(user_text) or lead.get("full_name")
+
+        if full_name:
+            lead["full_name"] = full_name
+        if whatsapp:
+            lead["whatsapp"] = whatsapp
+        elif lead.get("whatsapp"):
+            previous_phone = _normalize_whatsapp(
+                lead.get("whatsapp"),
+                country=lead_country,
+                document=document,
+            )
+            if previous_phone:
+                lead["whatsapp"] = previous_phone
+            else:
+                lead.pop("whatsapp", None)
+        if document:
+            lead["document_number"] = document
+
+        missing = _get_missing_lead_fields(lead)
+        session.extracted_criteria = {**clean, "_lead": lead}
+        if missing:
+            return _text("Gracias. " + _build_contact_request_message(lead))
+        return _finalize_lead_request(session, clean, lead, db)
+
+    return None
+
+
+def _build_intent_runtime(session: WebChatSession, user_text: str, db: Session, step: int) -> IntentRuntime:
+    async def _start_search_action(description: str) -> dict:
+        return await _start_search(session, description, db)
+
+    async def _show_interested_action() -> dict:
+        return await _show_interested_properties(session, db)
+
+    async def _show_property_action(record_id: str) -> dict:
+        return await _show_property(session, db, record_id)
+
+    async def _next_property_action() -> dict:
+        return await _next_property(session, db)
+
+    async def _contact_capture_action() -> dict | None:
+        return await _handle_contact_capture_step(session, user_text, db)
+
+    async def _financial_doc_capture_action() -> dict | None:
+        return await _handle_contact_capture_step(session, user_text, db)
+
+    helpers = {
+        "text_response": _text,
+        "fallback_out_of_scope": _fallback_out_of_scope,
+        "fallback_not_understood": _fallback_not_understood,
+        "normalize_text": _normalize_text,
+        "is_scope_message": _is_scope_message,
+        "is_new_unseen_request": _is_new_unseen_request,
+        "is_viewed_request": _is_viewed_request,
+        "is_interested_list_request": _is_interested_list_request,
+        "is_adjust_search_intent": _is_adjust_search_intent,
+        "is_generic_adjust_request": _is_generic_adjust_request,
+        "is_mark_current_property_interest": _is_mark_current_property_interest,
+        "looks_like_search_update": _looks_like_search_update,
+        "is_affirmative_message": _is_affirmative_message,
+        "is_negative_message": _is_negative_message,
+        "extract_rating_from_text": _extract_rating_from_text,
+        "wants_next_property": _wants_next_property,
+        "is_property_detail_request": _is_property_detail_request,
+        "clean_criteria": _clean_criteria,
+        "has_actionable_criteria": _has_actionable_criteria,
+        "summarize_preferences": _summarize_preferences,
+        "get_exhausted_revisit_ids": _get_exhausted_revisit_ids,
+        "get_viewed_ranked_ids": lambda site_user_id: _get_viewed_ranked_ids(site_user_id, db),
+        "rate_current_property": lambda rating: _rate_current_property(session, rating, db),
+        "mark_interest": lambda text: _do_interested(session, text, db),
+        "start_search": _start_search_action,
+        "show_interested_properties": _show_interested_action,
+        "show_property_by_id": _show_property_action,
+        "next_property": _next_property_action,
+        "handle_contact_capture_step": _contact_capture_action,
+        "handle_financial_document_step": _financial_doc_capture_action,
+        "looks_like_financial_doc_text": _looks_like_financial_doc_text,
+    }
+    return IntentRuntime(
+        session=session,
+        db=db,
+        user_text=user_text,
+        state=session.state,
+        step=step,
+        ctx=session.extracted_criteria or {},
+        helpers=helpers,
+    )
+
+
 # â”€â”€ FSM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _process(session: WebChatSession, text: str, db: Session) -> dict:
@@ -1268,8 +1813,11 @@ async def _process(session: WebChatSession, text: str, db: Session) -> dict:
     if session.state == "presenting":
         return await _handle_presenting(session, text, db)
     if session.state == "contact_requested":
-        if session.site_user_id and _is_interested_list_request(text):
-            return await _show_interested_properties(session, db)
+        runtime = _build_intent_runtime(session, text, db, session.info_step)
+        candidates = candidate_intents_for_state("contact_requested", session.info_step)
+        intent_response = await dispatch_intents(runtime, candidates)
+        if intent_response is not None:
+            return intent_response
         return _text("Tu solicitud ya fue registrada. Un asesor se pondra en contacto contigo muy pronto.")
     return _text("No entendi tu mensaje. Puedes intentarlo de nuevo?")
 
@@ -1283,6 +1831,12 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
     if step in {0, 1, 2, 3}:
         step = 4
         session.info_step = 4
+
+    runtime = _build_intent_runtime(session, user_text, db, step)
+    candidates = candidate_intents_for_state("collecting_info", step)
+    intent_response = await dispatch_intents(runtime, candidates)
+    if intent_response is not None:
+        return intent_response
 
     if step == 4:
         if _is_generic_adjust_request(user_text):
@@ -1543,15 +2097,80 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
     explicit_beds = _extract_explicit_bedrooms(description)
     if explicit_beds:
         new_criteria["bedrooms"] = explicit_beds
+    explicit_baths = _extract_explicit_bathrooms(description)
+    if explicit_baths:
+        new_criteria["bathrooms"] = explicit_baths
+    area_min, area_max, area_exact = _extract_explicit_area_range(description)
+    if area_exact is not None:
+        new_criteria["area_exact"] = area_exact
+    if area_min is not None:
+        new_criteria["area_min"] = area_min
+    if area_max is not None:
+        new_criteria["area_max"] = area_max
+
     explicit_min_price, explicit_max_price = _extract_explicit_price_limits(description)
     if explicit_min_price is not None:
         new_criteria["min_price"] = explicit_min_price
     if explicit_max_price is not None:
         new_criteria["max_price"] = explicit_max_price
+    if explicit_min_price is not None or explicit_max_price is not None:
+        new_criteria["budget_mode"] = _extract_preference_mode(
+            description,
+            ["presupuesto", "precio", "soles", "dolares", "usd"],
+            default="preferencia",
+        )
+
     nearby_prefs = _extract_nearby_preferences(description)
     if nearby_prefs:
         new_criteria["features"] = _merge_unique_terms(list(new_criteria.get("features") or []), nearby_prefs)
         new_criteria["keywords"] = _merge_unique_terms(list(new_criteria.get("keywords") or []), nearby_prefs)
+        cleaned_nearby = [re.sub(r"^cerca de\s+", "", t, flags=re.IGNORECASE).strip() for t in nearby_prefs]
+        cleaned_nearby = [t for t in cleaned_nearby if t]
+        new_criteria["nearby_zones"] = _merge_unique_terms(list(new_criteria.get("nearby_zones") or []), cleaned_nearby)
+
+    common_areas = _extract_common_areas(description)
+    if common_areas:
+        new_criteria["common_areas"] = _merge_unique_terms(list(new_criteria.get("common_areas") or []), common_areas)
+        new_criteria["features"] = _merge_unique_terms(list(new_criteria.get("features") or []), common_areas)
+        new_criteria["keywords"] = _merge_unique_terms(list(new_criteria.get("keywords") or []), common_areas)
+
+    # Mode inference for V2 preferences (obligatorio = hard filter, preferencia = ranking signal).
+    if new_criteria.get("location"):
+        new_criteria["location_mode"] = _extract_preference_mode(
+            description,
+            ["ubicacion", "zona", "distrito", "ciudad"],
+            default="obligatorio",
+        )
+    if new_criteria.get("bedrooms"):
+        new_criteria["bedrooms_mode"] = _extract_preference_mode(
+            description,
+            ["dormitorio", "dormitorios", "habitacion", "habitaciones", "cuartos"],
+            default="obligatorio",
+        )
+    if new_criteria.get("bathrooms"):
+        new_criteria["bathrooms_mode"] = _extract_preference_mode(
+            description,
+            ["bano", "banos", "bathroom", "aseo"],
+            default="preferencia",
+        )
+    if new_criteria.get("area_exact") or new_criteria.get("area_min") or new_criteria.get("area_max"):
+        new_criteria["area_mode"] = _extract_preference_mode(
+            description,
+            ["m2", "metro", "metros", "metraje", "superficie", "area"],
+            default="preferencia",
+        )
+    if new_criteria.get("nearby_zones"):
+        new_criteria["nearby_zones_mode"] = _extract_preference_mode(
+            description,
+            ["cerca", "alrededor", "cercano", "cercana"],
+            default="preferencia",
+        )
+    if new_criteria.get("common_areas"):
+        new_criteria["common_areas_mode"] = _extract_preference_mode(
+            description,
+            ["gimnasio", "piscina", "parrilla", "cowork", "juegos", "terraza", "pet"],
+            default="preferencia",
+        )
 
     # Merge: keep all previous criteria (strip internal _relax_* keys); new non-empty values override
     prev = _clean_criteria(session.extracted_criteria)
@@ -1562,6 +2181,14 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
         merged[k] = v
     merged["features"] = _merge_unique_terms(list(prev.get("features") or []), list(merged.get("features") or []))
     merged["keywords"] = _merge_unique_terms(list(prev.get("keywords") or []), list(merged.get("keywords") or []))
+    merged["nearby_zones"] = _merge_unique_terms(
+        list(prev.get("nearby_zones") or []),
+        list(merged.get("nearby_zones") or []),
+    )
+    merged["common_areas"] = _merge_unique_terms(
+        list(prev.get("common_areas") or []),
+        list(merged.get("common_areas") or []),
+    )
     # Build full description context: original intent + current adjustment
     original = session.ideal_description or ""
     if original and description != original:
@@ -1571,7 +2198,13 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
 
     # Save preferences + search history for registered users
     if session.site_user_id:
-        _save_preferences(session.site_user_id, merged, full_desc, db)
+        _save_preferences(
+            session.site_user_id,
+            merged,
+            full_desc,
+            db,
+            extra_context={"conversation_memory": {"last_intent": "inicio_busqueda"}},
+        )
         _save_search_history(session.site_user_id, description, merged, db)
 
     from app.models.chat_config import ChatConfig, DEFAULT_CONFIG_ID
@@ -1762,6 +2395,12 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
 
 
 async def _handle_presenting(session: WebChatSession, text: str, db: Session) -> dict:
+    runtime = _build_intent_runtime(session, text, db, session.info_step)
+    candidates = candidate_intents_for_state("presenting", session.info_step)
+    intent_response = await dispatch_intents(runtime, candidates)
+    if intent_response is not None:
+        return intent_response
+
     t = _normalize_text(text)
 
     if session.site_user_id and _is_interested_list_request(text):
@@ -1779,6 +2418,9 @@ async def _handle_presenting(session: WebChatSession, text: str, db: Session) ->
                 rating=rating,
                 rated_at=datetime.now(timezone.utc),
             )
+            _track_behavior_signal(session.site_user_id, "rated_record_ids", record_id, db)
+            if rating <= 2:
+                _track_behavior_signal(session.site_user_id, "discarded_record_ids", record_id, db)
         return _text(_rating_feedback(rating))
 
     if any(k in t for k in ["siguiente", "ver siguiente", "otra", "ver otra", "no me convence", "next", "skip"]):
@@ -1870,6 +2512,11 @@ def _do_interested(session: WebChatSession, text: str, db: Session) -> dict:
             rating=rating,
             rated_at=datetime.now(timezone.utc) if rating else None,
         )
+        _track_behavior_signal(session.site_user_id, "interested_record_ids", record_id, db)
+        if rating:
+            _track_behavior_signal(session.site_user_id, "rated_record_ids", record_id, db)
+            if rating <= 2:
+                _track_behavior_signal(session.site_user_id, "discarded_record_ids", record_id, db)
 
     current = dict(session.extracted_criteria or {})
     clean = _clean_criteria(current)
@@ -1880,8 +2527,15 @@ def _do_interested(session: WebChatSession, text: str, db: Session) -> dict:
         lead["rating"] = rating
 
     lead = _hydrate_lead_from_db(session, lead, db)
+    # Business rule: every interested lead must provide proof of purchasing capacity.
+    lead["requires_financial_capacity_doc"] = True
 
     session.extracted_criteria = {**clean, "_lead": lead}
+    if lead.get("requires_financial_capacity_doc") and not lead.get("financial_capacity_doc"):
+        session.info_step = 12
+        session.state = "collecting_info"
+        return _text(_build_financial_doc_request_message())
+
     missing = _get_missing_lead_fields(lead)
 
     if not missing:
@@ -2002,6 +2656,7 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
             seen_in_chat=True,
             seen_at=datetime.now(timezone.utc),
         )
+        _track_behavior_signal(session.site_user_id, "viewed_record_ids", record_id, db)
 
     idx = session.current_match_index + 1
     total = len(session.matched_record_ids)

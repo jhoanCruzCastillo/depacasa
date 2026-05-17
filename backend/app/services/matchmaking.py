@@ -41,6 +41,9 @@ _PAT_BED_NUM = re.compile(
 _PAT_NUM_BATH = re.compile(r'(\d+)\s*(?:ba[ñn]os?|bathrooms?|aseos?)', re.IGNORECASE)
 
 
+_AREA_KEY = re.compile(r'area|área|superficie|metraje|m2|m²|mt2|size', re.IGNORECASE)
+_PAT_NUM_AREA = re.compile(r'(\d{2,4}(?:[\.,]\d{1,2})?)\s*(?:m2|m²|metros?\s*cuadrados?|mt2)', re.IGNORECASE)
+
 _PRICE_KEY = re.compile(r'precio|price|costo|valor|monto|importe|usd|dolar|sol|pen', re.IGNORECASE)
 _PRICE_WITH_CCY = re.compile(
     r'(?:us\$|usd|dolares?|d[oó]lares?|s\/\.?|soles?|pen)\s*([0-9][0-9\.,\s]{0,15})(?:\s*(k|mil|m|mm|millon(?:es)?))?',
@@ -97,6 +100,90 @@ def _extract_bedroom_counts(data: dict) -> set[int]:
 
     _walk(data)
     return counts
+
+
+def _extract_bathroom_counts(data: dict) -> set[int]:
+    counts: set[int] = set()
+
+    def _walk(obj, key: str = "") -> None:
+        if isinstance(obj, (int, float)):
+            if _BATH_KEY.search(key):
+                n = int(obj)
+                if 0 < n <= 10:
+                    counts.add(n)
+            return
+
+        if isinstance(obj, str):
+            if _BATH_KEY.search(key):
+                for m in re.finditer(r"\b(\d+)\b", obj):
+                    n = int(m.group(1))
+                    if 0 < n <= 10:
+                        counts.add(n)
+            for m in _PAT_NUM_BATH.finditer(obj):
+                n = int(m.group(1))
+                if 0 < n <= 10:
+                    counts.add(n)
+            return
+
+        if isinstance(obj, list):
+            for item in obj:
+                _walk(item, key)
+            return
+
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                _walk(v, str(k))
+
+    _walk(data)
+    return counts
+
+
+def _extract_area_values(data: dict) -> list[float]:
+    values: list[float] = []
+
+    def _to_float(raw: str) -> float | None:
+        token = (raw or "").strip().replace(" ", "")
+        if not token:
+            return None
+        token = token.replace(",", ".")
+        try:
+            val = float(token)
+        except ValueError:
+            return None
+        if 15 <= val <= 2000:
+            return val
+        return None
+
+    def _walk(obj, key: str = "") -> None:
+        if isinstance(obj, (int, float)):
+            if _AREA_KEY.search(key):
+                val = float(obj)
+                if 15 <= val <= 2000:
+                    values.append(val)
+            return
+
+        if isinstance(obj, str):
+            if _AREA_KEY.search(key):
+                parsed = _to_float(obj)
+                if parsed is not None:
+                    values.append(parsed)
+            for m in _PAT_NUM_AREA.finditer(obj):
+                parsed = _to_float(m.group(1))
+                if parsed is not None:
+                    values.append(parsed)
+            return
+
+        if isinstance(obj, list):
+            for item in obj:
+                _walk(item, key)
+            return
+
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                _walk(v, str(k))
+
+    _walk(data)
+    return sorted({round(v, 2) for v in values})
 
 
 def _parse_price_amount(raw: str, suffix: str | None = None) -> float | None:
@@ -216,15 +303,32 @@ async def find_matches(
         import json
 
         location = (criteria.get("location") or "").strip()
+        location_mode = str(criteria.get("location_mode") or "obligatorio").lower()
         loc_norm = _normalize(location) if location else ""
         keywords = list(criteria.get("keywords") or []) + list(criteria.get("features") or [])
         keywords = [_normalize(k) for k in keywords if k and len(k) > 2]
+
         bedrooms: int | None = criteria.get("bedrooms")
+        bedrooms_mode = str(criteria.get("bedrooms_mode") or "obligatorio").lower()
+
+        bathrooms_exact = criteria.get("bathrooms")
+        bathrooms_min = criteria.get("bathrooms_min")
+        bathrooms_max = criteria.get("bathrooms_max")
+        has_bath_filter = any(v is not None for v in (bathrooms_exact, bathrooms_min, bathrooms_max))
+        bathrooms_mode = str(criteria.get("bathrooms_mode") or "preferencia").lower()
+
+        area_exact = criteria.get("area_exact")
+        area_min = criteria.get("area_min")
+        area_max = criteria.get("area_max")
+        has_area_filter = any(v is not None for v in (area_exact, area_min, area_max))
+        area_mode = str(criteria.get("area_mode") or "preferencia").lower()
+
         min_price = criteria.get("min_price")
         max_price = criteria.get("max_price")
         min_price = float(min_price) if isinstance(min_price, (int, float)) else None
         max_price = float(max_price) if isinstance(max_price, (int, float)) else None
         has_price_filter = min_price is not None or max_price is not None
+        budget_mode = str(criteria.get("budget_mode") or "preferencia").lower()
         excluded = excluded_ids or set()
 
         rows = db.execute(
@@ -233,8 +337,24 @@ async def find_matches(
         ).fetchall()
 
         logger.info(
-            "matchmaking: location=%r bedrooms=%s min_price=%s max_price=%s keywords=%s candidates=%d",
-            location, bedrooms, min_price, max_price, keywords[:5], len(rows),
+            "matchmaking: location=%r(%s) bedrooms=%s(%s) baths=%s/%s-%s(%s) area=%s/%s-%s(%s) price=%s-%s(%s) keywords=%s candidates=%d",
+            location,
+            location_mode,
+            bedrooms,
+            bedrooms_mode,
+            bathrooms_exact,
+            bathrooms_min,
+            bathrooms_max,
+            bathrooms_mode,
+            area_exact,
+            area_min,
+            area_max,
+            area_mode,
+            min_price,
+            max_price,
+            budget_mode,
+            keywords[:5],
+            len(rows),
         )
 
         if not rows:
@@ -268,7 +388,7 @@ async def find_matches(
                     loc_ok = True
                     loc_score = 20
                 else:
-                    loc_score = -30
+                    loc_score = -30 if location_mode == "obligatorio" else -8
 
             # Keyword score
             kw_score = sum(1 for kw in keywords if kw in kw_norm)
@@ -283,9 +403,55 @@ async def find_matches(
                     if bedrooms in bed_counts:
                         bed_match, bed_score = 1, 10     # exact → shown first
                     elif any(abs(b - bedrooms) == 1 for b in bed_counts):
-                        bed_match, bed_score = -1, -5    # adjacent → excluded from strict filter, light penalty
+                        bed_match, bed_score = -1, -5 if bedrooms_mode == "obligatorio" else -3
                     else:
-                        bed_match, bed_score = -1, -20   # far mismatch → excluded, heavy penalty
+                        bed_match, bed_score = -1, -20 if bedrooms_mode == "obligatorio" else -8
+
+            # Bathroom score + match category
+            bath_match = 0  # 1=match, 0=unknown, -1=mismatch
+            bath_score = 0
+            if has_bath_filter:
+                bath_counts = _extract_bathroom_counts(data_dict)
+                if bath_counts:
+                    if bathrooms_exact is not None and int(bathrooms_exact) in bath_counts:
+                        bath_match, bath_score = 1, 8
+                    elif bathrooms_exact is None and (
+                        any(
+                            (
+                                (bathrooms_min is None or b >= int(bathrooms_min))
+                                and (bathrooms_max is None or b <= int(bathrooms_max))
+                            )
+                            for b in bath_counts
+                        )
+                    ):
+                        bath_match, bath_score = 1, 8
+                    else:
+                        bath_match, bath_score = -1, -10 if bathrooms_mode == "obligatorio" else -4
+
+            # Area score + match category
+            area_match = 0  # 1=match, 0=unknown, -1=mismatch
+            area_score = 0
+            if has_area_filter:
+                area_values = _extract_area_values(data_dict)
+                if area_values:
+                    if area_exact is not None:
+                        target = float(area_exact)
+                        if any(abs(a - target) <= 10 for a in area_values):
+                            area_match, area_score = 1, 6
+                        else:
+                            area_match, area_score = -1, -8 if area_mode == "obligatorio" else -3
+                    else:
+                        in_range = any(
+                            (
+                                (area_min is None or a >= float(area_min))
+                                and (area_max is None or a <= float(area_max))
+                            )
+                            for a in area_values
+                        )
+                        if in_range:
+                            area_match, area_score = 1, 6
+                        else:
+                            area_match, area_score = -1, -8 if area_mode == "obligatorio" else -3
 
             # Price score + strict match category
             # price_match: 1=in range, 0=unknown price, -1=known out of range
@@ -299,7 +465,7 @@ async def find_matches(
                     too_low = min_price is not None and best_price < min_price
                     too_high = max_price is not None and best_price > max_price
                     if too_low or too_high:
-                        price_match, price_score = -1, -20
+                        price_match, price_score = -1, -20 if budget_mode == "obligatorio" else -6
                     else:
                         price_match, price_score = 1, 8
 
@@ -307,9 +473,11 @@ async def find_matches(
                 "id": record_id,
                 "loc_ok": loc_ok,
                 "bed_match": bed_match,
+                "bath_match": bath_match,
+                "area_match": area_match,
                 "price_match": price_match,
                 "price": best_price,
-                "total": loc_score + kw_score + bed_score + price_score,
+                "total": loc_score + kw_score + bed_score + bath_score + area_score + price_score,
                 "data": data_dict,
                 "parent": parent_text[:300],
             })
@@ -317,15 +485,15 @@ async def find_matches(
         if not entries:
             return []
 
-        # ── Step 1: filter by location (when specified) ───────────────────────
-        if location:
+        # Hard filters only for fields marked as obligatorio.
+        if location and location_mode == "obligatorio":
             loc_entries = [e for e in entries if e["loc_ok"]]
             if not loc_entries:
-                logger.info("matchmaking: no records found for location '%s'", location)
+                logger.info("matchmaking: no records found for location %s", location)
                 return []
             entries = loc_entries
 
-        if has_price_filter:
+        if has_price_filter and budget_mode == "obligatorio":
             in_budget = [e for e in entries if e["price_match"] == 1]
             if in_budget:
                 entries = in_budget
@@ -336,18 +504,31 @@ async def find_matches(
                 )
                 return []
 
-        # ── Step 2: strict bedroom filter (when specified) ────────────────────
-        # Only discard known mismatches when exact/unknown alternatives exist.
-        if bedrooms:
-            good = [e for e in entries if e["bed_match"] >= 0]   # exact or unknown
+        if bedrooms and bedrooms_mode == "obligatorio":
+            good = [e for e in entries if e["bed_match"] == 1]
             if good:
-                entries = good   # prefer correct/unknown over known mismatch
+                entries = good
             else:
-                # All remaining records have a known bedroom mismatch → no results.
                 logger.info(
-                    "matchmaking: all location-matched records have bedroom mismatch "
-                    "(want %d)", bedrooms,
+                    "matchmaking: all location-matched records have bedroom mismatch (want %d)",
+                    bedrooms,
                 )
+                return []
+
+        if has_bath_filter and bathrooms_mode == "obligatorio":
+            bath_good = [e for e in entries if e["bath_match"] == 1]
+            if bath_good:
+                entries = bath_good
+            else:
+                logger.info("matchmaking: no records satisfy obligatory bathroom criteria")
+                return []
+
+        if has_area_filter and area_mode == "obligatorio":
+            area_good = [e for e in entries if e["area_match"] == 1]
+            if area_good:
+                entries = area_good
+            else:
+                logger.info("matchmaking: no records satisfy obligatory area criteria")
                 return []
 
         # ── Step 3: rank by total score ───────────────────────────────────────
@@ -355,7 +536,7 @@ async def find_matches(
         top_slice = entries[:_RERANK_LIMIT]
 
         # ── Step 4: Claude re-ranking ─────────────────────────────────────────
-        if top_slice and (location or bedrooms or has_price_filter):
+        if top_slice and (location or bedrooms or has_bath_filter or has_area_filter or has_price_filter):
             try:
                 from app.services.claude_service import rerank_properties
                 pairs = [

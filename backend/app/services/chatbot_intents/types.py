@@ -1,0 +1,33 @@
+"""Canonical intent names for the web chatbot."""
+
+INICIO_BUSQUEDA = "inicio_busqueda"
+CONTINUAR_CON_CONTEXTO = "continuar_con_contexto"
+VER_PROPIEDADES_NUEVAS_NO_VISTAS = "ver_propiedades_nuevas_no_vistas"
+VER_PROPIEDADES_VISTAS = "ver_propiedades_vistas"
+AJUSTAR_CRITERIOS_BUSQUEDA = "ajustar_criterios_busqueda"
+CONFIRMAR_RELAJACION_RESULTADOS = "confirmar_relajacion_resultados"
+VER_SIGUIENTE_PROPIEDAD = "ver_siguiente_propiedad"
+CALIFICAR_PROPIEDAD = "calificar_propiedad"
+MARCAR_INTERES_LO_QUIERO = "marcar_interes_lo_quiero"
+CAPTURAR_DATOS_CONTACTO = "capturar_datos_contacto"
+CAPTURAR_SUSTENTO_FINANCIERO = "capturar_sustento_financiero"
+CONSULTAR_DETALLE_PROPIEDAD_ACTUAL = "consultar_detalle_propiedad_actual"
+FALLBACK_FUERA_DE_ALCANCE = "fallback_fuera_de_alcance"
+FALLBACK_NO_ENTENDIDO = "fallback_no_entendido"
+
+ALL_INTENTS = [
+    INICIO_BUSQUEDA,
+    CONTINUAR_CON_CONTEXTO,
+    VER_PROPIEDADES_NUEVAS_NO_VISTAS,
+    VER_PROPIEDADES_VISTAS,
+    AJUSTAR_CRITERIOS_BUSQUEDA,
+    CONFIRMAR_RELAJACION_RESULTADOS,
+    VER_SIGUIENTE_PROPIEDAD,
+    CALIFICAR_PROPIEDAD,
+    MARCAR_INTERES_LO_QUIERO,
+    CAPTURAR_DATOS_CONTACTO,
+    CAPTURAR_SUSTENTO_FINANCIERO,
+    CONSULTAR_DETALLE_PROPIEDAD_ACTUAL,
+    FALLBACK_FUERA_DE_ALCANCE,
+    FALLBACK_NO_ENTENDIDO,
+]

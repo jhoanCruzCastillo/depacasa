@@ -166,8 +166,27 @@ export const createWebChatSession = (token?: string | null) =>
   API.post('/chat/web/sessions', {}, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   })
-export const sendWebChatMessage = (sessionId: string, content: string) =>
-  API.post(`/chat/web/sessions/${sessionId}/message`, { content })
+export const sendWebChatMessage = (
+  sessionId: string,
+  payload:
+    | string
+    | {
+        content?: string
+        attachment_urls?: string[]
+        financial_document_url?: string
+      },
+) => {
+  const body = typeof payload === 'string' ? { content: payload } : payload
+  return API.post(`/chat/web/sessions/${sessionId}/message`, body)
+}
+
+export const uploadWebChatAttachment = (sessionId: string, file: File) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  return API.post(`/chat/web/sessions/${sessionId}/attachments`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 

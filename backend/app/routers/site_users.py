@@ -15,6 +15,7 @@ from app.models.user_property_interaction import UserPropertyInteraction
 from app.models.search_history import SearchHistory
 from app.models.scraped_record import ScrapedRecord
 from app.models.web_chat_session import WebChatSession
+from app.services.preference_service import build_preferences_v2_from_criteria, default_preferences_v2
 
 router = APIRouter(prefix="/api/site-users", tags=["site-users"])
 
@@ -215,21 +216,33 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
             "full_name": lead_data.get("full_name"),
             "whatsapp": lead_data.get("whatsapp"),
             "document_number": lead_data.get("document_number"),
+            "financial_capacity_doc": lead_data.get("financial_capacity_doc"),
             "country_of_residence": lead_data.get("country_of_residence"),
             "record_id": str(lead_data.get("record_id")) if lead_data.get("record_id") else None,
             "rating": lead_data.get("rating"),
             "updated_at": lead_updated_at.isoformat() if lead_updated_at else None,
         },
-        "preferences": {
-            "location": pref.location,
-            "bedrooms": pref.bedrooms,
-            "min_price": pref.min_price,
-            "max_price": pref.max_price,
-            "features": pref.features or [],
-            "keywords": pref.keywords or [],
-            "raw_description": pref.raw_description,
-            "updated_at": pref.updated_at.isoformat() if pref.updated_at else None,
-        } if pref else None,
+        "preferences": (
+            pref.preferences_v2
+            if pref and isinstance(pref.preferences_v2, dict) and pref.preferences_v2
+            else (
+                build_preferences_v2_from_criteria(
+                    {
+                        "location": pref.location if pref else None,
+                        "bedrooms": pref.bedrooms if pref else None,
+                        "features": pref.features if pref else [],
+                        "keywords": pref.keywords if pref else [],
+                        "min_price": pref.min_price if pref else None,
+                        "max_price": pref.max_price if pref else None,
+                    },
+                    None,
+                )
+                if pref
+                else default_preferences_v2()
+            )
+        ),
+        "context": (pref.context if pref and isinstance(pref.context, dict) else {}),
+        "preferences_updated_at": pref.updated_at.isoformat() if pref and pref.updated_at else None,
         "interactions": [
             {
                 "record_id": str(i.record_id),

@@ -37,6 +37,12 @@ def run_migrations():
         # Web chat session auth columns
         "ALTER TABLE web_chat_sessions ADD COLUMN IF NOT EXISTS email VARCHAR",
         "ALTER TABLE web_chat_sessions ADD COLUMN IF NOT EXISTS site_user_id UUID REFERENCES site_users(id)",
+        "ALTER TABLE web_chat_sessions ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE web_chat_sessions ADD COLUMN IF NOT EXISTS inactivated_at TIMESTAMPTZ",
+        "CREATE INDEX IF NOT EXISTS idx_web_chat_sessions_user_active ON web_chat_sessions (site_user_id, is_active)",
+        # User preference V2 model
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS preferences_v2 JSONB",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS context JSONB",
         # Portal config — hero carousel + featured + catalog sections
         "ALTER TABLE site_config ADD COLUMN IF NOT EXISTS hero_record_ids JSONB DEFAULT '[]'::jsonb",
         "ALTER TABLE site_config ADD COLUMN IF NOT EXISTS featured_enabled BOOLEAN DEFAULT TRUE",

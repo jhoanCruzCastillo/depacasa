@@ -1,10 +1,14 @@
 ﻿import { useState, useRef, useEffect } from 'react'
 import {
   MessageCircle, X, Send, Star, ChevronRight, ChevronLeft,
-  Heart, Building2, MapPin, BedDouble, Bath, Maximize2,
+  Heart, Building2, MapPin, BedDouble, Bath, Maximize2, Paperclip,
   GalleryHorizontal, DollarSign, Eye,
 } from 'lucide-react'
-import API from '../../services/api'
+import {
+  createWebChatSession,
+  sendWebChatMessage,
+  uploadWebChatAttachment,
+} from '../../services/api'
 
 // â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -24,6 +28,11 @@ interface Message {
   quick_replies?: string[]
 }
 interface SiteUser { id: string; email: string; name: string | null }
+interface OutgoingPayload {
+  content?: string
+  attachment_urls?: string[]
+  financial_document_url?: string
+}
 
 interface Props {
   buttonLabel?: string
@@ -522,10 +531,28 @@ export default function ChatWidget({
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [state, setState] = useState('collecting_info')
   const [showRegBanner, setShowRegBanner] = useState(false)
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null)
+  const [attachmentError, setAttachmentError] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+  const ALLOWED_ATTACHMENT_MIME_PREFIXES = ['image/']
+  const ALLOWED_ATTACHMENT_MIME = new Set([
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+    'application/rtf',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/csv',
+    'application/vnd.oasis.opendocument.text',
+  ])
 
   useEffect(() => {
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
@@ -534,9 +561,7 @@ export default function ChatWidget({
   const startSession = async () => {
     if (sessionId) return
     try {
-      const res = await API.post('/chat/web/sessions', {}, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
+      const res = await createWebChatSession(token)
       setSessionId(res.data.session_id)
       setState(res.data.state)
       setMessages([{ role: 'assistant', content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }])
@@ -551,11 +576,11 @@ export default function ChatWidget({
     setTimeout(() => inputRef.current?.focus(), 100)
   }
 
-  const sendRaw = async (content: string) => {
-    if (!sessionId || loading) return
+  const sendRaw = async (payload: OutgoingPayload) => {
+    if (!sessionId || loading || uploading) return
     setLoading(true)
     try {
-      const res = await API.post(`/chat/web/sessions/${sessionId}/message`, { content })
+      const res = await sendWebChatMessage(sessionId, payload)
       setMessages(m => {
         const next = [...m, { role: 'assistant' as const, content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }]
         if (res.data.card && !user && !showRegBanner) setShowRegBanner(true)
@@ -570,29 +595,109 @@ export default function ChatWidget({
     }
   }
 
+  const isAllowedAttachment = (file: File) => {
+    const mime = (file.type || '').toLowerCase()
+    return (
+      ALLOWED_ATTACHMENT_MIME_PREFIXES.some(prefix => mime.startsWith(prefix))
+      || ALLOWED_ATTACHMENT_MIME.has(mime)
+    )
+  }
+
+  const onAttachmentPick = (file: File | null) => {
+    setAttachmentError('')
+    if (!file) {
+      setAttachmentFile(null)
+      return
+    }
+    if (!isAllowedAttachment(file)) {
+      setAttachmentFile(null)
+      setAttachmentError('Tipo de archivo no permitido. Usa imagen o documento.')
+      return
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setAttachmentFile(null)
+      setAttachmentError('El archivo supera 10 MB.')
+      return
+    }
+    setAttachmentFile(file)
+  }
+
+  const clearAttachment = () => {
+    setAttachmentFile(null)
+    setAttachmentError('')
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const shouldMarkAsFinancialDoc = () => {
+    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+    const contextText = String(lastAssistant?.content || '').toLowerCase()
+    return /sustento|capacidad de compra|capacidad financiera|preaprob|credito aprobado|ayuda social/.test(contextText)
+  }
+
+  const uploadAttachmentIfAny = async (): Promise<{ attachmentUrls: string[]; financialDocumentUrl?: string }> => {
+    if (!sessionId || !attachmentFile) return { attachmentUrls: [] }
+    setUploading(true)
+    try {
+      const res = await uploadWebChatAttachment(sessionId, attachmentFile)
+      const url = String(res.data?.attachment_url || '').trim()
+      if (!url) throw new Error('missing attachment_url')
+      const kind = String(res.data?.kind || '')
+      const isLikelyFinancial = kind === 'document' && (
+        shouldMarkAsFinancialDoc()
+        || /capacidad|sustento|credito|crédito|preaprob|ayuda social|financ/i.test(input)
+      )
+      return {
+        attachmentUrls: [url],
+        financialDocumentUrl: isLikelyFinancial ? url : undefined,
+      }
+    } finally {
+      setUploading(false)
+    }
+  }
+
   const send = async () => {
     const text = input.trim()
-    if (!text || !sessionId || loading || state === 'contact_requested') return
+    if ((!text && !attachmentFile) || !sessionId || loading || uploading || state === 'contact_requested') return
+    let attachmentUrls: string[] = []
+    let financialDocumentUrl: string | undefined
+    if (attachmentFile) {
+      try {
+        const uploaded = await uploadAttachmentIfAny()
+        attachmentUrls = uploaded.attachmentUrls
+        financialDocumentUrl = uploaded.financialDocumentUrl
+      } catch {
+        setAttachmentError('No se pudo subir el archivo. Intenta nuevamente.')
+        return
+      }
+    }
+    const userBubbleParts = [text]
+    if (attachmentFile?.name) userBubbleParts.push(`[Adjunto] ${attachmentFile.name}`)
+    const userBubbleText = userBubbleParts.filter(Boolean).join('\n').trim()
     setInput('')
-    setMessages(m => [...m, { role: 'user', content: text, card: null }])
-    await sendRaw(text)
+    clearAttachment()
+    setMessages(m => [...m, { role: 'user', content: userBubbleText || 'Adjunto archivo', card: null }])
+    await sendRaw({
+      content: text,
+      attachment_urls: attachmentUrls,
+      financial_document_url: financialDocumentUrl,
+    })
   }
 
   const handleNext = () => {
     setMessages(m => [...m, { role: 'user', content: 'Ver siguiente', card: null }])
-    sendRaw('ver siguiente')
+    sendRaw({ content: 'ver siguiente' })
   }
 
   const handleInterested = (rating: number) => {
     const text = rating > 0 ? `Lo quiero, le doy ${rating} estrellas` : 'Lo quiero'
     setMessages(m => [...m, { role: 'user', content: text, card: null }])
-    sendRaw(text)
+    sendRaw({ content: text })
   }
 
   const handleQuickReply = (text: string) => {
-    if (!text || !sessionId || loading) return
+    if (!text || !sessionId || loading || uploading) return
     setMessages(m => [...m, { role: 'user', content: text, card: null }])
-    sendRaw(text)
+    sendRaw({ content: text })
   }
 
   const isDone = state === 'contact_requested'
@@ -665,7 +770,7 @@ export default function ChatWidget({
                         readonly={i !== lastIdx || isDone}
                       />
                     )}
-                    {i === lastIdx && !loading && (msg.quick_replies || []).length > 0 && (
+                    {i === lastIdx && !loading && !uploading && (msg.quick_replies || []).length > 0 && (
                       <div className="flex flex-wrap gap-2 pl-1">
                         {(msg.quick_replies || []).slice(0, 4).map((opt, idx) => (
                           <button
@@ -684,7 +789,7 @@ export default function ChatWidget({
             ))}
 
             {/* Typing indicator */}
-            {loading && (
+            {(loading || uploading) && (
               <div className="flex justify-start">
                 <div className="bg-white border border-slate-100 shadow-sm px-4 py-3 rounded-2xl rounded-bl-sm">
                   <div className="flex items-center gap-1.5">
@@ -733,26 +838,59 @@ export default function ChatWidget({
           </div>
 
           {/* Input */}
-          <div className="border-t border-slate-200 bg-white p-3 flex items-end gap-2 flex-shrink-0">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-              placeholder={isDone ? 'Conversación finalizada' : 'Escribe un mensaje...'}
-              disabled={isDone || loading}
-              rows={1}
-              className="flex-1 resize-none rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 disabled:bg-slate-50 disabled:text-slate-400 max-h-28 overflow-y-auto"
-              style={{ lineHeight: '1.5', '--tw-ring-color': primaryColor } as React.CSSProperties}
+          <div className="border-t border-slate-200 bg-white p-3 flex-shrink-0">
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              accept="image/*,.pdf,.doc,.docx,.txt,.rtf,.xls,.xlsx,.csv,.odt"
+              onChange={e => onAttachmentPick(e.target.files?.[0] || null)}
             />
-            <button
-              onClick={send}
-              disabled={!input.trim() || loading || isDone}
-              className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-white disabled:opacity-40 transition-opacity"
-              style={{ backgroundColor: primaryColor }}
-            >
-              <Send className="w-4 h-4" />
-            </button>
+            {attachmentFile && (
+              <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 bg-slate-50">
+                <Paperclip className="w-3.5 h-3.5 text-slate-500" />
+                <span className="max-w-[250px] truncate">{attachmentFile.name}</span>
+                <button
+                  onClick={clearAttachment}
+                  className="text-slate-400 hover:text-slate-600 transition-colors"
+                  disabled={loading || uploading || isDone}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+            {attachmentError && (
+              <p className="mb-2 text-[11px] text-rose-500">{attachmentError}</p>
+            )}
+            <div className="flex items-end gap-2">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading || uploading || isDone}
+                className="flex-shrink-0 w-10 h-10 rounded-xl border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-50 disabled:opacity-40 transition-opacity"
+                title="Adjuntar archivo"
+              >
+                <Paperclip className="w-4 h-4" />
+              </button>
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+                placeholder={isDone ? 'Conversación finalizada' : 'Escribe un mensaje o adjunta un archivo...'}
+                disabled={isDone || loading || uploading}
+                rows={1}
+                className="flex-1 resize-none rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 disabled:bg-slate-50 disabled:text-slate-400 max-h-28 overflow-y-auto"
+                style={{ lineHeight: '1.5', '--tw-ring-color': primaryColor } as React.CSSProperties}
+              />
+              <button
+                onClick={send}
+                disabled={(!input.trim() && !attachmentFile) || loading || uploading || isDone}
+                className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-white disabled:opacity-40 transition-opacity"
+                style={{ backgroundColor: primaryColor }}
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}

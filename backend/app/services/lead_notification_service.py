@@ -16,6 +16,7 @@ from app.models.user_preference import UserPreference
 from app.models.web_chat_session import WebChatSession
 from app.services.email_service import send_email
 from app.services.matchmaking import get_record_data
+from app.services.preference_service import build_preferences_v2_from_criteria, default_preferences_v2
 
 logger = logging.getLogger(__name__)
 
@@ -123,15 +124,22 @@ def _build_profile_payload(session: WebChatSession, db: Session) -> dict:
 
     user_pref = db.query(UserPreference).filter(UserPreference.site_user_id == session.site_user_id).first()
     if user_pref:
-        payload["saved_preferences"] = {
-            "location": user_pref.location,
-            "bedrooms": user_pref.bedrooms,
-            "min_price": user_pref.min_price,
-            "max_price": user_pref.max_price,
-            "features": user_pref.features or [],
-            "keywords": user_pref.keywords or [],
-            "raw_description": user_pref.raw_description,
-        }
+        payload["saved_preferences"] = (
+            user_pref.preferences_v2
+            if isinstance(user_pref.preferences_v2, dict) and user_pref.preferences_v2
+            else build_preferences_v2_from_criteria(
+                {
+                    "location": user_pref.location,
+                    "bedrooms": user_pref.bedrooms,
+                    "min_price": user_pref.min_price,
+                    "max_price": user_pref.max_price,
+                    "features": user_pref.features or [],
+                    "keywords": user_pref.keywords or [],
+                },
+                None,
+            )
+        ) or default_preferences_v2()
+        payload["saved_context"] = user_pref.context if isinstance(user_pref.context, dict) else {}
     return payload
 
 
@@ -146,6 +154,7 @@ def _build_lead_email_html(
     lead_country = _format_optional(lead.get("country_of_residence"))
     lead_whatsapp = _format_optional(lead.get("whatsapp") or (site_user.phone if site_user else None))
     lead_document = _format_optional(lead.get("document_number"))
+    lead_financial_doc = _format_optional(lead.get("financial_capacity_doc"))
     lead_email = _format_optional(site_user.email if site_user else None)
     lead_rating = _format_optional(lead.get("rating"))
 
@@ -164,6 +173,7 @@ def _build_lead_email_html(
       <p><strong>Email:</strong> {html.escape(lead_email)}</p>
       <p><strong>WhatsApp:</strong> {html.escape(lead_whatsapp)}</p>
       <p><strong>Documento:</strong> {html.escape(lead_document)}</p>
+      <p><strong>Sustento financiero:</strong> {html.escape(lead_financial_doc)}</p>
       <p><strong>Pais de residencia:</strong> {html.escape(lead_country)}</p>
       <p><strong>Calificacion:</strong> {html.escape(lead_rating)}</p>
       <p><strong>Session ID:</strong> <code>{html.escape(str(profile_payload.get("session_id") or "-"))}</code></p>

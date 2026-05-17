@@ -18,5 +18,9 @@ class UserPreference(Base):
     features = Column(JSON, nullable=True)   # list[str]
     keywords = Column(JSON, nullable=True)   # list[str]
     raw_description = Column(String, nullable=True)
+    # Canonical V2 preferences contract (6 parameters with mode + value).
+    preferences_v2 = Column(JSON, nullable=True)
+    # Consolidated persistent context outside preferences (budget/profile/signals/memory).
+    context = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

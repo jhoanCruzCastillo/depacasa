@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Integer, Text, JSON, DateTime, ForeignKey
+from sqlalchemy import Column, String, Integer, Text, JSON, DateTime, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -23,6 +23,8 @@ class WebChatSession(Base):
     extracted_criteria = Column(JSON, default=dict)
     matched_record_ids = Column(JSON, default=list)
     current_match_index = Column(Integer, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    inactivated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

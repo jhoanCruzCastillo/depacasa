@@ -220,6 +220,7 @@ async def get_advisor_clients(advisor_id: UUID, db: Session = Depends(get_db)):
                 "whatsapp": lead.get("whatsapp") or s.phone or (user.phone if user else None),
                 "country_of_residence": lead.get("country_of_residence") or s.country or (user.country if user else None),
                 "document_number": lead.get("document_number"),
+                "financial_capacity_doc": lead.get("financial_capacity_doc"),
                 "rating": lead.get("rating"),
                 "assigned_at": lead.get("advisor_assigned_at"),
                 "notified_at": lead.get("advisor_notified_at"),

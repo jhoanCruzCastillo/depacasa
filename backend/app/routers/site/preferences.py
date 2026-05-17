@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.routers.auth import get_optional_user
 from database import get_db
+from app.services.preference_service import build_preferences_v2_from_criteria, default_preferences_v2
 
 router = APIRouter()
 
@@ -116,16 +117,27 @@ def get_my_profile(request: Request, db: Session = Depends(get_db)):
     )
 
     return {
-        "preferences": {
-            "location": pref.location,
-            "bedrooms": pref.bedrooms,
-            "min_price": pref.min_price,
-            "max_price": pref.max_price,
-            "features": pref.features or [],
-            "keywords": pref.keywords or [],
-            "raw_description": pref.raw_description,
-            "updated_at": pref.updated_at.isoformat() if pref and pref.updated_at else None,
-        } if pref else None,
+        "preferences": (
+            pref.preferences_v2
+            if pref and isinstance(pref.preferences_v2, dict) and pref.preferences_v2
+            else (
+                build_preferences_v2_from_criteria(
+                    {
+                        "location": pref.location if pref else None,
+                        "bedrooms": pref.bedrooms if pref else None,
+                        "features": pref.features if pref else [],
+                        "keywords": pref.keywords if pref else [],
+                        "min_price": pref.min_price if pref else None,
+                        "max_price": pref.max_price if pref else None,
+                    },
+                    None,
+                )
+                if pref
+                else default_preferences_v2()
+            )
+        ),
+        "context": (pref.context if pref and isinstance(pref.context, dict) else {}),
+        "preferences_updated_at": pref.updated_at.isoformat() if pref and pref.updated_at else None,
         "interactions": [
             {
                 "record_id": str(i.record_id),

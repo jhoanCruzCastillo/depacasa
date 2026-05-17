@@ -1,10 +1,26 @@
-"""Claude AI integration for criteria extraction and conversation."""
+﻿"""Claude AI integration for criteria extraction and conversation."""
 
 import json
 import re
 import unicodedata
 import logging
 from config import settings
+from app.services.chatbot_intents.types import (
+    AJUSTAR_CRITERIOS_BUSQUEDA,
+    CALIFICAR_PROPIEDAD,
+    CAPTURAR_DATOS_CONTACTO,
+    CAPTURAR_SUSTENTO_FINANCIERO,
+    CONFIRMAR_RELAJACION_RESULTADOS,
+    CONSULTAR_DETALLE_PROPIEDAD_ACTUAL,
+    CONTINUAR_CON_CONTEXTO,
+    FALLBACK_FUERA_DE_ALCANCE,
+    FALLBACK_NO_ENTENDIDO,
+    INICIO_BUSQUEDA,
+    MARCAR_INTERES_LO_QUIERO,
+    VER_PROPIEDADES_NUEVAS_NO_VISTAS,
+    VER_PROPIEDADES_VISTAS,
+    VER_SIGUIENTE_PROPIEDAD,
+)
 
 
 def _norm(s: str) -> str:
@@ -26,20 +42,20 @@ def _get_client():
     return _client
 
 
-# ── Regex-based fallbacks (used when Claude is unavailable) ────────────────────
+# â”€â”€ Regex-based fallbacks (used when Claude is unavailable) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
 _NAME_STRIP = re.compile(
-    r"^\s*(soy|me llamo|mi nombre es|me dicen|pueden llamarme|llámame|soy el|soy la|hola soy|hola me llamo)\s+",
+    r"^\s*(soy|me llamo|mi nombre es|me dicen|pueden llamarme|llÃ¡mame|soy el|soy la|hola soy|hola me llamo)\s+",
     re.IGNORECASE,
 )
 
 _COUNTRIES = [
-    "perú", "peru", "colombia", "méxico", "mexico", "chile", "argentina",
+    "perÃº", "peru", "colombia", "mÃ©xico", "mexico", "chile", "argentina",
     "ecuador", "bolivia", "venezuela", "brasil", "brazil", "paraguay",
-    "uruguay", "panamá", "panama", "costa rica", "guatemala", "honduras",
-    "nicaragua", "el salvador", "cuba", "república dominicana", "españa",
+    "uruguay", "panamÃ¡", "panama", "costa rica", "guatemala", "honduras",
+    "nicaragua", "el salvador", "cuba", "repÃºblica dominicana", "espaÃ±a",
     "estados unidos", "usa",
 ]
 
@@ -117,7 +133,7 @@ def _normalize_whatsapp(raw: str | None, document: str | None = None) -> str | N
     return f"+{digits}" if token.startswith("+") else digits
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
+# â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def extract_user_field(step: int, raw: str) -> str:
     """Extract a specific user info field from natural language.
@@ -127,24 +143,24 @@ async def extract_user_field(step: int, raw: str) -> str:
     """
     instructions = {
         0: (
-            "Extrae SOLO el correo electrónico del texto dado. "
-            "Responde únicamente con el correo en minúsculas. Sin saludos ni explicaciones. "
-            "Ejemplos: 'mi correo es juan@gmail.com' → juan@gmail.com | 'soy antonio@hotmail.com' → antonio@hotmail.com"
+            "Extrae SOLO el correo electrÃ³nico del texto dado. "
+            "Responde Ãºnicamente con el correo en minÃºsculas. Sin saludos ni explicaciones. "
+            "Ejemplos: 'mi correo es juan@gmail.com' â†’ juan@gmail.com | 'soy antonio@hotmail.com' â†’ antonio@hotmail.com"
         ),
         1: (
             "Extrae SOLO el nombre propio de la persona del texto dado. "
-            "Responde únicamente con el nombre (puede ser compuesto). Sin saludos ni explicaciones. "
-            "Ejemplos: 'soy Jhoan' → Jhoan | 'me llamo María García' → María García"
+            "Responde Ãºnicamente con el nombre (puede ser compuesto). Sin saludos ni explicaciones. "
+            "Ejemplos: 'soy Jhoan' â†’ Jhoan | 'me llamo MarÃ­a GarcÃ­a' â†’ MarÃ­a GarcÃ­a"
         ),
         2: (
-            "Extrae SOLO el nombre del país del texto dado. "
-            "Responde únicamente con el nombre del país en español. "
-            "Ejemplos: 'soy de Perú' → Perú | 'soy peruano' → Perú | 'vivo en Colombia' → Colombia"
+            "Extrae SOLO el nombre del paÃ­s del texto dado. "
+            "Responde Ãºnicamente con el nombre del paÃ­s en espaÃ±ol. "
+            "Ejemplos: 'soy de PerÃº' â†’ PerÃº | 'soy peruano' â†’ PerÃº | 'vivo en Colombia' â†’ Colombia"
         ),
         3: (
-            "Extrae SOLO el número de teléfono del texto dado, con código de país si existe. "
-            "Responde únicamente con el número limpio. "
-            "Ejemplos: 'mi número es +51 980 490 696' → +51980490696 | '980 490 696' → 980490696"
+            "Extrae SOLO el nÃºmero de telÃ©fono del texto dado, con cÃ³digo de paÃ­s si existe. "
+            "Responde Ãºnicamente con el nÃºmero limpio. "
+            "Ejemplos: 'mi nÃºmero es +51 980 490 696' â†’ +51980490696 | '980 490 696' â†’ 980490696"
         ),
     }
     try:
@@ -157,7 +173,7 @@ async def extract_user_field(step: int, raw: str) -> str:
         extracted = response.content[0].text.strip()
         return extracted if extracted else _FALLBACKS[step](raw)
     except Exception as e:
-        logger.warning(f"extract_user_field step={step} Claude error: {e} — using regex fallback")
+        logger.warning(f"extract_user_field step={step} Claude error: {e} â€” using regex fallback")
         return _FALLBACKS[step](raw)
 
 
@@ -173,8 +189,8 @@ def _fallback_contact_fields(raw: str) -> dict:
         _extract_labeled_value(
             text,
             [
-                "dni", "ce", "carnet", "carné", "doc", "documento", "pasaporte",
-                "rut", "curp", "ine", "nie", "cedula", "cédula",
+                "dni", "ce", "carnet", "carnÃ©", "doc", "documento", "pasaporte",
+                "rut", "curp", "ine", "nie", "cedula", "cÃ©dula",
             ],
         )
     )
@@ -346,28 +362,169 @@ async def generate_quick_replies(
         options = _sanitize_quick_replies(list(parsed.get("options") or []))
         return options or fallback
     except Exception as e:
-        logger.warning(f"generate_quick_replies Claude error: {e} — using fallback")
+        logger.warning(f"generate_quick_replies Claude error: {e} â€” using fallback")
         return fallback
 
 
+
+_INTENT_RANKING_SYSTEM = """\
+Eres un clasificador de intenciones para un chatbot inmobiliario.
+Responde SOLO JSON valido, sin markdown, con este formato exacto:
+{"ordered_intents": ["intent_1", "intent_2"]}
+
+Reglas:
+- Usa solo intenciones incluidas en "candidates".
+- Manten el orden de ejecucion real de la accion del usuario.
+- Si el mensaje contiene varias acciones (ej. calificar y luego siguiente), devuelve ambas en orden.
+- No inventes intenciones nuevas.
+- Si no hay suficiente claridad, devuelve una sola intencion de fallback incluida en candidates.
+"""
+
+
+def _first_match_position(text: str, patterns: list[str]) -> int | None:
+    best: int | None = None
+    for token in patterns:
+        pos = text.find(token)
+        if pos >= 0 and (best is None or pos < best):
+            best = pos
+    return best
+
+
+def _looks_in_scope_message(norm_text: str) -> bool:
+    hints = [
+        "propiedad", "propiedades", "departamento", "depa", "casa",
+        "zona", "ubicacion", "distrito", "dormitorio", "habitacion", "cuarto",
+        "precio", "presupuesto", "bano", "metros", "m2",
+        "siguiente", "otra", "ver", "calificar", "estrellas",
+        "lo quiero", "interesa", "asesor", "contacto", "whatsapp",
+    ]
+    return any(h in norm_text for h in hints)
+
+
+def _fallback_rank_intents(message: str, candidates: list[str]) -> list[str]:
+    norm_msg = _norm(message or "")
+    triggers = {
+        CALIFICAR_PROPIEDAD: ["estrella", "califico", "calificar", "puntuo", "rating"],
+        VER_SIGUIENTE_PROPIEDAD: ["siguiente", "otra", "ver otra", "next", "skip", "no me convence"],
+        MARCAR_INTERES_LO_QUIERO: ["lo quiero", "me interesa", "contactar", "asesor", "me gusta"],
+        AJUSTAR_CRITERIOS_BUSQUEDA: ["ajust", "filtro", "cambiar", "modificar", "otra zona", "nueva busqueda"],
+        VER_PROPIEDADES_NUEVAS_NO_VISTAS: ["no vistas", "nuevas", "aun no he visto", "sin ver"],
+        VER_PROPIEDADES_VISTAS: ["vistas", "anteriores", "ya revisaste", "interesan"],
+        CONFIRMAR_RELAJACION_RESULTADOS: ["si", "sí", "dale", "ok", "mostrar", "verlas", "no", "prefiero no"],
+        CONTINUAR_CON_CONTEXTO: ["si", "sí", "adelante", "continuar", "usa mis preferencias"],
+        CAPTURAR_DATOS_CONTACTO: ["whatsapp", "dni", "documento", "me llamo", "soy de", "telefono", "celular"],
+        CAPTURAR_SUSTENTO_FINANCIERO: [
+            "sustento financiero",
+            "capacidad financiera",
+            "preaprobacion",
+            "pre aprobacion",
+            "aprobacion bancaria",
+            "estado de cuenta",
+            "adjunto pdf",
+            "enlace",
+            "link",
+            "drive",
+        ],
+        CONSULTAR_DETALLE_PROPIEDAD_ACTUAL: ["detalle", "detalles", "mas info", "informacion", "precio", "m2", "metros"],
+        INICIO_BUSQUEDA: ["busco", "quiero", "necesito", "departamento", "casa", "dormitorio", "zona", "presupuesto"],
+    }
+
+    scored: list[tuple[int, int, str]] = []
+    for idx, intent in enumerate(candidates):
+        patterns = triggers.get(intent)
+        if not patterns:
+            continue
+        pos = _first_match_position(norm_msg, patterns)
+        if pos is None:
+            continue
+        scored.append((pos, idx, intent))
+
+    scored.sort(key=lambda item: (item[0], item[1]))
+    ordered = [intent for _, _, intent in scored]
+
+    if not ordered:
+        if FALLBACK_FUERA_DE_ALCANCE in candidates and not _looks_in_scope_message(norm_msg):
+            return [FALLBACK_FUERA_DE_ALCANCE]
+        if FALLBACK_NO_ENTENDIDO in candidates:
+            return [FALLBACK_NO_ENTENDIDO]
+        return list(candidates)
+
+    if FALLBACK_FUERA_DE_ALCANCE in candidates and not _looks_in_scope_message(norm_msg):
+        ordered.insert(0, FALLBACK_FUERA_DE_ALCANCE)
+    if FALLBACK_NO_ENTENDIDO in candidates:
+        ordered.append(FALLBACK_NO_ENTENDIDO)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for intent in ordered:
+        if intent in seen:
+            continue
+        if intent not in candidates:
+            continue
+        seen.add(intent)
+        deduped.append(intent)
+    return deduped
+
+
+async def rank_intents(
+    message: str,
+    candidates: list[str],
+    state: str,
+    step: int | None = None,
+) -> list[str]:
+    fallback = _fallback_rank_intents(message, candidates)
+    if not candidates:
+        return []
+    try:
+        payload = {
+            "message": message,
+            "state": state,
+            "step": step,
+            "candidates": candidates,
+        }
+        response = _get_client().messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=240,
+            system=_INTENT_RANKING_SYSTEM,
+            messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+        )
+        txt = response.content[0].text.strip()
+        if txt.startswith("```"):
+            txt = txt.split("```")[1]
+            if txt.startswith("json"):
+                txt = txt[4:]
+        parsed = json.loads(txt.strip())
+        ordered = [str(x) for x in list(parsed.get("ordered_intents") or []) if isinstance(x, str)]
+        filtered: list[str] = []
+        seen: set[str] = set()
+        for intent in ordered:
+            if intent not in candidates or intent in seen:
+                continue
+            seen.add(intent)
+            filtered.append(intent)
+        return filtered or fallback
+    except Exception as e:
+        logger.warning(f"rank_intents Claude error: {e} â€” using fallback")
+        return fallback
+
 _CRITERIA_SYSTEM = """\
-Eres un asistente inmobiliario experto. Extrae criterios de búsqueda de la \
-descripción del usuario y responde SOLO con JSON válido, sin markdown ni texto extra.
+Eres un asistente inmobiliario experto. Extrae criterios de bÃºsqueda de la \
+descripciÃ³n del usuario y responde SOLO con JSON vÃ¡lido, sin markdown ni texto extra.
 
 Formato exacto (nunca omitas ninguna clave):
 {"location": "string o null", "bedrooms": number o null, \
 "min_price": number o null, "max_price": number o null, \
-"features": ["lista de características"], \
+"features": ["lista de caracterÃ­sticas"], \
 "keywords": ["todas las palabras clave relevantes"]}
 
 Reglas estrictas:
 - "location": nombre oficial del distrito/ciudad/zona. Si el usuario menciona cualquier \
-  lugar geográfico, incluso sin preposición, extráelo. Ejemplos: \
-  "Jesús María" → "Jesús María", "miraflores" → "Miraflores", \
-  "cajamarca" → "Cajamarca", "en Surco" → "Santiago de Surco".
-- "bedrooms": número ENTERO de dormitorios. "una habitación"→1, "dos cuartos"→2, \
-  "1 dorm"→1, "mono ambiente"→1. NUNCA confundas baños con dormitorios.
-- "keywords": incluye sinónimos y variantes (ej. "departamento","depa","flat").
+  lugar geogrÃ¡fico, incluso sin preposiciÃ³n, extrÃ¡elo. Ejemplos: \
+  "JesÃºs MarÃ­a" â†’ "JesÃºs MarÃ­a", "miraflores" â†’ "Miraflores", \
+  "cajamarca" â†’ "Cajamarca", "en Surco" â†’ "Santiago de Surco".
+- "bedrooms": nÃºmero ENTERO de dormitorios. "una habitaciÃ³n"â†’1, "dos cuartos"â†’2, \
+  "1 dorm"â†’1, "mono ambiente"â†’1. NUNCA confundas baÃ±os con dormitorios.
+- "keywords": incluye sinÃ³nimos y variantes (ej. "departamento","depa","flat").
 """
 
 
@@ -394,8 +551,8 @@ def _enrich_criteria_semantics(criteria: dict, description: str) -> dict:
         "actividad fisica", "fitness", "gym", "gimnasio", "correr", "running",
     ]
     if any(sig in desc for sig in exercise_signals):
-        features = _merge_unique_terms(features, ["gimnasio", "área deportiva"])
-        keywords = _merge_unique_terms(keywords, ["gimnasio", "gym", "área deportiva", "deporte"])
+        features = _merge_unique_terms(features, ["gimnasio", "Ã¡rea deportiva"])
+        keywords = _merge_unique_terms(keywords, ["gimnasio", "gym", "Ã¡rea deportiva", "deporte"])
 
     out["features"] = features
     out["keywords"] = keywords
@@ -419,7 +576,7 @@ async def extract_criteria(description: str) -> dict:
         parsed = json.loads(raw.strip())
         return _enrich_criteria_semantics(parsed, description)
     except Exception as e:
-        logger.warning(f"Criteria extraction failed: {e} — using regex fallback")
+        logger.warning(f"Criteria extraction failed: {e} â€” using regex fallback")
         return _enrich_criteria_semantics(_fallback_criteria(description), description)
 
 
@@ -436,7 +593,7 @@ async def rerank_properties(
     if len(candidates) <= 1:
         return [rid for rid, _ in candidates]
 
-    # Build compact numbered summaries — child data + parent description excerpt
+    # Build compact numbered summaries â€” child data + parent description excerpt
     lines: list[str] = []
     idx_to_id: dict[str, str] = {}
     for i, (rid, data) in enumerate(candidates, 1):
@@ -448,22 +605,22 @@ async def rerank_properties(
 
     crit_parts: list[str] = []
     if criteria.get("location"):
-        crit_parts.append(f"Ubicación: {criteria['location']}")
+        crit_parts.append(f"UbicaciÃ³n: {criteria['location']}")
     if criteria.get("bedrooms"):
         crit_parts.append(f"Dormitorios: {criteria['bedrooms']}")
     if criteria.get("min_price") or criteria.get("max_price"):
-        crit_parts.append(f"Precio: {criteria.get('min_price', '?')}–{criteria.get('max_price', '?')}")
+        crit_parts.append(f"Precio: {criteria.get('min_price', '?')}â€“{criteria.get('max_price', '?')}")
     if criteria.get("features"):
-        crit_parts.append(f"Características: {', '.join(criteria['features'])}")
+        crit_parts.append(f"CaracterÃ­sticas: {', '.join(criteria['features'])}")
 
     user_prompt = (
         f"El usuario busca:\n"
-        + ("\n".join(crit_parts) or "(sin criterios específicos)")
-        + (f"\nDescripción: {description}" if description else "")
+        + ("\n".join(crit_parts) or "(sin criterios especÃ­ficos)")
+        + (f"\nDescripciÃ³n: {description}" if description else "")
         + "\n\nPropiedades candidatas:\n"
         + "\n".join(lines)
-        + "\n\nOrdena los números de propiedades de más a menos relevante. "
-        "Responde SOLO con los números separados por coma. Ejemplo: 3,1,4,2"
+        + "\n\nOrdena los nÃºmeros de propiedades de mÃ¡s a menos relevante. "
+        "Responde SOLO con los nÃºmeros separados por coma. Ejemplo: 3,1,4,2"
     )
 
     try:
@@ -472,7 +629,7 @@ async def rerank_properties(
             max_tokens=200,
             system=(
                 "Eres un experto inmobiliario. Ordena propiedades por relevancia "
-                "para el usuario. Responde ÚNICAMENTE con números separados por coma."
+                "para el usuario. Responde ÃšNICAMENTE con nÃºmeros separados por coma."
             ),
             messages=[{"role": "user", "content": user_prompt}],
         )
@@ -497,7 +654,7 @@ _WORD_NUMS = {
 _STOPWORDS = {
     "quiero", "busco", "necesito", "para", "como", "tiene", "tener",
     "con", "que", "una", "unos", "unas", "los", "las", "del", "por",
-    "pero", "más", "este", "esta", "entre", "desde", "hasta", "sobre",
+    "pero", "mÃ¡s", "este", "esta", "entre", "desde", "hasta", "sobre",
 }
 
 
@@ -505,15 +662,15 @@ _STOPWORDS = {
 _KNOWN_LOCATIONS = {
     # Lima districts
     "miraflores", "san isidro", "surco", "santiago de surco", "barranco",
-    "la molina", "san borja", "jesús maría", "jesus maria", "magdalena",
-    "lince", "pueblo libre", "san miguel", "breña", "lima", "callao",
+    "la molina", "san borja", "jesÃºs marÃ­a", "jesus maria", "magdalena",
+    "lince", "pueblo libre", "san miguel", "breÃ±a", "lima", "callao",
     "chorrillos", "surquillo", "la victoria", "ate", "san juan de lurigancho",
-    "san juan de miraflores", "villa el salvador", "villa maría del triunfo",
-    "carabayllo", "comas", "independencia", "los olivos", "rímac", "rimac",
-    "san martín de porres", "santa anita", "el agustino", "lurigancho",
-    "lurín", "pachacámac", "chaclacayo", "cieneguilla", "punta hermosa",
-    "san bartolo", "santa beatriz", "santa maría del mar", "pucusana",
-    "punta negra", "ancón", "santa rosa",
+    "san juan de miraflores", "villa el salvador", "villa marÃ­a del triunfo",
+    "carabayllo", "comas", "independencia", "los olivos", "rÃ­mac", "rimac",
+    "san martÃ­n de porres", "santa anita", "el agustino", "lurigancho",
+    "lurÃ­n", "pachacÃ¡mac", "chaclacayo", "cieneguilla", "punta hermosa",
+    "san bartolo", "santa beatriz", "santa marÃ­a del mar", "pucusana",
+    "punta negra", "ancÃ³n", "santa rosa",
     # Other major cities
     "cajamarca", "trujillo", "arequipa", "cusco", "piura", "iquitos",
     "chiclayo", "huancayo", "tacna", "ica", "puno", "chimbote",
@@ -525,12 +682,12 @@ def _fallback_criteria(description: str) -> dict:
     desc_norm = _norm(description)   # accent-free lowercase for matching
     desc_lower = description.lower()
 
-    # Location — try preposition first, then bare known-location name.
+    # Location â€” try preposition first, then bare known-location name.
     # Both original and normalized forms are compared.
     location: str | None = None
     loc_m = re.search(
         r'\b(?:en|de|para|sector|distrito|zona)\s+'
-        r'([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+(?:de\s+)?[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)?)',
+        r'([A-ZÃÃ‰ÃÃ“ÃšÃ‘][a-zÃ¡Ã©Ã­Ã³ÃºÃ±]+(?:\s+(?:de\s+)?[A-ZÃÃ‰ÃÃ“ÃšÃ‘][a-zÃ¡Ã©Ã­Ã³ÃºÃ±]+)?)',
         description,
     )
     if loc_m:
@@ -542,12 +699,12 @@ def _fallback_criteria(description: str) -> dict:
                 location = known.title()
                 break
 
-    # Bedrooms — match against accent-normalized description so "habitación" → "habitacion"
+    # Bedrooms â€” match against accent-normalized description so "habitaciÃ³n" â†’ "habitacion"
     bedrooms: int | None = None
     bed_m = re.search(
         r'\b(\d+|' + '|'.join(_WORD_NUMS) + r')\s*'
         r'(?:dormitorio|habitacion|cuarto|dorm|bedroom|ambiente|recamara)',
-        desc_norm,   # accent-free: "habitación" → "habitacion" ✓
+        desc_norm,   # accent-free: "habitaciÃ³n" â†’ "habitacion" âœ“
     )
     if bed_m:
         raw = bed_m.group(1).lower()
@@ -566,3 +723,5 @@ def _fallback_criteria(description: str) -> dict:
         "features": [],
         "keywords": keywords,
     }
+
+
