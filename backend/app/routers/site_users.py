@@ -1,13 +1,14 @@
-"""Admin CRUD for registered site users + test email."""
+"""Admin CRUD for registered site users + scoring + document validation."""
 
 from pathlib import PurePosixPath
 from urllib.parse import urlparse
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Literal
 from uuid import UUID
 
 from database import get_db
@@ -19,6 +20,7 @@ from app.models.search_history import SearchHistory
 from app.models.scraped_record import ScrapedRecord
 from app.models.web_chat_session import WebChatSession
 from app.services.preference_service import build_preferences_v2_from_criteria, default_preferences_v2
+from app.services.lead_scoring_service import compute_score, compute_score_for_user_id
 
 router = APIRouter(prefix="/api/site-users", tags=["site-users"])
 
@@ -34,6 +36,12 @@ class UserUpdate(BaseModel):
 class TestEmailIn(BaseModel):
     subject: str = "Correo de prueba"
     body: str = "Este es un correo de prueba enviado desde el panel de administración."
+
+
+class ValidateDocumentIn(BaseModel):
+    status: Literal["pending", "approved", "rejected"]
+    notes: Optional[str] = None
+    reviewed_by: Optional[str] = None
 
 
 def _clean_text(value: object) -> Optional[str]:
@@ -74,7 +82,7 @@ def _document_flags_from_context(context: dict | None) -> tuple[bool, bool]:
     return _document_flags_from_lead(lead_profile)
 
 
-def _out(u: SiteUser, doc_flags: Optional[dict] = None) -> dict:
+def _out(u: SiteUser, doc_flags: Optional[dict] = None, score_summary: Optional[dict] = None) -> dict:
     data = {
         "id": str(u.id),
         "email": u.email,
@@ -83,9 +91,17 @@ def _out(u: SiteUser, doc_flags: Optional[dict] = None) -> dict:
         "phone": u.phone,
         "wants_newsletter": u.wants_newsletter,
         "created_at": u.created_at.isoformat() if u.created_at else None,
+        "financial_doc_status": u.financial_doc_status,
+        "financial_doc_notes": u.financial_doc_notes,
+        "financial_doc_reviewed_at": (
+            u.financial_doc_reviewed_at.isoformat() if u.financial_doc_reviewed_at else None
+        ),
+        "financial_doc_reviewed_by": u.financial_doc_reviewed_by,
     }
     if doc_flags:
         data.update(doc_flags)
+    if score_summary:
+        data["score"] = score_summary
     return data
 
 
@@ -156,8 +172,105 @@ def _summarize_record(record: Optional[ScrapedRecord]) -> dict:
     }
 
 
+def _load_doc_flags(user_ids: list, db: Session) -> dict:
+    flags: dict = {
+        uid: {"has_uploaded_documents": False, "has_financial_document": False}
+        for uid in user_ids
+    }
+    if not user_ids:
+        return flags
+
+    prefs = (
+        db.query(UserPreference.site_user_id, UserPreference.context)
+        .filter(UserPreference.site_user_id.in_(user_ids))
+        .all()
+    )
+    for site_user_id, context in prefs:
+        has_any, has_financial = _document_flags_from_context(context)
+        if has_any:
+            flags[site_user_id]["has_uploaded_documents"] = True
+        if has_financial:
+            flags[site_user_id]["has_financial_document"] = True
+
+    unresolved_ids = [
+        uid for uid in user_ids
+        if not flags[uid]["has_uploaded_documents"] or not flags[uid]["has_financial_document"]
+    ]
+    if unresolved_ids:
+        sessions = (
+            db.query(WebChatSession.site_user_id, WebChatSession.extracted_criteria)
+            .filter(WebChatSession.site_user_id.in_(unresolved_ids))
+            .order_by(WebChatSession.updated_at.desc().nullslast(), WebChatSession.created_at.desc())
+            .all()
+        )
+        for site_user_id, extracted_criteria in sessions:
+            if site_user_id not in flags:
+                continue
+            criteria = extracted_criteria if isinstance(extracted_criteria, dict) else {}
+            lead = criteria.get("_lead") if isinstance(criteria.get("_lead"), dict) else {}
+            has_any, has_financial = _document_flags_from_lead(lead)
+            if has_any:
+                flags[site_user_id]["has_uploaded_documents"] = True
+            if has_financial:
+                flags[site_user_id]["has_financial_document"] = True
+
+    return flags
+
+
+def _load_scores_batch(user_ids: list, users: list[SiteUser], db: Session) -> dict:
+    """Load scoring data for a batch of users and return {user_id: score_summary}."""
+    if not user_ids:
+        return {}
+
+    prefs_map = {
+        p.site_user_id: p
+        for p in db.query(UserPreference).filter(UserPreference.site_user_id.in_(user_ids)).all()
+    }
+    interactions_map: dict = {uid: [] for uid in user_ids}
+    for i in db.query(UserPropertyInteraction).filter(UserPropertyInteraction.site_user_id.in_(user_ids)).all():
+        interactions_map[i.site_user_id].append(i)
+
+    sessions_map: dict = {uid: [] for uid in user_ids}
+    for s in (
+        db.query(WebChatSession)
+        .filter(WebChatSession.site_user_id.in_(user_ids))
+        .order_by(WebChatSession.updated_at.desc().nullslast(), WebChatSession.created_at.desc())
+        .all()
+    ):
+        sessions_map[s.site_user_id].append(s)
+
+    result = {}
+    user_map = {u.id: u for u in users}
+    for uid in user_ids:
+        user = user_map.get(uid)
+        if not user:
+            continue
+        full = compute_score(
+            user,
+            prefs_map.get(uid),
+            interactions_map[uid],
+            sessions_map[uid],
+        )
+        result[uid] = {
+            "total": full["total"],
+            "max": full["max"],
+            "tier": full["tier"],
+        }
+    return result
+
+
+# ── List / CRUD endpoints ──────────────────────────────────────────────────────
+
 @router.get("")
-def list_users(skip: int = 0, limit: int = 20, search: str = "", db: Session = Depends(get_db)):
+def list_users(
+    skip: int = 0,
+    limit: int = 20,
+    search: str = "",
+    tier: str = "",
+    doc_status: str = "",
+    sort_by: str = "created_at",
+    db: Session = Depends(get_db),
+):
     q = db.query(SiteUser)
     if search:
         term = f"%{search}%"
@@ -166,55 +279,74 @@ def list_users(skip: int = 0, limit: int = 20, search: str = "", db: Session = D
             SiteUser.name.ilike(term) |
             SiteUser.country.ilike(term)
         )
-    total = q.with_entities(func.count()).scalar()
+    if doc_status:
+        if doc_status == "none":
+            q = q.filter(SiteUser.financial_doc_status.is_(None))
+        else:
+            q = q.filter(SiteUser.financial_doc_status == doc_status)
+
+    total_raw = q.with_entities(func.count()).scalar()
     users = q.order_by(SiteUser.created_at.desc()).offset(skip).limit(limit).all()
     user_ids = [u.id for u in users]
-    doc_flags_by_user: dict = {
-        uid: {"has_uploaded_documents": False, "has_financial_document": False}
-        for uid in user_ids
-    }
 
-    if user_ids:
-        prefs = (
-            db.query(UserPreference.site_user_id, UserPreference.context)
-            .filter(UserPreference.site_user_id.in_(user_ids))
-            .all()
+    doc_flags_by_user = _load_doc_flags(user_ids, db)
+    scores_by_user = _load_scores_batch(user_ids, users, db)
+
+    items = []
+    for u in users:
+        score_summary = scores_by_user.get(u.id)
+        # Filter by tier client-side if needed (score computed in memory)
+        if tier and score_summary and score_summary["tier"]["key"] != tier:
+            continue
+        items.append(_out(u, doc_flags=doc_flags_by_user.get(u.id), score_summary=score_summary))
+
+    # When tier filter is active total count is approximate (filtered after fetch)
+    total = len(items) if tier else total_raw
+
+    return {"total": total, "items": items}
+
+
+@router.get("/ranked")
+def list_users_ranked(
+    skip: int = 0,
+    limit: int = 50,
+    tier: str = "",
+    doc_status: str = "",
+    search: str = "",
+    db: Session = Depends(get_db),
+):
+    """Return users sorted by score descending — used by the scoring dashboard."""
+    q = db.query(SiteUser)
+    if search:
+        term = f"%{search}%"
+        q = q.filter(
+            SiteUser.email.ilike(term) |
+            SiteUser.name.ilike(term) |
+            SiteUser.country.ilike(term)
         )
-        for site_user_id, context in prefs:
-            has_any, has_financial = _document_flags_from_context(context)
-            if has_any:
-                doc_flags_by_user[site_user_id]["has_uploaded_documents"] = True
-            if has_financial:
-                doc_flags_by_user[site_user_id]["has_financial_document"] = True
+    if doc_status:
+        if doc_status == "none":
+            q = q.filter(SiteUser.financial_doc_status.is_(None))
+        else:
+            q = q.filter(SiteUser.financial_doc_status == doc_status)
 
-        unresolved_ids = [
-            uid
-            for uid in user_ids
-            if not doc_flags_by_user[uid]["has_uploaded_documents"]
-            or not doc_flags_by_user[uid]["has_financial_document"]
-        ]
-        if unresolved_ids:
-            sessions = (
-                db.query(WebChatSession.site_user_id, WebChatSession.extracted_criteria)
-                .filter(WebChatSession.site_user_id.in_(unresolved_ids))
-                .order_by(WebChatSession.updated_at.desc().nullslast(), WebChatSession.created_at.desc())
-                .all()
-            )
-            for site_user_id, extracted_criteria in sessions:
-                if site_user_id not in doc_flags_by_user:
-                    continue
-                criteria = extracted_criteria if isinstance(extracted_criteria, dict) else {}
-                lead = criteria.get("_lead") if isinstance(criteria.get("_lead"), dict) else {}
-                has_any, has_financial = _document_flags_from_lead(lead)
-                if has_any:
-                    doc_flags_by_user[site_user_id]["has_uploaded_documents"] = True
-                if has_financial:
-                    doc_flags_by_user[site_user_id]["has_financial_document"] = True
+    # Load all matching users (for in-memory score sort) up to a sensible cap
+    all_users = q.order_by(SiteUser.created_at.desc()).limit(500).all()
+    user_ids = [u.id for u in all_users]
 
-    return {
-        "total": total,
-        "items": [_out(u, doc_flags=doc_flags_by_user.get(u.id)) for u in users],
-    }
+    doc_flags_by_user = _load_doc_flags(user_ids, db)
+    scores_by_user = _load_scores_batch(user_ids, all_users, db)
+
+    rows = []
+    for u in all_users:
+        score_summary = scores_by_user.get(u.id, {"total": 0, "max": 100, "tier": {"key": "frio", "label": "Frío"}})
+        if tier and score_summary["tier"]["key"] != tier:
+            continue
+        rows.append(_out(u, doc_flags=doc_flags_by_user.get(u.id), score_summary=score_summary))
+
+    rows.sort(key=lambda r: r.get("score", {}).get("total", 0), reverse=True)
+    total = len(rows)
+    return {"total": total, "items": rows[skip: skip + limit]}
 
 
 @router.get("/{user_id}")
@@ -252,6 +384,42 @@ def delete_user(user_id: UUID, db: Session = Depends(get_db)):
     db.delete(u)
     db.commit()
 
+
+# ── Score endpoints ────────────────────────────────────────────────────────────
+
+@router.get("/{user_id}/score")
+def get_user_score(user_id: UUID, db: Session = Depends(get_db)):
+    """Detailed scoring breakdown for a user."""
+    score = compute_score_for_user_id(user_id, db)
+    if score is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+    return score
+
+
+@router.post("/{user_id}/validate-document")
+def validate_document(user_id: UUID, body: ValidateDocumentIn, db: Session = Depends(get_db)):
+    """Admin manually approves or rejects a user's financial document."""
+    u = db.query(SiteUser).filter(SiteUser.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+
+    u.financial_doc_status = body.status
+    u.financial_doc_notes = body.notes
+    u.financial_doc_reviewed_by = body.reviewed_by
+    u.financial_doc_reviewed_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(u)
+    return {
+        "financial_doc_status": u.financial_doc_status,
+        "financial_doc_notes": u.financial_doc_notes,
+        "financial_doc_reviewed_at": (
+            u.financial_doc_reviewed_at.isoformat() if u.financial_doc_reviewed_at else None
+        ),
+        "financial_doc_reviewed_by": u.financial_doc_reviewed_by,
+    }
+
+
+# ── Profile endpoint ───────────────────────────────────────────────────────────
 
 @router.get("/{user_id}/profile")
 def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
@@ -317,8 +485,11 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
     has_docs = bool(lead_document or financial_doc)
     has_financial = bool(financial_doc)
 
+    score = compute_score(u, pref, interactions, sessions)
+
     return {
         "user": _out(u),
+        "score": score,
         "lead": {
             "full_name": lead_data.get("full_name"),
             "whatsapp": lead_data.get("whatsapp"),
@@ -382,6 +553,8 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
         ],
     }
 
+
+# ── Email endpoint ─────────────────────────────────────────────────────────────
 
 @router.post("/{user_id}/send-email")
 def send_test_email(user_id: UUID, body: TestEmailIn, db: Session = Depends(get_db)):

@@ -23,9 +23,26 @@ import {
   Image as ImageIcon,
   CheckCircle2,
   XCircle,
+  Flame,
+  Thermometer,
+  Snowflake,
+  FileCheck,
+  FileX,
+  FileQuestion,
 } from 'lucide-react'
 import API from '../../services/api'
 import toast from 'react-hot-toast'
+
+interface TierInfo {
+  key: 'muy_caliente' | 'caliente' | 'tibio' | 'frio'
+  label: string
+}
+
+interface ScoreSummary {
+  total: number
+  max: number
+  tier: TierInfo
+}
 
 interface SiteUser {
   id: string
@@ -37,6 +54,11 @@ interface SiteUser {
   created_at: string | null
   has_uploaded_documents?: boolean
   has_financial_document?: boolean
+  financial_doc_status: 'pending' | 'approved' | 'rejected' | null
+  financial_doc_notes: string | null
+  financial_doc_reviewed_at: string | null
+  financial_doc_reviewed_by: string | null
+  score?: ScoreSummary
 }
 
 interface Interaction {
@@ -85,6 +107,7 @@ interface UserProfile {
   user: SiteUser
   lead: LeadData
   documents?: DocumentsSummary
+  score?: ScoreSummary
   preferences: Record<string, unknown> | null
   context?: Record<string, unknown>
   preferences_updated_at?: string | null
@@ -93,6 +116,34 @@ interface UserProfile {
 }
 
 type DetailTabId = 'profile' | 'document' | 'preferences' | 'activity'
+
+const TIER_CONFIG: Record<string, { color: string; bg: string; border: string; Icon: typeof Flame }> = {
+  muy_caliente: { color: 'text-red-600', bg: 'bg-red-100', border: 'border-red-200', Icon: Flame },
+  caliente: { color: 'text-orange-600', bg: 'bg-orange-100', border: 'border-orange-200', Icon: Thermometer },
+  tibio: { color: 'text-amber-600', bg: 'bg-amber-100', border: 'border-amber-200', Icon: Thermometer },
+  frio: { color: 'text-slate-500', bg: 'bg-slate-100', border: 'border-slate-200', Icon: Snowflake },
+}
+
+function TierBadge({ score }: { score: ScoreSummary }) {
+  const cfg = TIER_CONFIG[score.tier.key] || TIER_CONFIG.frio
+  const Icon = cfg.Icon
+  return (
+    <div className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold border ${cfg.bg} ${cfg.color} ${cfg.border}`}>
+      <Icon className="w-3 h-3" />
+      <span>{score.total}/100</span>
+    </div>
+  )
+}
+
+function DocStatusBadge({ status }: { status: string | null }) {
+  if (status === 'approved')
+    return <span className="inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full"><FileCheck className="w-2.5 h-2.5" /> Aprobado</span>
+  if (status === 'rejected')
+    return <span className="inline-flex items-center gap-1 text-[10px] font-semibold bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full"><FileX className="w-2.5 h-2.5" /> Rechazado</span>
+  if (status === 'pending')
+    return <span className="inline-flex items-center gap-1 text-[10px] font-semibold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full"><Clock className="w-2.5 h-2.5" /> En revisión</span>
+  return <span className="inline-flex items-center gap-1 text-[10px] font-semibold bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded-full"><FileQuestion className="w-2.5 h-2.5" /> Sin validar</span>
+}
 type EditableFieldKey = 'name' | 'email' | 'country' | 'phone'
 
 const PAGE_SIZE = 20
@@ -205,6 +256,11 @@ export default function ChatUsersPage() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailTab, setDetailTab] = useState<DetailTabId>('profile')
 
+  const [docValidateStatus, setDocValidateStatus] = useState<'approved' | 'rejected' | 'pending'>('pending')
+  const [docValidateNotes, setDocValidateNotes] = useState('')
+  const [docValidateReviewer, setDocValidateReviewer] = useState('')
+  const [docValidating, setDocValidating] = useState(false)
+
   const closeDetailModal = () => {
     setDetailLoading(false)
     setDetailProfile(null)
@@ -217,6 +273,9 @@ export default function ChatUsersPage() {
     setDetailProfile(null)
     setDetailTab('profile')
     setDetailLoading(true)
+    setDocValidateStatus((u.financial_doc_status as 'approved' | 'rejected' | 'pending') || 'pending')
+    setDocValidateNotes(u.financial_doc_notes || '')
+    setDocValidateReviewer(u.financial_doc_reviewed_by || '')
     try {
       const res = await API.get(`/site-users/${u.id}/profile`)
       setDetailProfile(res.data)
@@ -225,6 +284,26 @@ export default function ChatUsersPage() {
       setDetailTarget(null)
     } finally {
       setDetailLoading(false)
+    }
+  }
+
+  const handleDocValidate = async () => {
+    if (!detailTarget) return
+    setDocValidating(true)
+    try {
+      await API.post(`/site-users/${detailTarget.id}/validate-document`, {
+        status: docValidateStatus,
+        notes: docValidateNotes.trim() || null,
+        reviewed_by: docValidateReviewer.trim() || null,
+      })
+      toast.success('Validación guardada')
+      const res = await API.get(`/site-users/${detailTarget.id}/profile`)
+      setDetailProfile(res.data)
+      load()
+    } catch {
+      toast.error('Error al guardar la validación')
+    } finally {
+      setDocValidating(false)
     }
   }
 
@@ -422,7 +501,7 @@ export default function ChatUsersPage() {
               <tr className="border-b border-slate-100 bg-slate-50 text-xs text-slate-500 uppercase tracking-wider">
                 <th className="text-left px-5 py-3 font-semibold">Usuario</th>
                 <th className="text-left px-4 py-3 font-semibold">Pais</th>
-                <th className="text-left px-4 py-3 font-semibold">Telefono</th>
+                <th className="text-left px-4 py-3 font-semibold">Score</th>
                 <th className="text-left px-4 py-3 font-semibold">Documentos</th>
                 <th className="text-left px-4 py-3 font-semibold">Registro</th>
                 <th className="px-4 py-3" />
@@ -447,8 +526,15 @@ export default function ChatUsersPage() {
                   <td className="px-4 py-3.5 text-slate-600">
                     {u.country || <span className="text-slate-300">-</span>}
                   </td>
-                  <td className="px-4 py-3.5 text-slate-600">
-                    {u.phone || <span className="text-slate-300">-</span>}
+                  <td className="px-4 py-3.5">
+                    {u.score ? (
+                      <div className="flex flex-col gap-1">
+                        <TierBadge score={u.score} />
+                        <DocStatusBadge status={u.financial_doc_status} />
+                      </div>
+                    ) : (
+                      <span className="text-slate-300 text-xs">-</span>
+                    )}
                   </td>
                   <td className="px-4 py-3.5">
                     {u.has_uploaded_documents ? (
@@ -815,6 +901,66 @@ export default function ChatUsersPage() {
                               Abrir documento
                             </a>
                           )}
+
+                          {/* Validation panel */}
+                          <div className="pt-3 border-t border-slate-200 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Validación manual</p>
+                              <DocStatusBadge status={detailProfile.user.financial_doc_status} />
+                            </div>
+                            {detailProfile.user.financial_doc_reviewed_at && (
+                              <p className="text-[11px] text-slate-400">
+                                Revisado: {formatDate(detailProfile.user.financial_doc_reviewed_at, true)}
+                                {detailProfile.user.financial_doc_reviewed_by && (
+                                  <> · {detailProfile.user.financial_doc_reviewed_by}</>
+                                )}
+                              </p>
+                            )}
+                            {detailProfile.user.financial_doc_notes && (
+                              <p className="text-xs text-slate-600 italic bg-white border border-slate-200 rounded-lg px-2 py-1.5">
+                                "{detailProfile.user.financial_doc_notes}"
+                              </p>
+                            )}
+                            <div className="flex gap-1.5">
+                              {(['pending', 'approved', 'rejected'] as const).map(s => (
+                                <button
+                                  key={s}
+                                  onClick={() => setDocValidateStatus(s)}
+                                  className={`flex-1 py-1.5 text-[11px] font-semibold rounded-lg border transition-colors ${
+                                    docValidateStatus === s
+                                      ? s === 'approved'
+                                        ? 'bg-emerald-600 text-white border-emerald-600'
+                                        : s === 'rejected'
+                                        ? 'bg-red-600 text-white border-red-600'
+                                        : 'bg-amber-500 text-white border-amber-500'
+                                      : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                                  }`}
+                                >
+                                  {s === 'approved' ? 'Aprobar' : s === 'rejected' ? 'Rechazar' : 'En revisión'}
+                                </button>
+                              ))}
+                            </div>
+                            <input
+                              value={docValidateReviewer}
+                              onChange={e => setDocValidateReviewer(e.target.value)}
+                              placeholder="Tu nombre (revisor)"
+                              className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                            <textarea
+                              value={docValidateNotes}
+                              onChange={e => setDocValidateNotes(e.target.value)}
+                              placeholder="Notas de revisión..."
+                              rows={2}
+                              className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                            <button
+                              onClick={handleDocValidate}
+                              disabled={docValidating}
+                              className="w-full py-2 bg-slate-800 text-white text-xs font-semibold rounded-lg hover:bg-slate-900 disabled:opacity-50 transition-colors"
+                            >
+                              {docValidating ? 'Guardando...' : 'Guardar validación'}
+                            </button>
+                          </div>
                         </div>
 
                         <div className="lg:col-span-2 bg-slate-100 rounded-xl p-3 min-h-[420px]">

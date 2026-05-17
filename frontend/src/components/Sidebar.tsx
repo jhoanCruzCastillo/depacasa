@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { Building2, LayoutTemplate, MessageSquare, Users, FileText, Settings, Smartphone, ChevronDown, ChevronRight, UserCheck, Globe, Sliders } from 'lucide-react'
+import { Building2, LayoutTemplate, MessageSquare, Users, FileText, Settings, Smartphone, ChevronDown, ChevronRight, UserCheck, Globe, Sliders, Award } from 'lucide-react'
 import API from '../services/api'
 
 const baseApiUrl = API.defaults.baseURL || ''
@@ -13,6 +13,7 @@ const mainLinks = [
 
 const chatLinks = [
   { to: '/chat/users', label: 'Usuarios', icon: Users },
+  { to: '/chat/scoring', label: 'Calificación', icon: Award },
   { to: '/chat/templates', label: 'Plantillas', icon: FileText },
   { to: '/chat/advisors', label: 'Asesores', icon: UserCheck },
   { to: '/chat/config', label: 'Configuración', icon: Settings },

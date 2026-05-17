@@ -5,6 +5,7 @@ import DeveloperDetailPage from './pages/DeveloperDetailPage'
 import TemplatesPage from './pages/TemplatesPage'
 import TemplateEditorPage from './pages/TemplateEditorPage'
 import ChatUsersPage from './pages/chat/ChatUsersPage'
+import LeadScoringPage from './pages/chat/LeadScoringPage'
 import ChatTemplatesPage from './pages/chat/ChatTemplatesPage'
 import ChatAdvisorsPage from './pages/chat/ChatAdvisorsPage'
 import ChatConfigPage from './pages/chat/ChatConfigPage'
@@ -30,6 +31,7 @@ function App() {
             {/* Chatbot */}
             <Route path="/chat" element={<Navigate to="/chat/users" replace />} />
             <Route path="/chat/users" element={<ChatUsersPage />} />
+            <Route path="/chat/scoring" element={<LeadScoringPage />} />
             <Route path="/chat/templates" element={<ChatTemplatesPage />} />
             <Route path="/chat/advisors" element={<ChatAdvisorsPage />} />
             <Route path="/chat/config" element={<ChatConfigPage />} />

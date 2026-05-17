@@ -55,6 +55,11 @@ def run_migrations():
         "ALTER TABLE site_config ADD COLUMN IF NOT EXISTS catalog_level INTEGER DEFAULT 2",
         "ALTER TABLE site_config ADD COLUMN IF NOT EXISTS catalog_columns VARCHAR DEFAULT '3'",
         "ALTER TABLE site_config ADD COLUMN IF NOT EXISTS catalog_field_keys JSONB DEFAULT '[]'::jsonb",
+        # Lead scoring: manual document validation fields
+        "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS financial_doc_status VARCHAR(20)",
+        "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS financial_doc_notes TEXT",
+        "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS financial_doc_reviewed_at TIMESTAMPTZ",
+        "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS financial_doc_reviewed_by VARCHAR(200)",
     ]
     with engine.connect() as conn:
         for sql in migrations:
