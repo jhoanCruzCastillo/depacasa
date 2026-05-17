@@ -1,4 +1,6 @@
 import os
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -7,7 +9,7 @@ class Settings(BaseSettings):
     # Server
     API_TITLE: str = "PropScraper API"
     API_VERSION: str = "0.1.0"
-    DEBUG: bool = os.getenv("DEBUG", "True").lower() == "true"
+    DEBUG: bool = True
     
     # Database
     DATABASE_URL: str = os.getenv(
@@ -48,6 +50,18 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: list = ["http://localhost:5173", "http://localhost:3000"]
     
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug(cls, value):
+        if isinstance(value, bool):
+            return value
+        raw = str(value or "").strip().lower()
+        if raw in {"1", "true", "t", "yes", "y", "on", "debug", "dev", "development"}:
+            return True
+        if raw in {"0", "false", "f", "no", "n", "off", "release", "prod", "production"}:
+            return False
+        return False
+
     class Config:
         env_file = ".env"
         case_sensitive = True
