@@ -1,8 +1,11 @@
 """Admin CRUD for registered site users + test email."""
 
+from pathlib import PurePosixPath
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from uuid import UUID
@@ -33,8 +36,46 @@ class TestEmailIn(BaseModel):
     body: str = "Este es un correo de prueba enviado desde el panel de administración."
 
 
-def _out(u: SiteUser) -> dict:
-    return {
+def _clean_text(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _guess_doc_kind(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    path = urlparse(value).path or value
+    ext = PurePosixPath(path).suffix.lower()
+    if ext == ".pdf":
+        return "pdf"
+    if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic"}:
+        return "image"
+    if ext:
+        return "file"
+    if value.lower().startswith("data:image/"):
+        return "image"
+    return "link"
+
+
+def _document_flags_from_lead(lead: dict | None) -> tuple[bool, bool]:
+    payload = lead if isinstance(lead, dict) else {}
+    identity_doc = _clean_text(payload.get("document_number")) or _clean_text(payload.get("document"))
+    financial_doc = _clean_text(payload.get("financial_capacity_doc"))
+    return bool(identity_doc or financial_doc), bool(financial_doc)
+
+
+def _document_flags_from_context(context: dict | None) -> tuple[bool, bool]:
+    payload = context if isinstance(context, dict) else {}
+    lead_profile = payload.get("lead_profile")
+    if not isinstance(lead_profile, dict):
+        return False, False
+    return _document_flags_from_lead(lead_profile)
+
+
+def _out(u: SiteUser, doc_flags: Optional[dict] = None) -> dict:
+    data = {
         "id": str(u.id),
         "email": u.email,
         "name": u.name,
@@ -43,6 +84,9 @@ def _out(u: SiteUser) -> dict:
         "wants_newsletter": u.wants_newsletter,
         "created_at": u.created_at.isoformat() if u.created_at else None,
     }
+    if doc_flags:
+        data.update(doc_flags)
+    return data
 
 
 def _norm_key(key: str) -> str:
@@ -124,7 +168,53 @@ def list_users(skip: int = 0, limit: int = 20, search: str = "", db: Session = D
         )
     total = q.with_entities(func.count()).scalar()
     users = q.order_by(SiteUser.created_at.desc()).offset(skip).limit(limit).all()
-    return {"total": total, "items": [_out(u) for u in users]}
+    user_ids = [u.id for u in users]
+    doc_flags_by_user: dict = {
+        uid: {"has_uploaded_documents": False, "has_financial_document": False}
+        for uid in user_ids
+    }
+
+    if user_ids:
+        prefs = (
+            db.query(UserPreference.site_user_id, UserPreference.context)
+            .filter(UserPreference.site_user_id.in_(user_ids))
+            .all()
+        )
+        for site_user_id, context in prefs:
+            has_any, has_financial = _document_flags_from_context(context)
+            if has_any:
+                doc_flags_by_user[site_user_id]["has_uploaded_documents"] = True
+            if has_financial:
+                doc_flags_by_user[site_user_id]["has_financial_document"] = True
+
+        unresolved_ids = [
+            uid
+            for uid in user_ids
+            if not doc_flags_by_user[uid]["has_uploaded_documents"]
+            or not doc_flags_by_user[uid]["has_financial_document"]
+        ]
+        if unresolved_ids:
+            sessions = (
+                db.query(WebChatSession.site_user_id, WebChatSession.extracted_criteria)
+                .filter(WebChatSession.site_user_id.in_(unresolved_ids))
+                .order_by(WebChatSession.updated_at.desc().nullslast(), WebChatSession.created_at.desc())
+                .all()
+            )
+            for site_user_id, extracted_criteria in sessions:
+                if site_user_id not in doc_flags_by_user:
+                    continue
+                criteria = extracted_criteria if isinstance(extracted_criteria, dict) else {}
+                lead = criteria.get("_lead") if isinstance(criteria.get("_lead"), dict) else {}
+                has_any, has_financial = _document_flags_from_lead(lead)
+                if has_any:
+                    doc_flags_by_user[site_user_id]["has_uploaded_documents"] = True
+                if has_financial:
+                    doc_flags_by_user[site_user_id]["has_financial_document"] = True
+
+    return {
+        "total": total,
+        "items": [_out(u, doc_flags=doc_flags_by_user.get(u.id)) for u in users],
+    }
 
 
 @router.get("/{user_id}")
@@ -210,17 +300,41 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
             lead_updated_at = s.updated_at or s.created_at
             break
 
+    lead_profile_context = {}
+    if pref and isinstance(pref.context, dict):
+        context_lead = pref.context.get("lead_profile")
+        if isinstance(context_lead, dict):
+            lead_profile_context = context_lead
+
+    lead_document = (
+        _clean_text(lead_data.get("document_number"))
+        or _clean_text(lead_profile_context.get("document"))
+    )
+    financial_doc = (
+        _clean_text(lead_data.get("financial_capacity_doc"))
+        or _clean_text(lead_profile_context.get("financial_capacity_doc"))
+    )
+    has_docs = bool(lead_document or financial_doc)
+    has_financial = bool(financial_doc)
+
     return {
         "user": _out(u),
         "lead": {
             "full_name": lead_data.get("full_name"),
             "whatsapp": lead_data.get("whatsapp"),
-            "document_number": lead_data.get("document_number"),
-            "financial_capacity_doc": lead_data.get("financial_capacity_doc"),
+            "document_number": lead_document,
+            "financial_capacity_doc": financial_doc,
             "country_of_residence": lead_data.get("country_of_residence"),
             "record_id": str(lead_data.get("record_id")) if lead_data.get("record_id") else None,
             "rating": lead_data.get("rating"),
             "updated_at": lead_updated_at.isoformat() if lead_updated_at else None,
+        },
+        "documents": {
+            "has_uploaded_documents": has_docs,
+            "has_financial_document": has_financial,
+            "identity_document": lead_document,
+            "financial_capacity_doc_url": financial_doc,
+            "financial_capacity_doc_kind": _guess_doc_kind(financial_doc),
         },
         "preferences": (
             pref.preferences_v2
