@@ -103,13 +103,40 @@ interface DocumentsSummary {
   financial_capacity_doc_kind: 'pdf' | 'image' | 'file' | 'link' | null
 }
 
+interface BudgetContext {
+  min?: number | null
+  max?: number | null
+  currency?: string
+  strictness?: string
+}
+
+interface BehaviorSignals {
+  viewed_record_ids?: string[]
+  rated_record_ids?: string[]
+  interested_record_ids?: string[]
+  discarded_record_ids?: string[]
+}
+
+interface ConversationMemory {
+  last_search_description?: string | null
+  ajustes_aceptados?: string[]
+  ajustes_rechazados?: string[]
+}
+
+interface ConsolidatedContext {
+  budget_context?: BudgetContext
+  lead_profile?: Record<string, unknown>
+  behavior_signals?: BehaviorSignals
+  conversation_memory?: ConversationMemory
+}
+
 interface UserProfile {
   user: SiteUser
   lead: LeadData
   documents?: DocumentsSummary
   score?: ScoreSummary
   preferences: Record<string, unknown> | null
-  context?: Record<string, unknown>
+  context?: ConsolidatedContext
   preferences_updated_at?: string | null
   interactions: Interaction[]
   search_history: SearchEntry[]
@@ -776,6 +803,33 @@ export default function ChatUsersPage() {
                 <div className="flex-1 overflow-hidden">
                   {detailTab === 'profile' && (
                     <div className="h-full overflow-y-auto p-6 space-y-6">
+                      {detailProfile.score && (
+                        <section>
+                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
+                            Calificacion del lead
+                          </h3>
+                          <div className="flex items-center gap-4 bg-slate-50 rounded-xl p-4">
+                            <TierBadge score={detailProfile.score} />
+                            <div className="flex-1">
+                              <div className="flex items-center justify-between text-xs text-slate-500 mb-1.5">
+                                <span>{detailProfile.score.tier.label}</span>
+                                <span className="font-bold text-slate-700">{detailProfile.score.total}/{detailProfile.score.max} pts</span>
+                              </div>
+                              <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full transition-all ${
+                                    detailProfile.score.tier.key === 'muy_caliente' ? 'bg-red-500' :
+                                    detailProfile.score.tier.key === 'caliente' ? 'bg-orange-500' :
+                                    detailProfile.score.tier.key === 'tibio' ? 'bg-amber-400' : 'bg-slate-400'
+                                  }`}
+                                  style={{ width: `${(detailProfile.score.total / detailProfile.score.max) * 100}%` }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </section>
+                      )}
+
                       <section>
                         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
                           Informacion del usuario
@@ -1042,12 +1096,108 @@ export default function ChatUsersPage() {
                         )}
                       </section>
 
-                      <section className="bg-slate-50 rounded-xl p-4">
-                        <h3 className="text-sm font-semibold text-slate-700 mb-2">Contexto consolidado</h3>
-                        <pre className="text-xs text-slate-600 overflow-x-auto whitespace-pre-wrap break-words bg-white border border-slate-200 rounded-lg p-3">
-                          {JSON.stringify(detailProfile.context || {}, null, 2)}
-                        </pre>
-                      </section>
+                      {(() => {
+                        const budget = detailProfile.context?.budget_context
+                        const hasBudget = budget && (budget.min != null || budget.max != null)
+                        return (
+                          <section className="bg-slate-50 rounded-xl p-4">
+                            <h3 className="text-sm font-semibold text-slate-700 mb-3">Presupuesto</h3>
+                            {hasBudget ? (
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                {budget!.min != null && (
+                                  <div className="bg-white rounded-lg border border-slate-200 px-3 py-2.5">
+                                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Minimo</p>
+                                    <p className="text-sm font-medium text-slate-700">{budget!.min!.toLocaleString()} {budget!.currency || 'PEN'}</p>
+                                  </div>
+                                )}
+                                {budget!.max != null && (
+                                  <div className="bg-white rounded-lg border border-slate-200 px-3 py-2.5">
+                                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Maximo</p>
+                                    <p className="text-sm font-medium text-slate-700">{budget!.max!.toLocaleString()} {budget!.currency || 'PEN'}</p>
+                                  </div>
+                                )}
+                                <div className="bg-white rounded-lg border border-slate-200 px-3 py-2.5">
+                                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Moneda</p>
+                                  <p className="text-sm font-medium text-slate-700">{budget!.currency || 'PEN'}</p>
+                                </div>
+                                <div className="bg-white rounded-lg border border-slate-200 px-3 py-2.5">
+                                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Tipo</p>
+                                  <p className={`text-sm font-medium ${budget!.strictness === 'obligatorio' ? 'text-red-600' : 'text-indigo-600'}`}>
+                                    {budget!.strictness === 'obligatorio' ? 'Obligatorio' : 'Preferencia'}
+                                  </p>
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-sm text-slate-400">Sin presupuesto definido</p>
+                            )}
+                          </section>
+                        )
+                      })()}
+
+                      {(() => {
+                        const beh = detailProfile.context?.behavior_signals
+                        return (
+                          <section className="bg-slate-50 rounded-xl p-4">
+                            <h3 className="text-sm font-semibold text-slate-700 mb-3">Senales de comportamiento</h3>
+                            <div className="flex flex-wrap gap-3">
+                              {[
+                                { label: 'Propiedades vistas', count: beh?.viewed_record_ids?.length ?? 0, color: 'bg-blue-100 text-blue-700' },
+                                { label: 'Calificadas', count: beh?.rated_record_ids?.length ?? 0, color: 'bg-amber-100 text-amber-700' },
+                                { label: 'Con interes', count: beh?.interested_record_ids?.length ?? 0, color: 'bg-emerald-100 text-emerald-700' },
+                                { label: 'Descartadas', count: beh?.discarded_record_ids?.length ?? 0, color: 'bg-slate-100 text-slate-600' },
+                              ].map(({ label, count, color }) => (
+                                <div key={label} className={`flex items-center gap-2 px-3 py-2 rounded-full text-sm font-semibold ${color}`}>
+                                  <span className="text-base font-bold">{count}</span>
+                                  <span className="font-medium">{label}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </section>
+                        )
+                      })()}
+
+                      {(() => {
+                        const mem = detailProfile.context?.conversation_memory
+                        const lastSearch = mem?.last_search_description
+                        const accepted = mem?.ajustes_aceptados ?? []
+                        const rejected = mem?.ajustes_rechazados ?? []
+                        return (
+                          <section className="bg-slate-50 rounded-xl p-4">
+                            <h3 className="text-sm font-semibold text-slate-700 mb-3">Memoria de conversacion</h3>
+                            {lastSearch ? (
+                              <div className="bg-white border border-slate-200 rounded-lg px-3 py-2.5 mb-3">
+                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Ultima busqueda</p>
+                                <p className="text-sm text-slate-700 italic">"{lastSearch}"</p>
+                              </div>
+                            ) : (
+                              <p className="text-sm text-slate-400 mb-3">Sin busquedas registradas aun</p>
+                            )}
+                            {accepted.length > 0 && (
+                              <div className="mb-2">
+                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Ajustes aceptados</p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {accepted.map((a, i) => (
+                                    <span key={i} className="text-xs px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full">{a}</span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {rejected.length > 0 && (
+                              <div>
+                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Ajustes rechazados</p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {rejected.map((r, i) => (
+                                    <span key={i} className="text-xs px-2 py-0.5 bg-red-100 text-red-600 rounded-full">{r}</span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {!lastSearch && accepted.length === 0 && rejected.length === 0 && (
+                              <p className="text-sm text-slate-400">Sin historial de conversacion</p>
+                            )}
+                          </section>
+                        )
+                      })()}
                     </div>
                   )}
 

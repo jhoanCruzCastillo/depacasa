@@ -508,24 +508,69 @@ async def rank_intents(
         return fallback
 
 _CRITERIA_SYSTEM = """\
-Eres un asistente inmobiliario experto. Extrae criterios de bÃºsqueda de la \
-descripciÃ³n del usuario y responde SOLO con JSON vÃ¡lido, sin markdown ni texto extra.
+Eres un asistente inmobiliario experto. Extrae criterios de busqueda de la descripcion \
+del usuario y responde SOLO con JSON valido, sin markdown ni texto extra.
 
-Formato exacto (nunca omitas ninguna clave):
-{"location": "string o null", "bedrooms": number o null, \
-"min_price": number o null, "max_price": number o null, \
-"features": ["lista de caracterÃ­sticas"], \
-"keywords": ["todas las palabras clave relevantes"]}
+Formato exacto (incluye siempre todas las claves):
+{"location": "string o null", "location_mode": "obligatorio|preferencia",
+ "bedrooms": number o null, "bedrooms_mode": "obligatorio|preferencia",
+ "bathrooms": number o null, "bathrooms_mode": "obligatorio|preferencia",
+ "min_price": number o null, "max_price": number o null, "budget_mode": "obligatorio|preferencia",
+ "common_areas": ["amenidades dentro del edificio"], "common_areas_mode": "obligatorio|preferencia",
+ "nearby_zones": ["tipos de lugares cercanos requeridos"], "nearby_zones_mode": "obligatorio|preferencia",
+ "features": ["caracteristicas generales"], "keywords": ["palabras clave relevantes"]}
 
-Reglas estrictas:
-- "location": nombre oficial del distrito/ciudad/zona. Si el usuario menciona cualquier \
-  lugar geogrÃ¡fico, incluso sin preposiciÃ³n, extrÃ¡elo. Ejemplos: \
-  "JesÃºs MarÃ­a" â†’ "JesÃºs MarÃ­a", "miraflores" â†’ "Miraflores", \
-  "cajamarca" â†’ "Cajamarca", "en Surco" â†’ "Santiago de Surco".
-- "bedrooms": nÃºmero ENTERO de dormitorios. "una habitaciÃ³n"â†’1, "dos cuartos"â†’2, \
-  "1 dorm"â†’1, "mono ambiente"â†’1. NUNCA confundas baÃ±os con dormitorios.
-- "keywords": incluye sinÃ³nimos y variantes (ej. "departamento","depa","flat").
+Reglas de extraccion:
+- "location": nombre oficial del distrito/ciudad/zona. Ej: "Jesus Maria", "Miraflores", "Santiago de Surco".
+- "bedrooms": entero de dormitorios. "una habitacion"->1, "dos cuartos"->2. NUNCA confundas banos con dormitorios.
+- "bathrooms": entero de banos si se menciona. null si no.
+- "min_price"/"max_price": numeros sin simbolo de moneda.
+- "common_areas": amenidades dentro del edificio/complejo mencionadas. Ej: \
+  "quiero gimnasio" -> ["gimnasio"]; "tiene piscina" -> ["piscina"]; \
+  "salon de eventos y terraza" -> ["salon comunal", "terraza"].
+- "nearby_zones": lugares cercanos requeridos. Ej: "cerca de un parque" -> ["parque"]; \
+  "que haya supermercados" -> ["supermercado"]; "proximos a colegios" -> ["colegio"].
+
+Reglas de modo (obligatorio vs preferencia):
+- Usa "obligatorio" cuando el usuario dice: "necesito", "debe tener", "tiene que ser", \
+  "es imprescindible", "exactamente", "no puedo pasar de", "solo en", "unicamente".
+- Usa "preferencia" en todos los demas casos (es el valor por defecto).
 """
+
+
+# Vocabulary catalog for semantic area enrichment (fallback when Claude doesn't extract them)
+_AREA_SIGNALS: dict[str, dict[str, list[str]]] = {
+    "comunes": {
+        "gimnasio": ["ejercicio", "ejercicios", "entrenar", "entrenamiento", "deporte",
+                     "actividad fisica", "fitness", "gym", "gimnasio", "correr", "running"],
+        "piscina": ["piscina", "nadar", "pileta", "natacion", "alberca", "nado"],
+        "salon comunal": ["salon comunal", "salon de eventos", "sala de usos", "reuniones",
+                          "fiestas", "evento social"],
+        "area de juegos": ["juegos infantiles", "juegos para ninos", "parque infantil",
+                           "playground", "zona de ninos"],
+        "terraza": ["terraza", "rooftop", "azotea", "vista panoramica"],
+        "parrilla": ["parrilla", "bbq", "asado", "barbacoa", "area de parrillas"],
+        "coworking": ["coworking", "trabajo remoto", "home office", "oficina compartida"],
+        "estacionamiento": ["garage", "estacionamiento", "parking", "cochera",
+                            "lugar de estacionamiento"],
+    },
+    "cercanas": {
+        "supermercado": ["viveres", "viveres", "compras del hogar", "supermercado",
+                         "mercado", "bodega", "tienda de abarrotes"],
+        "colegio": ["colegio", "escuela", "cerca de colegios", "educacion",
+                    "zona escolar", "colegios proximos"],
+        "hospital": ["hospital", "clinica", "medico", "salud", "emergencias",
+                     "centro medico"],
+        "transporte publico": ["metro", "bus", "transporte publico", "paradero",
+                               "estacion de bus", "movilidad"],
+        "parque": ["parque", "areas verdes", "espacio verde", "zona verde",
+                   "parque cercano"],
+        "restaurante": ["restaurante", "cafeteria", "gastronomia", "zona de restaurantes",
+                        "lugares para comer"],
+        "centro comercial": ["mall", "centro comercial", "tiendas", "shopping",
+                             "plaza comercial"],
+    },
+}
 
 
 def _merge_unique_terms(base: list[str], additions: list[str]) -> list[str]:
@@ -540,22 +585,53 @@ def _merge_unique_terms(base: list[str], additions: list[str]) -> list[str]:
 
 
 def _enrich_criteria_semantics(criteria: dict, description: str) -> dict:
-    """Infer implicit preferences from user language and enrich features/keywords."""
+    """Infer implicit area preferences from user language using vocabulary signals.
+
+    Runs after Claude extraction to catch anything missed and normalize terms.
+    common_areas/nearby_zones extracted by Claude are kept; vocabulary signals only add
+    new entries that aren't already present.
+    """
     out = dict(criteria or {})
     features = list(out.get("features") or [])
     keywords = list(out.get("keywords") or [])
+    common_areas = list(out.get("common_areas") or [])
+    nearby_zones = list(out.get("nearby_zones") or [])
     desc = _norm(description or "")
 
-    exercise_signals = [
-        "ejercicio", "ejercicios", "entrenar", "entrenamiento", "deporte",
-        "actividad fisica", "fitness", "gym", "gimnasio", "correr", "running",
-    ]
-    if any(sig in desc for sig in exercise_signals):
-        features = _merge_unique_terms(features, ["gimnasio", "Ã¡rea deportiva"])
-        keywords = _merge_unique_terms(keywords, ["gimnasio", "gym", "Ã¡rea deportiva", "deporte"])
+    existing_comunes = {_norm(a) for a in common_areas}
+    existing_cercanas = {_norm(z) for z in nearby_zones}
+
+    def _signal_match(sig: str, text: str) -> bool:
+        return bool(re.search(r'\b' + re.escape(sig) + r'\b', text))
+
+    for area_name, signals in _AREA_SIGNALS["comunes"].items():
+        if any(_signal_match(sig, desc) for sig in signals):
+            norm_name = _norm(area_name)
+            if norm_name not in existing_comunes:
+                common_areas.append(area_name)
+                existing_comunes.add(norm_name)
+            features = _merge_unique_terms(features, [area_name])
+            keywords = _merge_unique_terms(keywords, [area_name])
+
+    for zone_name, signals in _AREA_SIGNALS["cercanas"].items():
+        if any(_signal_match(sig, desc) for sig in signals):
+            norm_name = _norm(zone_name)
+            if norm_name not in existing_cercanas:
+                nearby_zones.append(zone_name)
+                existing_cercanas.add(norm_name)
+            keywords = _merge_unique_terms(keywords, [zone_name])
+
+    # Also add common_areas and nearby_zones already extracted by Claude to features/keywords
+    for area in common_areas:
+        features = _merge_unique_terms(features, [area])
+        keywords = _merge_unique_terms(keywords, [area])
+    for zone in nearby_zones:
+        keywords = _merge_unique_terms(keywords, [zone])
 
     out["features"] = features
     out["keywords"] = keywords
+    out["common_areas"] = common_areas
+    out["nearby_zones"] = nearby_zones
     return out
 
 
@@ -564,7 +640,7 @@ async def extract_criteria(description: str) -> dict:
     try:
         response = _get_client().messages.create(
             model=settings.ANTHROPIC_MODEL,
-            max_tokens=400,
+            max_tokens=600,
             system=_CRITERIA_SYSTEM,
             messages=[{"role": "user", "content": description}],
         )
@@ -717,9 +793,18 @@ def _fallback_criteria(description: str) -> dict:
 
     return {
         "location": location,
+        "location_mode": "preferencia",
         "bedrooms": bedrooms,
+        "bedrooms_mode": "preferencia",
+        "bathrooms": None,
+        "bathrooms_mode": "preferencia",
         "min_price": None,
         "max_price": None,
+        "budget_mode": "preferencia",
+        "common_areas": [],
+        "common_areas_mode": "preferencia",
+        "nearby_zones": [],
+        "nearby_zones_mode": "preferencia",
         "features": [],
         "keywords": keywords,
     }
