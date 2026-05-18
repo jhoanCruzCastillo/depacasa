@@ -61,6 +61,7 @@ def build_runtime(
         "start_search": [],
         "show_property_by_id": [],
         "rate_current_property": [],
+        "rate_and_ask_feedback": [],
     }
     session = SimpleNamespace(
         state=state,
@@ -103,6 +104,13 @@ def build_runtime(
         calls["rate_current_property"].append(rating)
         return f"RATED:{rating}"
 
+    def _rate_and_ask_feedback(rating: int) -> str:
+        calls["rate_and_ask_feedback"].append(rating)
+        return f"FEEDBACK_ASKED:{rating}"
+
+    async def _contextual_fallback_response() -> dict:
+        return _text_response("CONTEXTUAL_RESPONSE")
+
     helpers = {
         "text_response": _text_response,
         "fallback_out_of_scope": lambda: _text_response("OUT_OF_SCOPE"),
@@ -132,6 +140,8 @@ def build_runtime(
         "get_exhausted_revisit_ids": lambda ctx: list((ctx or {}).get("_exhausted_unseen_ids") or []),
         "get_viewed_ranked_ids": lambda user_id: [],
         "rate_current_property": _rate_current_property,
+        "rate_and_ask_feedback": _rate_and_ask_feedback,
+        "contextual_fallback_response": _contextual_fallback_response,
         "mark_interest": lambda msg: _text_response("INTEREST_MARKED"),
         "start_search": _start_search,
         "show_interested_properties": _show_interested,
@@ -235,8 +245,10 @@ async def test_calificar_propiedad():
     runtime, calls = build_runtime(state="presenting", step=7, text="le doy 2 estrellas")
     result = await calificar_propiedad.handle(runtime)
     assert result is not None
-    assert result.response["message"] == "RATED:2"
-    assert calls["rate_current_property"] == [2]
+    # Handler now asks a follow-up question after rating (rate_and_ask_feedback)
+    assert result.response["message"] == "FEEDBACK_ASKED:2"
+    assert calls["rate_and_ask_feedback"] == [2]
+    assert calls["rate_current_property"] == []
 
 
 @pytest.mark.asyncio
@@ -288,7 +300,8 @@ async def test_fallback_no_entendido():
     runtime, _ = build_runtime(state="collecting_info", step=4, text="...")
     result = await fallback_no_entendido.handle(runtime)
     assert result is not None
-    assert result.response["message"] == "NOT_UNDERSTOOD"
+    # Handler tries contextual AI response first, falls back to static if not a dict
+    assert result.response["message"] in ("CONTEXTUAL_RESPONSE", "NOT_UNDERSTOOD")
 
 
 @pytest.mark.asyncio
@@ -306,6 +319,32 @@ async def test_dispatch_multi_intent_rating_then_next(monkeypatch):
     assert result["message"].startswith("RATED:2")
     assert "NEXT" in result["message"]
     assert result["intent_trace"][:2] == [CALIFICAR_PROPIEDAD, VER_SIGUIENTE_PROPIEDAD]
+
+
+# ── Unit area extraction ─────────────────────────────────────────────────────
+
+def test_get_unit_area_from_modelo_string():
+    """Should extract 41 from 'TIPO 9 / 41 m2 / 1 dorms / 1 baños', not a building-scale value."""
+    from app.services.claude_service import _get_unit_area
+    data = {
+        "modelo": "TIPO 9 / 41 m2 / 1 dorms / 1 baños",
+        "area_total_proyecto": 341,   # building area — must be ignored
+    }
+    assert _get_unit_area(data) == 41.0
+
+
+def test_get_unit_area_ignores_building_scale():
+    """When only a large area (>600 m²) exists, should return None."""
+    from app.services.claude_service import _get_unit_area
+    data = {"area": 1500, "descripcion": "area del proyecto 1500 m2"}
+    assert _get_unit_area(data) is None
+
+
+def test_get_unit_area_fallback_to_smallest_unit_range():
+    """Without a modelo field, picks the smallest value in apartment range."""
+    from app.services.claude_service import _get_unit_area
+    data = {"descripcion": "unidad de 55 m2 en edificio de 800 m2 totales"}
+    assert _get_unit_area(data) == 55.0
 
 
 @pytest.mark.asyncio

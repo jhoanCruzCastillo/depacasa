@@ -317,12 +317,20 @@ Responde SOLO JSON valido sin markdown con este formato:
 {"options": ["opcion 1", "opcion 2", "opcion 3"]}
 
 Reglas:
-- Entre 2 y 4 opciones.
-- Opciones cortas (max 64 caracteres).
-- Accionables y clickeables.
+- Entre 2 y 4 opciones cortas (max 64 caracteres), accionables y clickeables.
 - Deben encajar con el ultimo mensaje del asistente y el estado conversacional.
 - Incluye opciones tipo Si/No cuando aplique.
 - No inventes datos.
+
+Acciones DISPONIBLES en el chatbot:
+  calificar la propiedad, ver la siguiente propiedad, ajustar criterios de busqueda,
+  iniciar una nueva busqueda, ver propiedades ya vistas, marcar interes ("Lo quiero"),
+  consultar detalles de la propiedad actual.
+
+Acciones PROHIBIDAS — NO sugieras NUNCA:
+  - "Guardar esta propiedad" ni ninguna variante de guardar/favoritos/lista de deseos.
+  - Compartir la propiedad, enviar por email, exportar.
+  - Cualquier accion que no este en la lista de disponibles.
 """
 
 
@@ -824,11 +832,11 @@ Responde SOLO JSON valido (sin markdown) con este formato exacto:
 {"location": null, "bedrooms": null,
  "area_min": null, "area_max": null,
  "min_price": null, "max_price": null,
- "common_areas": [], "nearby_zones": []}
+ "common_areas": [], "nearby_zones": [], "keywords": []}
 
 Reglas por tipo de comentario negativo (baja calificacion):
 - "muy pequeno/chico/reducido" + propiedad tiene Xm2 -> area_min = X + 15
-- "muy caro/precio alto/fuera de presupuesto" + precio Y -> max_price = Y * 0.85
+- "muy caro/precio alto/fuera de presupuesto/muy costoso" + precio Y -> max_price = Y * 0.85
 - "muchos dormitorios/cuartos/habitaciones" -> no cambiar o reducir bedrooms
 - "pocos dormitorios" + tiene N -> bedrooms = N + 1
 - "no tiene [amenidad]" o "le falta [amenidad]" -> agregar a common_areas
@@ -836,13 +844,21 @@ Reglas por tipo de comentario negativo (baja calificacion):
 - "mala ubicacion/zona/barrio" + usuario menciona otra zona -> location = esa zona
 
 Reglas por tipo de comentario positivo (alta calificacion):
-- "me gusta el tamano/espacio" -> area_min = X - 5 (buscar similar o mayor)
-- "buen precio/precio razonable" -> max_price = Y * 1.1 (un poco mas de margen)
+- "me gusta el tamano/espacio/metraje" -> area_min = metros_cuadrados_propiedad - 5
+- "buen precio/precio razonable/economico/accesible" -> max_price = precio_propiedad * 1.1
 - "me gusta que tiene [amenidad]" -> agregar a common_areas
-- "buena ubicacion" -> confirmar location actual
+- "buena ubicacion/zona/barrio" -> location = ubicacion actual
+- "buena distribucion/diseno/planta/layout/ambiente" -> keywords = ["buena distribucion"]
+- "luminoso/iluminado/buena vista" -> keywords = ["luminoso"]
 
-Si la informacion no es suficiente para ajustar un parametro, deja ese campo en null.
-Nunca inventes valores que el usuario no menciono o que no se puedan inferir del contexto.
+REGLA CRITICA sobre precio:
+- SOLO extrae min_price o max_price si el usuario menciona EXPLICITAMENTE precio, costo, presupuesto,
+  "caro", "barato", "economico", "costoso" o palabras equivalentes.
+- NO infieras precio a partir de una calificacion alta si el usuario no menciono el precio.
+- "distribucion", "diseno", "tamano", "ubicacion", "amenidades" NO son menciones de precio.
+
+Si la informacion no es suficiente para ajustar un parametro, deja ese campo en null o [].
+Nunca inventes valores que el usuario no menciono o que no se puedan inferir directamente.
 """
 
 
@@ -884,24 +900,50 @@ def _normalize_feedback_criteria(raw: dict) -> dict:
         out["nearby_zones"] = [str(z).strip() for z in raw["nearby_zones"] if z]
         out["nearby_zones_mode"] = "preferencia"
 
+    if raw.get("keywords"):
+        out["keywords"] = [str(k).strip() for k in raw["keywords"] if k]
+
     out.setdefault("features", [])
-    out.setdefault("keywords", [])
+    out.setdefault("keywords", out.get("keywords", []))
     return out
+
+
+def _get_unit_area(property_data: dict) -> float | None:
+    """
+    Return the area of the specific unit shown to the user, NOT the total building area.
+    Priority: (1) modelo/tipologia string, (2) smallest value in apartment range (15-600 m²).
+    Values above 600 m² are building/project scale and must be ignored.
+    """
+    # 1. Try modelo/tipologia/tipo strings — they reliably encode unit size ("TIPO 9 / 41 m2 / ...")
+    for key in ("modelo", "tipologia", "tipologia_modelo", "tipo", "model", "unit_type"):
+        val = property_data.get(key)
+        if isinstance(val, str):
+            m = re.search(r'(\d+(?:[.,]\d+)?)\s*m2', val, re.IGNORECASE)
+            if m:
+                try:
+                    v = float(m.group(1).replace(',', '.'))
+                    if 15 <= v <= 600:
+                        return v
+                except ValueError:
+                    pass
+
+    # 2. Filter _extract_area_values to apartment-scale values only
+    from app.services.matchmaking import _extract_area_values
+    unit_areas = [a for a in _extract_area_values(property_data) if 15 <= a <= 600]
+    return unit_areas[0] if unit_areas else None
 
 
 async def extract_rating_feedback_criteria(feedback: str, rating: int, property_data: dict) -> dict:
     """Extract preference adjustments from a post-rating feedback comment."""
     from app.services.matchmaking import (
-        _extract_area_values,
         _extract_price_values,
         _extract_bedroom_counts,
     )
 
-    areas = _extract_area_values(property_data)
+    prop_area = _get_unit_area(property_data)
     prices = _extract_price_values(property_data)
     bedrooms_set = _extract_bedroom_counts(property_data)
 
-    prop_area = areas[0] if areas else None
     prop_price = min(prices) if prices else None
     prop_beds = min(bedrooms_set) if bedrooms_set else None
     prop_location = (
@@ -992,3 +1034,31 @@ async def generate_contextual_response(
             "Quiero ayudarte bien. "
             "Puedes pedirme que busque propiedades, ajuste preferencias o muestre la siguiente opcion."
         )
+
+
+_CRITERIA_ACK_SYSTEM = """\
+Eres un asistente inmobiliario en espanol.
+El usuario acaba de ajustar o cambiar los criterios de su busqueda de propiedades.
+Genera UNA sola frase corta y natural en espanol que confirme que entendiste el ajuste.
+Menciona brevemente que cambia (precio, zona, dormitorios, etc.).
+Reglas:
+- Sin "Por supuesto", "Claro que si", "De acuerdo" ni muletillas vacias.
+- Sin signos de exclamacion.
+- Maximo 15 palabras.
+- Solo el texto, sin markdown ni JSON.
+"""
+
+
+async def generate_criteria_acknowledgment(user_text: str) -> str:
+    """Generate a short Spanish confirmation that the user's criteria adjustment was understood."""
+    try:
+        response = _get_client().messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=60,
+            system=_CRITERIA_ACK_SYSTEM,
+            messages=[{"role": "user", "content": f'El usuario dijo: "{user_text}"'}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        logger.warning(f"generate_criteria_acknowledgment error: {e}")
+        return "Entendido, aplicando los nuevos parametros."

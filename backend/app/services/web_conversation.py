@@ -1714,7 +1714,7 @@ async def _process_rating_feedback(session: WebChatSession, text: str, db: Sessi
 
     # Merge adjustments into the user's persistent preferences
     _MEANINGFUL_ADJ_KEYS = {"location", "bedrooms", "area_min", "area_max",
-                             "min_price", "max_price", "common_areas", "nearby_zones"}
+                             "min_price", "max_price", "common_areas", "nearby_zones", "keywords"}
     has_meaningful = any(adjustments.get(k) for k in _MEANINGFUL_ADJ_KEYS)
     confirmation_parts: list[str] = []
     if has_meaningful and session.site_user_id:
@@ -1735,6 +1735,8 @@ async def _process_rating_feedback(session: WebChatSession, text: str, db: Sessi
             confirmation_parts.append(f"cerca de {', '.join(adjustments['nearby_zones'][:2])}")
         if adjustments.get("location"):
             confirmation_parts.append(f"en {adjustments['location']}")
+        if adjustments.get("keywords"):
+            confirmation_parts.append(f"características: {', '.join(adjustments['keywords'][:2])}")
 
     # Clear pending state and return to normal presenting flow
     ctx.pop("_pending_rating_feedback", None)
@@ -2218,6 +2220,18 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
 
 
 async def _start_search(session: WebChatSession, description: str, db: Session) -> dict:
+    prev_snap = _clean_criteria(session.extracted_criteria)
+    is_adjustment = bool(prev_snap)
+    result = await _run_search(session, description, db)
+    if is_adjustment:
+        from app.services.claude_service import generate_criteria_acknowledgment
+        ack = await generate_criteria_acknowledgment(description)
+        if result.get("message"):
+            result = {**result, "message": f"{ack}\n\n{result['message']}"}
+    return result
+
+
+async def _run_search(session: WebChatSession, description: str, db: Session) -> dict:
     existing_mode = (session.extracted_criteria or {}).get("_result_mode")
     try:
         from app.services.claude_service import extract_criteria
