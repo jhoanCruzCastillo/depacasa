@@ -1880,6 +1880,17 @@ def _build_intent_runtime(session: WebChatSession, user_text: str, db: Session, 
     async def _financial_doc_capture_action() -> dict | None:
         return await _handle_contact_capture_step(session, user_text, db)
 
+    async def _contextual_fallback_action() -> dict:
+        from app.services.claude_service import generate_contextual_response
+        summary = _summarize_preferences(_clean_criteria(session.extracted_criteria))
+        text = await generate_contextual_response(
+            user_text=user_text,
+            state=session.state,
+            step=session.info_step,
+            context_summary=summary,
+        )
+        return _text(text)
+
     helpers = {
         "text_response": _text,
         "fallback_out_of_scope": _fallback_out_of_scope,
@@ -1913,6 +1924,7 @@ def _build_intent_runtime(session: WebChatSession, user_text: str, db: Session, 
         "handle_contact_capture_step": _contact_capture_action,
         "handle_financial_document_step": _financial_doc_capture_action,
         "looks_like_financial_doc_text": _looks_like_financial_doc_text,
+        "contextual_fallback_response": _contextual_fallback_action,
     }
     return IntentRuntime(
         session=session,

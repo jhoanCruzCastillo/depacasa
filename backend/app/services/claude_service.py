@@ -373,11 +373,15 @@ Responde SOLO JSON valido, sin markdown, con este formato exacto:
 {"ordered_intents": ["intent_1", "intent_2"]}
 
 Reglas:
-- Usa solo intenciones incluidas en "candidates".
-- Manten el orden de ejecucion real de la accion del usuario.
-- Si el mensaje contiene varias acciones (ej. calificar y luego siguiente), devuelve ambas en orden.
+- Usa SOLO intenciones incluidas en "candidates".
+- Manten el orden de ejecucion real si el mensaje contiene varias acciones.
 - No inventes intenciones nuevas.
-- Si no hay suficiente claridad, devuelve una sola intencion de fallback incluida en candidates.
+- SIEMPRE devuelve al menos una intencion.
+- Mensajes sociales/saludos/charla informal ("hola", "gracias", "como estas", etc.):
+  devuelve ["fallback_no_entendido"] si esta en candidates.
+- Mensajes completamente fuera del dominio inmobiliario (politica, chistes, etc.):
+  devuelve ["fallback_fuera_de_alcance"] si esta en candidates, si no ["fallback_no_entendido"].
+- Si el mensaje combina una accion real con charla, prioriza la accion real.
 """
 
 
@@ -443,11 +447,12 @@ def _fallback_rank_intents(message: str, candidates: list[str]) -> list[str]:
     ordered = [intent for _, _, intent in scored]
 
     if not ordered:
+        result: list[str] = []
         if FALLBACK_FUERA_DE_ALCANCE in candidates and not _looks_in_scope_message(norm_msg):
-            return [FALLBACK_FUERA_DE_ALCANCE]
+            result.append(FALLBACK_FUERA_DE_ALCANCE)
         if FALLBACK_NO_ENTENDIDO in candidates:
-            return [FALLBACK_NO_ENTENDIDO]
-        return list(candidates)
+            result.append(FALLBACK_NO_ENTENDIDO)
+        return result or list(candidates)
 
     if FALLBACK_FUERA_DE_ALCANCE in candidates and not _looks_in_scope_message(norm_msg):
         ordered.insert(0, FALLBACK_FUERA_DE_ALCANCE)
@@ -938,3 +943,52 @@ async def extract_rating_feedback_criteria(feedback: str, rating: int, property_
     except Exception as e:
         logger.warning(f"extract_rating_feedback_criteria Claude error: {e}")
         return {}
+
+
+_CONTEXTUAL_FALLBACK_SYSTEM = """\
+Eres un asistente inmobiliario amigable integrado en un chatbot de busqueda de propiedades.
+El usuario envio un mensaje que no corresponde a ninguna accion especifica del flujo actual.
+Genera una respuesta corta (1-3 oraciones) que sea natural y contextualmente apropiada.
+
+Estados posibles:
+- collecting_info/paso 4: esperando que el usuario describa que busca.
+- collecting_info/paso 8: usuario tiene preferencias guardadas, se le ofrecio continuar.
+- collecting_info/paso 9-10: capturando datos de contacto (pais, nombre, telefono).
+- collecting_info/paso 11: esperando parametros de ajuste de busqueda.
+- presenting/paso 7: mostrando una propiedad, esperando calificacion o accion.
+- contact_requested: el interes ya fue registrado, asesor en camino.
+
+Reglas:
+- Si el mensaje es saludo o charla informal: responde con naturalidad e invita a continuar segun el estado.
+- Si es una pregunta fuera del dominio inmobiliario: explica brevemente lo que puedes hacer.
+- NO inventes propiedades ni datos. NO uses emojis excesivos.
+- Responde SOLO el texto, sin JSON, sin markdown, en espanol, maximo 2 oraciones.
+"""
+
+
+async def generate_contextual_response(
+    user_text: str,
+    state: str,
+    step: int | None,
+    context_summary: str = "",
+) -> str:
+    """Use Claude to generate a contextually appropriate response when no intent matches."""
+    context_line = f"\nPreferencias guardadas del usuario: {context_summary}" if context_summary else ""
+    prompt = (
+        f"Mensaje del usuario: \"{user_text}\"\n"
+        f"Estado actual: {state}, paso: {step}{context_line}"
+    )
+    try:
+        response = _get_client().messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=120,
+            system=_CONTEXTUAL_FALLBACK_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        logger.warning(f"generate_contextual_response error: {e}")
+        return (
+            "Quiero ayudarte bien. "
+            "Puedes pedirme que busque propiedades, ajuste preferencias o muestre la siguiente opcion."
+        )

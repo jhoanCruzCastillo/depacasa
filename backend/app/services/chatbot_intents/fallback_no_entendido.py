@@ -10,5 +10,7 @@ INTENT_NAME = FALLBACK_NO_ENTENDIDO
 
 
 async def handle(runtime: IntentRuntime) -> IntentResult | None:
+    response = await runtime.acall("contextual_fallback_response")
+    if isinstance(response, dict):
+        return IntentResult(response=response)
     return IntentResult(response=runtime.call("fallback_not_understood"))
-
