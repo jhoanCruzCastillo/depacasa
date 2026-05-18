@@ -1,8 +1,6 @@
 from .developer import Developer
-from .url_node import UrlNode
-from .field import Field
-from .selector import Selector
-from .scraped_record import ScrapedRecord
+from .template import ExtractionTemplate
+from .scraped_record import ScrapedRecord, RecordStatus
 from .scrape_job import ScrapeJob, JobStatus
 from .chat_user import ChatUser
 from .chat_conversation import ChatConversation, ConversationState
@@ -12,7 +10,9 @@ from .sales_advisor import SalesAdvisor
 from .chat_config import ChatConfig, DEFAULT_CONFIG_ID
 
 __all__ = [
-    "Developer", "UrlNode", "Field", "Selector", "ScrapedRecord", "ScrapeJob", "JobStatus",
+    "Developer", "ExtractionTemplate",
+    "ScrapedRecord", "RecordStatus",
+    "ScrapeJob", "JobStatus",
     "ChatUser", "ChatConversation", "ConversationState",
     "ChatMessage", "MessageDirection",
     "ChatTemplate", "TemplateType",

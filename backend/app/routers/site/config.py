@@ -82,13 +82,18 @@ def update_config(body: SiteConfigIn, db: Session = Depends(get_db)):
     return cfg
 
 
-def _level_condition(level: int, alias: str = "sr") -> str:
-    """Build JOIN + WHERE condition for record level filtering."""
+def _level_filter_sql(level: int) -> str:
     if level == 1:
-        return f"JOIN url_nodes un ON {alias}.url_node_id = un.id WHERE un.parent_id IS NULL"
+        cond = "(node->>'parent_id') IS NULL"
     elif level == 2:
-        return f"JOIN url_nodes un ON {alias}.url_node_id = un.id WHERE un.parent_id IS NOT NULL"
-    return f"JOIN url_nodes un ON {alias}.url_node_id = un.id WHERE 1=1"
+        cond = "(node->>'parent_id') IS NOT NULL"
+    else:
+        cond = "TRUE"
+    return (
+        f"sr.url_node_id::text IN ("
+        f"SELECT node->>'id' FROM extraction_templates, jsonb_array_elements(nodes) AS node WHERE {cond}"
+        f")"
+    )
 
 
 @router.get("/records/browse")
@@ -100,22 +105,22 @@ def browse_records(
     db: Session = Depends(get_db),
 ):
     """Return paginated records for admin record browser (to pick hero items)."""
-    join_where = _level_condition(level)
+    level_filter = _level_filter_sql(level)
     params: dict = {"lim": limit, "skip": skip}
 
     if search:
         sql = text(
-            f"SELECT sr.id, sr.data FROM scraped_records sr {join_where} "
+            f"SELECT sr.id, sr.data FROM scraped_records sr WHERE {level_filter} "
             "AND sr.data::text ILIKE :q ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
         )
-        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr {join_where} AND sr.data::text ILIKE :q")
+        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr WHERE {level_filter} AND sr.data::text ILIKE :q")
         params["q"] = f"%{search}%"
     else:
         sql = text(
-            f"SELECT sr.id, sr.data FROM scraped_records sr {join_where} "
+            f"SELECT sr.id, sr.data FROM scraped_records sr WHERE {level_filter} "
             "ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
         )
-        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr {join_where}")
+        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr WHERE {level_filter}")
 
     rows = db.execute(sql, params).fetchall()
     total = db.execute(count_sql, {k: v for k, v in params.items() if k not in ("lim", "skip")}).scalar() or 0
@@ -127,9 +132,9 @@ def browse_records(
 @router.get("/fields/discover")
 def discover_fields(level: int = 2, db: Session = Depends(get_db)):
     """Return unique field keys present in records at the given level (sample of 200 records)."""
-    join_where = _level_condition(level)
+    level_filter = _level_filter_sql(level)
     rows = db.execute(
-        text(f"SELECT sr.data FROM scraped_records sr {join_where} ORDER BY sr.scraped_at DESC LIMIT 200")
+        text(f"SELECT sr.data FROM scraped_records sr WHERE {level_filter} ORDER BY sr.scraped_at DESC LIMIT 200")
     ).fetchall()
 
     keys: set = set()

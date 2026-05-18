@@ -8,9 +8,8 @@ from uuid import UUID
 from database import get_db
 from app.models.site_config import SiteConfig, DEFAULT_SITE_CONFIG_ID, DEFAULT_CARD_FIELDS
 from app.models.developer import Developer
-from app.models.url_node import UrlNode
 from app.models.scraped_record import ScrapedRecord
-from app.models.field import Field
+from app.models.template import ExtractionTemplate
 
 router = APIRouter()
 
@@ -48,12 +47,18 @@ def _get_cfg(db: Session) -> SiteConfig | None:
     return db.query(SiteConfig).filter(SiteConfig.id == DEFAULT_SITE_CONFIG_ID).first()
 
 
-def _level_join(level: int) -> str:
+def _level_filter_sql(level: int) -> str:
     if level == 1:
-        return "JOIN url_nodes un ON sr.url_node_id = un.id WHERE un.parent_id IS NULL"
+        cond = "(node->>'parent_id') IS NULL"
     elif level == 2:
-        return "JOIN url_nodes un ON sr.url_node_id = un.id WHERE un.parent_id IS NOT NULL"
-    return "JOIN url_nodes un ON sr.url_node_id = un.id WHERE 1=1"
+        cond = "(node->>'parent_id') IS NOT NULL"
+    else:
+        cond = "TRUE"
+    return (
+        f"sr.url_node_id::text IN ("
+        f"SELECT node->>'id' FROM extraction_templates, jsonb_array_elements(nodes) AS node WHERE {cond}"
+        f")"
+    )
 
 
 @router.get("/config")
@@ -76,22 +81,22 @@ def public_records(
     level: int = 2,
     db: Session = Depends(get_db),
 ):
-    join_where = _level_join(level)
+    level_filter = _level_filter_sql(level)
     params: dict = {"lim": limit, "skip": skip}
 
     if search:
         sql = text(
             f"SELECT sr.id, sr.developer_id, sr.data, sr.scraped_at FROM scraped_records sr "
-            f"{join_where} AND sr.data::text ILIKE :q ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
+            f"WHERE {level_filter} AND sr.data::text ILIKE :q ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
         )
-        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr {join_where} AND sr.data::text ILIKE :q")
+        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr WHERE {level_filter} AND sr.data::text ILIKE :q")
         params["q"] = f"%{search}%"
     else:
         sql = text(
             f"SELECT sr.id, sr.developer_id, sr.data, sr.scraped_at FROM scraped_records sr "
-            f"{join_where} ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
+            f"WHERE {level_filter} ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
         )
-        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr {join_where}")
+        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr WHERE {level_filter}")
 
     rows = db.execute(sql, params).fetchall()
     count_params = {k: v for k, v in params.items() if k not in ("lim", "skip")}
@@ -114,107 +119,82 @@ def public_records_grouped(
     search: str = "",
     db: Session = Depends(get_db),
 ):
-    """Return records grouped by developer and project (parent url_node), with inherited parent fields."""
-    from app.models.field import Field
-    
-    # Get all developers
+    """Return records grouped by developer and project (parent node), with inherited parent fields."""
+    # Build node maps from JSON templates
+    templates = db.query(ExtractionTemplate).all()
+    dev_nodes: dict = {str(t.developer_id): list(t.nodes or []) for t in templates}
+
     developers = db.query(Developer).all()
     result_developers = []
-    
+
     for dev in developers:
-        # Get all url_nodes for this developer
-        root_nodes = db.query(UrlNode).filter(
-            UrlNode.developer_id == dev.id,
-            UrlNode.parent_id == None
-        ).order_by(UrlNode.order).all()
-        
-        dev_result = {
-            "id": str(dev.id),
-            "name": dev.name,
-            "projects": [],
-            "loose_properties": []
-        }
-        
-        # For each root node (project), get its child nodes' records and merge with parent data
+        nodes = dev_nodes.get(str(dev.id), [])
+        if not nodes:
+            continue
+
+        root_nodes = sorted([n for n in nodes if not n.get("parent_id")], key=lambda n: n.get("order", 0))
+        child_nodes_by_parent: dict = {}
+        for n in nodes:
+            if n.get("parent_id"):
+                child_nodes_by_parent.setdefault(n["parent_id"], []).append(n)
+
+        dev_result = {"id": str(dev.id), "name": dev.name, "projects": [], "loose_properties": []}
+
         for project_node in root_nodes:
-            project_obj = {
-                "id": str(project_node.id),
-                "name": project_node.name,
-                "records": []
+            project_obj = {"id": project_node["id"], "name": project_node["name"], "records": []}
+
+            shared_field_names = {
+                f["name"] for f in (project_node.get("fields") or []) if f.get("is_shared")
             }
-            
-            # Get child nodes of this project
-            child_nodes = db.query(UrlNode).filter(
-                UrlNode.parent_id == project_node.id
-            ).all()
-            
-            # Get shared fields from project ONCE (not per child_node)
-            shared_fields = db.query(Field).filter(
-                Field.url_node_id == project_node.id,
-                Field.is_shared == True
-            ).all()
-            shared_field_names = {f.name for f in shared_fields}
-            
-            # Get parent records ONCE for this project
-            parent_records = db.query(ScrapedRecord).filter(
-                ScrapedRecord.url_node_id == project_node.id
-            ).order_by(ScrapedRecord.scraped_at.desc()).all()
-            
-            # For each child node, get its records and merge with parent record data
-            for child_node in child_nodes:
-                child_records = db.query(ScrapedRecord).filter(
-                    ScrapedRecord.url_node_id == child_node.id
-                ).order_by(ScrapedRecord.scraped_at.desc()).all()
-                
-                # For each child record, merge with parent records (match by checking all parents)
+
+            parent_records = (
+                db.query(ScrapedRecord)
+                .filter(ScrapedRecord.url_node_id == project_node["id"])
+                .order_by(ScrapedRecord.scraped_at.desc())
+                .all()
+            )
+
+            for child_node in child_nodes_by_parent.get(project_node["id"], []):
+                child_records = (
+                    db.query(ScrapedRecord)
+                    .filter(ScrapedRecord.url_node_id == child_node["id"])
+                    .order_by(ScrapedRecord.scraped_at.desc())
+                    .all()
+                )
                 for child_rec in child_records:
                     if search and search.lower() not in str(child_rec.data).lower():
                         continue
-                        
                     child_data = dict(child_rec.data) if child_rec.data else {}
-                    
-                    # Merge shared fields from ALL parent records (use most complete parent)
                     if parent_records and shared_field_names:
                         for parent_rec in parent_records:
                             parent_data = dict(parent_rec.data) if parent_rec.data else {}
                             for fname in shared_field_names:
-                                # Only add if not already in child and exists in parent
                                 if fname in parent_data and fname not in child_data:
                                     child_data[fname] = parent_data[fname]
-                                    break  # Use first parent that has this field
-                    
-                    # Use the most recent parent record
+                                    break
                     most_recent_parent = parent_records[0] if parent_records else None
-                    
                     project_obj["records"].append({
                         "id": str(child_rec.id),
                         "data": child_data,
                         "parent_data": dict(most_recent_parent.data) if most_recent_parent and most_recent_parent.data else {},
-                        "scraped_at": child_rec.scraped_at.isoformat() if child_rec.scraped_at else None
+                        "scraped_at": child_rec.scraped_at.isoformat() if child_rec.scraped_at else None,
                     })
-            
-            # Only add project if it has records
+
             if project_obj["records"]:
                 dev_result["projects"].append(project_obj)
-            
-            # Also get direct records from root node (loose properties under this project)
-            root_records = db.query(ScrapedRecord).filter(
-                ScrapedRecord.url_node_id == project_node.id
-            ).order_by(ScrapedRecord.scraped_at.desc()).all()
-            
-            for rec in root_records:
+
+            for rec in parent_records:
                 if search and search.lower() not in str(rec.data).lower():
                     continue
                 dev_result["loose_properties"].append({
                     "id": str(rec.id),
                     "data": dict(rec.data) if rec.data else {},
-                    "scraped_at": rec.scraped_at.isoformat() if rec.scraped_at else None
+                    "scraped_at": rec.scraped_at.isoformat() if rec.scraped_at else None,
                 })
-        
-        # Only add developer if it has projects or properties
+
         if dev_result["projects"] or dev_result["loose_properties"]:
             result_developers.append(dev_result)
-    
+
     return {"developers": result_developers}
 
 
@@ -231,21 +211,21 @@ def public_catalog(
     import json
     from collections import defaultdict
 
-    child_nodes = db.query(UrlNode).filter(UrlNode.parent_id.isnot(None)).all()
+    templates = db.query(ExtractionTemplate).all()
+    all_nodes: list = [node for t in templates for node in (t.nodes or [])]
+
+    child_nodes = [n for n in all_nodes if n.get("parent_id")]
     if not child_nodes:
         return {"total": 0, "items": [], "locations": [], "projects": []}
 
-    parent_node_ids = list({n.parent_id for n in child_nodes})
+    parent_node_ids = list({n["parent_id"] for n in child_nodes})
+    parent_nodes_map = {n["id"]: n for n in all_nodes if n["id"] in parent_node_ids}
 
-    parent_nodes_map = {
-        n.id: n
-        for n in db.query(UrlNode).filter(UrlNode.id.in_(parent_node_ids)).all()
-    }
-
-    # Template fields per parent node — these always override child values
+    # Template field names per parent node — these always override child values
     parent_field_names: dict = defaultdict(set)
-    for f in db.query(Field).filter(Field.url_node_id.in_(parent_node_ids)).all():
-        parent_field_names[f.url_node_id].add(f.name)
+    for pnode in parent_nodes_map.values():
+        for f in (pnode.get("fields") or []):
+            parent_field_names[pnode["id"]].add(f["name"])
 
     # Most recent parent record per parent node
     parent_records_map: dict = {}
@@ -261,10 +241,10 @@ def public_catalog(
 
     all_items: list = []
     all_locations: set = set()
-    all_projects: dict = {}  # parent_id_str -> name
+    all_projects: dict = {}
 
     for child_node in child_nodes:
-        parent_id = child_node.parent_id
+        parent_id = child_node["parent_id"]
         parent_node = parent_nodes_map.get(parent_id)
         if not parent_node:
             continue
@@ -273,11 +253,11 @@ def public_catalog(
         parent_rec = parent_records_map.get(parent_id)
         parent_data = dict(parent_rec.data) if parent_rec and parent_rec.data else {}
 
-        all_projects[str(parent_id)] = parent_node.name
+        all_projects[str(parent_id)] = parent_node["name"]
 
         child_recs = (
             db.query(ScrapedRecord)
-            .filter(ScrapedRecord.url_node_id == child_node.id)
+            .filter(ScrapedRecord.url_node_id == child_node["id"])
             .order_by(ScrapedRecord.scraped_at.desc())
             .all()
         )
@@ -285,7 +265,6 @@ def public_catalog(
         for child_rec in child_recs:
             child_data = dict(child_rec.data) if child_rec.data else {}
 
-            # Merge: parent-template fields always win; others fill only if child is empty
             merged = {**child_data}
             for fname, fval in parent_data.items():
                 if fval is None:
@@ -302,7 +281,6 @@ def public_catalog(
                     if empty:
                         merged[fname] = fval
 
-            # Extract location for filtering/facets
             loc = ""
             for k in ("ubicacion", "ubicación", "location", "distrito", "ciudad", "zona"):
                 v = merged.get(k)
@@ -316,13 +294,12 @@ def public_catalog(
                 "id": str(child_rec.id),
                 "data": merged,
                 "project_id": str(parent_id),
-                "project_name": parent_node.name,
+                "project_name": parent_node["name"],
                 "developer_id": str(child_rec.developer_id) if child_rec.developer_id else None,
                 "scraped_at": child_rec.scraped_at.isoformat() if child_rec.scraped_at else None,
                 "_loc": loc,
             })
 
-    # Apply filters
     filtered = all_items
     if location:
         filtered = [i for i in filtered if location.lower() in i["_loc"].lower()]
@@ -378,8 +355,7 @@ def public_hero(db: Session = Depends(get_db)):
     rows = db.execute(
         text(
             "SELECT sr.id, sr.data FROM scraped_records sr "
-            "JOIN url_nodes un ON sr.url_node_id = un.id "
-            "WHERE un.parent_id IS NULL "
+            f"WHERE {_level_filter_sql(1)} "
             "ORDER BY sr.scraped_at DESC LIMIT :lim"
         ),
         {"lim": 6},
@@ -393,12 +369,12 @@ def public_featured(db: Session = Depends(get_db)):
     cfg = _get_cfg(db)
     level = (cfg.featured_level if cfg else None) or 2
     limit = (cfg.featured_limit if cfg else None) or 6
-    join_where = _level_join(level)
+    level_filter = _level_filter_sql(level)
 
     rows = db.execute(
         text(
             f"SELECT sr.id, sr.developer_id, sr.data, sr.scraped_at FROM scraped_records sr "
-            f"{join_where} ORDER BY sr.scraped_at DESC LIMIT :lim"
+            f"WHERE {level_filter} ORDER BY sr.scraped_at DESC LIMIT :lim"
         ),
         {"lim": limit},
     ).fetchall()

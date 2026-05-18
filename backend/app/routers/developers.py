@@ -4,8 +4,11 @@ from uuid import UUID
 from typing import Optional, List
 from pydantic import BaseModel
 
+import uuid as _uuid
+from datetime import datetime
+
 from database import get_db
-from app.models import Developer, UrlNode, Field, Selector, ScrapedRecord
+from app.models import Developer, ExtractionTemplate, ScrapedRecord
 from app.models.developer import DeveloperSource
 from app.schemas import DeveloperCreate, DeveloperUpdate, DeveloperResponse
 from app.schemas.scraped_record import ScrapedRecordResponse
@@ -160,8 +163,9 @@ async def get_developer_url_nodes(
     developer = db.query(Developer).filter(Developer.id == developer_id).first()
     if not developer:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Developer not found")
-    nodes = db.query(UrlNode).filter(UrlNode.developer_id == developer_id).order_by(UrlNode.order).all()
-    return [{"id": str(n.id), "name": n.name, "url": n.url, "parent_id": str(n.parent_id) if n.parent_id else None, "order": n.order} for n in nodes]
+    tmpl = db.query(ExtractionTemplate).filter(ExtractionTemplate.developer_id == developer_id).first()
+    nodes = tmpl.nodes if tmpl else []
+    return [{"id": n["id"], "name": n["name"], "url": n.get("url", ""), "parent_id": n.get("parent_id"), "order": n.get("order", 0)} for n in nodes]
 
 
 @router.get("/{developer_id}/records", response_model=list[ScrapedRecordResponse])
@@ -195,70 +199,38 @@ async def delete_developer_records(
     db.commit()
 
 
+def _is_uuid(s: str) -> bool:
+    try:
+        _uuid.UUID(s)
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
+def _nodes_with_inherited_fields(nodes: list) -> list:
+    """Compute inherited fields at query time: child nodes get shared fields from their parent."""
+    node_map = {n["id"]: n for n in nodes}
+    result = []
+    for node in nodes:
+        fields = list(node.get("fields") or [])
+        if node.get("parent_id") and node["parent_id"] in node_map:
+            parent      = node_map[node["parent_id"]]
+            child_names = {f["name"] for f in fields}
+            for pf in (parent.get("fields") or []):
+                if pf.get("is_shared") and pf["name"] not in child_names:
+                    fields.append({**pf, "inherited_from": node["parent_id"]})
+        result.append({**node, "fields": fields})
+    return result
+
+
 @router.get("/{developer_id}/template")
-async def get_developer_template(
-    developer_id: UUID,
-    db: Session = Depends(get_db),
-):
+async def get_developer_template(developer_id: UUID, db: Session = Depends(get_db)):
     developer = db.query(Developer).filter(Developer.id == developer_id).first()
     if not developer:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Developer not found")
-    nodes = db.query(UrlNode).filter(UrlNode.developer_id == developer_id).order_by(UrlNode.order).all()
-    result = []
-    for node in nodes:
-        # Child's own fields
-        child_fields = sorted(node.fields, key=lambda x: x.order)
-        fields_data = []
-        for f in child_fields:
-            selectors_data = [{"id": str(s.id), "value": s.value, "order": s.order} for s in sorted(f.selectors, key=lambda x: x.order)]
-            fields_data.append({
-                "id": str(f.id),
-                "name": f.name,
-                "is_child_url": f.is_child_url,
-                "plain_text": f.plain_text,
-                "is_shared": f.is_shared,
-                "is_list": f.is_list,
-                "list_container": f.list_container,
-                "is_image": f.is_image,
-                "extract_attr": f.extract_attr,
-                "order": f.order,
-                "selectors": selectors_data,
-                "inherited_from": None,
-            })
-
-        # If node has a parent, include parent's fields as inherited (unless overridden by child)
-        if node.parent_id:
-            parent_fields = db.query(Field).filter(Field.url_node_id == node.parent_id).all()
-            child_names = {f["name"] for f in fields_data}
-            for pf in parent_fields:
-                if pf.name in child_names:
-                    continue
-                sel_data = [{"id": str(s.id), "value": s.value, "order": s.order} for s in sorted(pf.selectors, key=lambda x: x.order)]
-                fields_data.append({
-                    "id": str(pf.id),
-                    "name": pf.name,
-                    "is_child_url": pf.is_child_url,
-                    "plain_text": pf.plain_text,
-                    "is_shared": pf.is_shared,
-                    "is_list": pf.is_list,
-                    "list_container": pf.list_container,
-                    "is_image": pf.is_image,
-                    "extract_attr": pf.extract_attr,
-                    "order": pf.order,
-                    "selectors": sel_data,
-                    "inherited_from": str(node.parent_id),
-                })
-
-        result.append({
-            "id": str(node.id),
-            "name": node.name,
-            "url": node.url,
-            "container_selector": node.container_selector,
-            "parent_id": str(node.parent_id) if node.parent_id else None,
-            "order": node.order,
-            "fields": fields_data,
-        })
-    return {"developer_id": str(developer_id), "nodes": result}
+    tmpl = db.query(ExtractionTemplate).filter(ExtractionTemplate.developer_id == developer_id).first()
+    nodes = _nodes_with_inherited_fields(tmpl.nodes if tmpl else [])
+    return {"developer_id": str(developer_id), "nodes": nodes}
 
 
 @router.post("/{developer_id}/template")
@@ -271,39 +243,47 @@ async def save_developer_template(
     if not developer:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Developer not found")
 
-    # Delete existing tree
-    existing_nodes = db.query(UrlNode).filter(UrlNode.developer_id == developer_id).all()
-    for node in existing_nodes:
-        db.delete(node)
-    db.flush()
-
-    # Map client_id -> real DB id
+    # Resolve client_id → stable UUID (preserve if already a real UUID, generate otherwise)
     id_map: dict = {}
-
-    # Two-pass: first roots, then children (topological order by parent presence)
     ordered = sorted(template.nodes, key=lambda n: (0 if n.parent_client_id is None else 1))
+    for node_in in ordered:
+        id_map[node_in.client_id] = node_in.client_id if _is_uuid(node_in.client_id) else str(_uuid.uuid4())
 
-    for i, node_in in enumerate(ordered):
+    nodes_json = []
+    for node_in in ordered:
+        node_id   = id_map[node_in.client_id]
         parent_id = id_map.get(node_in.parent_client_id) if node_in.parent_client_id else None
-        node = UrlNode(
-            developer_id=developer_id,
-            parent_id=parent_id,
-            name=node_in.name,
-            url=node_in.url,
-            container_selector=node_in.container_selector,
-            order=node_in.order,
-        )
-        db.add(node)
-        db.flush()
-        id_map[node_in.client_id] = node.id
+        fields = []
+        for f in node_in.fields:
+            fields.append({
+                "id":             str(_uuid.uuid4()),
+                "name":           f.name.strip().lower(),
+                "is_child_url":   f.is_child_url,
+                "plain_text":     f.plain_text,
+                "is_shared":      f.is_shared,
+                "is_list":        f.is_list,
+                "list_container": f.list_container or None,
+                "is_image":       f.is_image,
+                "extract_attr":   f.extract_attr or None,
+                "order":          f.order,
+                "selectors":      [{"value": s.value, "order": s.order} for s in f.selectors],
+                "inherited_from": None,
+            })
+        nodes_json.append({
+            "id":                 node_id,
+            "parent_id":          parent_id,
+            "name":               node_in.name,
+            "url":                node_in.url,
+            "container_selector": node_in.container_selector or None,
+            "order":              node_in.order,
+            "fields":             sorted(fields, key=lambda x: x["order"]),
+        })
 
-        for field_in in node_in.fields:
-            field = Field(url_node_id=node.id, name=field_in.name.strip().lower(), is_child_url=field_in.is_child_url, plain_text=field_in.plain_text, is_shared=field_in.is_shared, is_list=field_in.is_list, list_container=field_in.list_container or None, is_image=field_in.is_image, extract_attr=field_in.extract_attr, order=field_in.order)
-            db.add(field)
-            db.flush()
-            for sel_in in field_in.selectors:
-                sel = Selector(field_id=field.id, value=sel_in.value, order=sel_in.order)
-                db.add(sel)
-
+    tmpl = db.query(ExtractionTemplate).filter(ExtractionTemplate.developer_id == developer_id).first()
+    if tmpl:
+        tmpl.nodes      = nodes_json
+        tmpl.updated_at = datetime.utcnow()
+    else:
+        db.add(ExtractionTemplate(developer_id=developer_id, nodes=nodes_json))
     db.commit()
     return {"status": "saved", "developer_id": str(developer_id)}

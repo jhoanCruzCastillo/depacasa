@@ -73,7 +73,7 @@ celery_app.conf.update(
 @celery_app.task(name="scrape_developer")
 def scrape_developer_task(developer_id: str, job_id: str):
     from database import get_db_context
-    from app.models import ScrapeJob, UrlNode, Field, Selector, ScrapedRecord
+    from app.models import ScrapeJob, ScrapedRecord
     from app.models.scrape_job import JobStatus
     from app.models.scraped_record import RecordStatus
     from datetime import datetime
@@ -192,19 +192,12 @@ def scrape_single_field_task(payload: dict):
 
 async def _run_scrape(developer_id, job_id) -> int:
     from database import get_db_context
-    from app.models import UrlNode
 
     with get_db_context() as db:
-        root_nodes = db.query(UrlNode).filter(
-            UrlNode.developer_id == developer_id,
-            UrlNode.parent_id == None,
-        ).order_by(UrlNode.order).all()
-
-        if not root_nodes:
-            return 0
-
-        # Snapshot all nodes/fields/selectors to avoid lazy-load issues outside session
         nodes_data = _snapshot_nodes(db, developer_id)
+
+    if not nodes_data:
+        return 0
 
     total = 0
     try:
@@ -271,17 +264,9 @@ async def _scrape_single_field(browser, node: dict, developer_id: str) -> int:
 
 
 def _snapshot_nodes(db, developer_id) -> list:
-    from app.models import UrlNode
-
-    nodes = db.query(UrlNode).filter(UrlNode.developer_id == developer_id).all()
-    result = []
-    for n in nodes:
-        fields = []
-        for f in sorted(n.fields, key=lambda x: x.order):
-            selectors = [{"value": s.value, "order": s.order} for s in sorted(f.selectors, key=lambda x: x.order)]
-            fields.append({"id": str(f.id), "name": f.name, "is_child_url": f.is_child_url, "plain_text": f.plain_text, "is_shared": f.is_shared, "is_list": f.is_list, "list_container": f.list_container, "is_image": f.is_image, "extract_attr": f.extract_attr, "selectors": selectors})
-        result.append({"id": str(n.id), "parent_id": str(n.parent_id) if n.parent_id else None, "name": n.name, "url": n.url, "container_selector": n.container_selector, "order": n.order, "fields": fields})
-    return result
+    from app.models import ExtractionTemplate
+    tmpl = db.query(ExtractionTemplate).filter(ExtractionTemplate.developer_id == developer_id).first()
+    return list(tmpl.nodes) if tmpl and tmpl.nodes else []
 
 
 async def _scrape_node(browser, node: dict, all_nodes: list, developer_id, job_id, parent_url: str = None, parent_shared: dict | None = None) -> int:

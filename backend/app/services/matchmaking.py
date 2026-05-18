@@ -273,11 +273,16 @@ def _extract_price_values(data: dict) -> list[float]:
 _LATERAL_BASE = """
 SELECT sr.id, sr.data, COALESCE(pd.parent_text, '') AS parent_text
 FROM scraped_records sr
-JOIN url_nodes un ON sr.url_node_id = un.id
+JOIN LATERAL (
+    SELECT node->>'parent_id' AS parent_id
+    FROM extraction_templates, jsonb_array_elements(nodes) AS node
+    WHERE node->>'id' = sr.url_node_id::text
+    LIMIT 1
+) un ON true
 LEFT JOIN LATERAL (
     SELECT psr.data::text AS parent_text
     FROM scraped_records psr
-    WHERE psr.url_node_id = un.parent_id
+    WHERE psr.url_node_id::text = un.parent_id
     ORDER BY psr.scraped_at DESC
     LIMIT 1
 ) pd ON true
@@ -562,9 +567,11 @@ def get_record_data(db: Session, record_id: str) -> dict | None:
         child = db.execute(
             text(
                 """
-                SELECT sr.data, sr.source_url, un.parent_id
+                SELECT sr.data, sr.source_url,
+                       (SELECT node->>'parent_id' FROM extraction_templates,
+                               jsonb_array_elements(nodes) AS node
+                        WHERE node->>'id' = sr.url_node_id::text LIMIT 1) AS parent_id
                 FROM scraped_records sr
-                JOIN url_nodes un ON sr.url_node_id = un.id
                 WHERE sr.id = :id
                 """
             ),
