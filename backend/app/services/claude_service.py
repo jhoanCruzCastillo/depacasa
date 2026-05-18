@@ -810,3 +810,131 @@ def _fallback_criteria(description: str) -> dict:
     }
 
 
+# ── Rating feedback criteria extraction ──────────────────────────────────────
+
+_RATING_FEEDBACK_SYSTEM = """\
+Eres un asistente inmobiliario. El usuario acabo de calificar una propiedad y dio un comentario.
+Analiza el feedback y extrae AJUSTES de busqueda concretos.
+Responde SOLO JSON valido (sin markdown) con este formato exacto:
+{"location": null, "bedrooms": null,
+ "area_min": null, "area_max": null,
+ "min_price": null, "max_price": null,
+ "common_areas": [], "nearby_zones": []}
+
+Reglas por tipo de comentario negativo (baja calificacion):
+- "muy pequeno/chico/reducido" + propiedad tiene Xm2 -> area_min = X + 15
+- "muy caro/precio alto/fuera de presupuesto" + precio Y -> max_price = Y * 0.85
+- "muchos dormitorios/cuartos/habitaciones" -> no cambiar o reducir bedrooms
+- "pocos dormitorios" + tiene N -> bedrooms = N + 1
+- "no tiene [amenidad]" o "le falta [amenidad]" -> agregar a common_areas
+- "lejos de [lugar]" o "no hay [lugar] cerca" -> agregar a nearby_zones
+- "mala ubicacion/zona/barrio" + usuario menciona otra zona -> location = esa zona
+
+Reglas por tipo de comentario positivo (alta calificacion):
+- "me gusta el tamano/espacio" -> area_min = X - 5 (buscar similar o mayor)
+- "buen precio/precio razonable" -> max_price = Y * 1.1 (un poco mas de margen)
+- "me gusta que tiene [amenidad]" -> agregar a common_areas
+- "buena ubicacion" -> confirmar location actual
+
+Si la informacion no es suficiente para ajustar un parametro, deja ese campo en null.
+Nunca inventes valores que el usuario no menciono o que no se puedan inferir del contexto.
+"""
+
+
+def _normalize_feedback_criteria(raw: dict) -> dict:
+    out: dict = {}
+
+    if raw.get("location"):
+        out["location"] = str(raw["location"]).strip()
+        out["location_mode"] = "preferencia"
+
+    if raw.get("bedrooms") is not None:
+        try:
+            out["bedrooms"] = int(raw["bedrooms"])
+            out["bedrooms_mode"] = "preferencia"
+        except (ValueError, TypeError):
+            pass
+
+    for key in ("area_min", "area_max"):
+        if raw.get(key) is not None:
+            try:
+                out[key] = int(raw[key])
+                out["area_mode"] = "preferencia"
+            except (ValueError, TypeError):
+                pass
+
+    for key in ("min_price", "max_price"):
+        if raw.get(key) is not None:
+            try:
+                out[key] = float(raw[key])
+                out["budget_mode"] = "preferencia"
+            except (ValueError, TypeError):
+                pass
+
+    if raw.get("common_areas"):
+        out["common_areas"] = [str(a).strip() for a in raw["common_areas"] if a]
+        out["common_areas_mode"] = "preferencia"
+
+    if raw.get("nearby_zones"):
+        out["nearby_zones"] = [str(z).strip() for z in raw["nearby_zones"] if z]
+        out["nearby_zones_mode"] = "preferencia"
+
+    out.setdefault("features", [])
+    out.setdefault("keywords", [])
+    return out
+
+
+async def extract_rating_feedback_criteria(feedback: str, rating: int, property_data: dict) -> dict:
+    """Extract preference adjustments from a post-rating feedback comment."""
+    from app.services.matchmaking import (
+        _extract_area_values,
+        _extract_price_values,
+        _extract_bedroom_counts,
+    )
+
+    areas = _extract_area_values(property_data)
+    prices = _extract_price_values(property_data)
+    bedrooms_set = _extract_bedroom_counts(property_data)
+
+    prop_area = areas[0] if areas else None
+    prop_price = min(prices) if prices else None
+    prop_beds = min(bedrooms_set) if bedrooms_set else None
+    prop_location = (
+        property_data.get("ubicacion")
+        or property_data.get("location")
+        or property_data.get("distrito")
+        or property_data.get("zona")
+        or ""
+    )
+
+    user_prompt = json.dumps(
+        {
+            "rating": rating,
+            "feedback": feedback,
+            "propiedad": {
+                "precio": prop_price,
+                "metros_cuadrados": prop_area,
+                "dormitorios": prop_beds,
+                "ubicacion": prop_location or "no especificada",
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    try:
+        response = _get_client().messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=300,
+            system=_RATING_FEEDBACK_SYSTEM,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        txt = response.content[0].text.strip()
+        if txt.startswith("```"):
+            txt = txt.split("```")[1]
+            if txt.startswith("json"):
+                txt = txt[4:]
+        parsed = json.loads(txt.strip())
+        return _normalize_feedback_criteria(parsed)
+    except Exception as e:
+        logger.warning(f"extract_rating_feedback_criteria Claude error: {e}")
+        return {}

@@ -10,7 +10,13 @@ INTENT_NAME = VER_PROPIEDADES_NUEVAS_NO_VISTAS
 
 
 async def handle(runtime: IntentRuntime) -> IntentResult | None:
-    if runtime.state != "collecting_info" or runtime.step not in {4, 8}:
+    state = runtime.state
+    # Allow from collecting_info (steps 4/8), presenting, or contact_requested
+    allowed = (
+        (state == "collecting_info" and runtime.step in {4, 8})
+        or state in {"presenting", "contact_requested"}
+    )
+    if not allowed:
         return None
 
     text = (runtime.user_text or "").strip()
@@ -23,6 +29,7 @@ async def handle(runtime: IntentRuntime) -> IntentResult | None:
 
     clean = runtime.call("clean_criteria", session.extracted_criteria)
     session.extracted_criteria = {**clean, "_result_mode": "new_unseen"}
+    session.state = "collecting_info"
     session.info_step = 5
 
     seed = text if runtime.call("looks_like_search_update", text) else (session.ideal_description or text)

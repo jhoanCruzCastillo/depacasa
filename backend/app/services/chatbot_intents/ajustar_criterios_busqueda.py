@@ -14,7 +14,8 @@ async def handle(runtime: IntentRuntime) -> IntentResult | None:
     session = runtime.session
     step = runtime.step
 
-    if runtime.state == "presenting" and runtime.call("is_generic_adjust_request", text):
+    # From presenting or contact_requested: ask for adjustment params and switch state
+    if runtime.state in {"presenting", "contact_requested"} and runtime.call("is_generic_adjust_request", text):
         session.state = "collecting_info"
         session.info_step = 11
         return IntentResult(
@@ -27,6 +28,17 @@ async def handle(runtime: IntentRuntime) -> IntentResult | None:
 
     if runtime.state != "collecting_info":
         return None
+
+    # In contact capture / financial doc steps: escape to adjustment flow
+    if step in {9, 10, 12} and runtime.call("is_generic_adjust_request", text):
+        session.info_step = 11
+        return IntentResult(
+            response=runtime.call(
+                "text_response",
+                "Perfecto. Indicame los cambios que quieres aplicar "
+                "(zona/ciudad, dormitorios, presupuesto, etc.).",
+            )
+        )
 
     if step in {4, 8}:
         if runtime.call("is_generic_adjust_request", text):

@@ -16,15 +16,24 @@ async def handle(runtime: IntentRuntime) -> IntentResult | None:
 
     session = runtime.session
     step = runtime.step
+    state = runtime.state
 
-    if runtime.state == "presenting":
+    # From contact_requested or presenting: escape into a new search when user shifts intent
+    if state in {"contact_requested", "presenting"}:
         if runtime.call("looks_like_search_update", text):
             session.state = "collecting_info"
             session.info_step = 5
             return IntentResult(response=await runtime.acall("start_search", text))
         return None
 
-    if runtime.state != "collecting_info":
+    if state != "collecting_info":
+        return None
+
+    # In contact capture / financial doc steps: only escape when text clearly is a search
+    if step in {9, 10, 12}:
+        if runtime.call("looks_like_search_update", text):
+            session.info_step = 5
+            return IntentResult(response=await runtime.acall("start_search", text))
         return None
 
     if step == 11:
@@ -72,4 +81,3 @@ async def handle(runtime: IntentRuntime) -> IntentResult | None:
     session.ideal_description = text
     session.info_step = 5
     return IntentResult(response=await runtime.acall("start_search", text))
-

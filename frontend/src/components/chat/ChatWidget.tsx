@@ -303,7 +303,7 @@ function StarRating({ rating, onChange }: { rating: number; onChange: (r: number
 // â”€â”€â”€ Full Property Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function PropertyCardView({
-  card, cardFields, primaryColor, secondaryColor, onNext, onInterested, readonly,
+  card, cardFields, primaryColor, secondaryColor, onNext, onInterested, onRate, readonly,
 }: {
   card: PropertyCard
   cardFields: CardField[]
@@ -311,10 +311,12 @@ function PropertyCardView({
   secondaryColor: string
   onNext: () => void
   onInterested: (r: number) => void
+  onRate?: (r: number) => void
   readonly?: boolean
 }) {
   const [rating, setRating] = useState(0)
   const [lightboxStart, setLightboxStart] = useState<number | null>(null)
+  const rateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const images = extractAllImages(card.data)
   const { text, lists } = extractFields(card.data, images)
@@ -475,7 +477,16 @@ function PropertyCardView({
             {/* Star rating */}
             <div className="px-4 pb-2 pt-2 border-t border-slate-100">
               <p className="text-xs text-slate-400 mb-1.5">¿Qué te parece?</p>
-              <StarRating rating={rating} onChange={setRating} />
+              <StarRating
+                rating={rating}
+                onChange={r => {
+                  setRating(r)
+                  if (onRate) {
+                    if (rateTimerRef.current) clearTimeout(rateTimerRef.current)
+                    rateTimerRef.current = setTimeout(() => onRate(r), 800)
+                  }
+                }}
+              />
             </div>
 
             {/* Action buttons */}
@@ -688,8 +699,15 @@ export default function ChatWidget({
     sendRaw({ content: 'ver siguiente' })
   }
 
-  const handleInterested = (rating: number) => {
-    const text = rating > 0 ? `Lo quiero, le doy ${rating} estrellas` : 'Lo quiero'
+  const handleRate = (rating: number) => {
+    if (!sessionId || loading || uploading) return
+    const text = `Le doy ${rating} estrella${rating === 1 ? '' : 's'}`
+    setMessages(m => [...m, { role: 'user', content: text, card: null }])
+    sendRaw({ content: text })
+  }
+
+  const handleInterested = (_rating: number) => {
+    const text = 'Lo quiero'
     setMessages(m => [...m, { role: 'user', content: text, card: null }])
     sendRaw({ content: text })
   }
@@ -767,6 +785,7 @@ export default function ChatWidget({
                         secondaryColor={secondaryColor}
                         onNext={handleNext}
                         onInterested={handleInterested}
+                        onRate={handleRate}
                         readonly={i !== lastIdx || isDone}
                       />
                     )}

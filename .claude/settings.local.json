@@ -5,7 +5,8 @@
       "Bash(npx vite *)",
       "Bash(python -c \"from app.services.claude_service import extract_criteria, _enrich_criteria_semantics, _fallback_criteria; print\\('OK'\\)\")",
       "Bash(python -c ' *)",
-      "Bash(python -c \"from app.services.claude_service import extract_criteria; from app.services.preference_service import build_preferences_v2_from_criteria, criteria_from_preferences_v2; print\\('All imports OK'\\)\")"
+      "Bash(python -c \"from app.services.claude_service import extract_criteria; from app.services.preference_service import build_preferences_v2_from_criteria, criteria_from_preferences_v2; print\\('All imports OK'\\)\")",
+      "Bash(python -c \"from app.services.web_conversation import _handle_presenting; print\\('backend OK'\\)\")"
     ]
   }
 }

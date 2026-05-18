@@ -82,12 +82,18 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
                 FALLBACK_NO_ENTENDIDO,
             ]
         if step in {9, 10}:
+            # Contact capture steps: include search escapes so intent-shifting users aren't stuck
             return [
+                INICIO_BUSQUEDA,
+                AJUSTAR_CRITERIOS_BUSQUEDA,
                 CAPTURAR_DATOS_CONTACTO,
                 FALLBACK_NO_ENTENDIDO,
             ]
         if step == 12:
+            # Financial doc step: same escape hatches
             return [
+                INICIO_BUSQUEDA,
+                AJUSTAR_CRITERIOS_BUSQUEDA,
                 CAPTURAR_SUSTENTO_FINANCIERO,
                 FALLBACK_NO_ENTENDIDO,
             ]
@@ -107,6 +113,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
             MARCAR_INTERES_LO_QUIERO,
             CONSULTAR_DETALLE_PROPIEDAD_ACTUAL,
             AJUSTAR_CRITERIOS_BUSQUEDA,
+            VER_PROPIEDADES_NUEVAS_NO_VISTAS,
             VER_PROPIEDADES_VISTAS,
             INICIO_BUSQUEDA,
             FALLBACK_FUERA_DE_ALCANCE,
@@ -115,7 +122,11 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
 
     if state == "contact_requested":
         return [
+            INICIO_BUSQUEDA,
+            AJUSTAR_CRITERIOS_BUSQUEDA,
+            VER_PROPIEDADES_NUEVAS_NO_VISTAS,
             VER_PROPIEDADES_VISTAS,
+            FALLBACK_FUERA_DE_ALCANCE,
             FALLBACK_NO_ENTENDIDO,
         ]
 

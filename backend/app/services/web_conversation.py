@@ -1634,6 +1634,125 @@ def _rate_current_property(session: WebChatSession, rating: int, db: Session) ->
     return _rating_feedback(rating)
 
 
+def _rating_followup_question(rating: int) -> str:
+    if rating <= 2:
+        return (
+            "¿Qué no te convence de esta propiedad? "
+            "Cuéntame (precio, tamaño, ubicación, amenidades...) para afinar mejor la búsqueda. "
+            "O escribe «siguiente» para continuar."
+        )
+    if rating == 3:
+        return (
+            "¿Qué le cambiarías? Ayúdame a entender qué mejorarías "
+            "(tamaño, precio, zona, amenidades...). "
+            "O escribe «siguiente» para seguir viendo propiedades."
+        )
+    return (
+        "¿Qué es lo que más te gustó? Así busco propiedades más parecidas para ti. "
+        "O escribe «siguiente» si prefieres ver otra opción."
+    )
+
+
+def _rate_and_ask_feedback(session: WebChatSession, rating: int, db: Session) -> str:
+    """Save rating, arm the pending-feedback state, return the follow-up question."""
+    record_id: str | None = None
+    if rating and session.site_user_id and session.matched_record_ids:
+        idx = session.current_match_index
+        if idx < len(session.matched_record_ids):
+            record_id = session.matched_record_ids[idx]
+            _upsert_interaction(
+                session.site_user_id,
+                record_id,
+                db,
+                rating=rating,
+                rated_at=datetime.now(timezone.utc),
+            )
+            _track_behavior_signal(session.site_user_id, "rated_record_ids", record_id, db)
+            if rating <= 2:
+                _track_behavior_signal(session.site_user_id, "discarded_record_ids", record_id, db)
+
+    criteria = dict(session.extracted_criteria or {})
+    criteria["_pending_rating_feedback"] = {
+        "rating": rating,
+        "record_id": str(record_id) if record_id else None,
+    }
+    session.extracted_criteria = criteria
+    session.info_step = 20
+    return _rating_followup_question(rating)
+
+
+async def _process_rating_feedback(session: WebChatSession, text: str, db: Session) -> dict:
+    """Handle the user's response to the post-rating follow-up question (info_step == 20)."""
+    ctx = dict(session.extracted_criteria or {})
+    pending = ctx.get("_pending_rating_feedback") or {}
+    rating: int = pending.get("rating") or 3
+    record_id: str | None = pending.get("record_id")
+
+    t = _normalize_text(text)
+
+    # User wants to skip feedback — just move to the next property
+    skip_signals = ["siguiente", "skip", "continuar", "otra", "no se", "no sé", "da igual", "omitir"]
+    if _wants_next_property(text) or any(s in t for s in skip_signals) or len(text.strip()) <= 2:
+        ctx.pop("_pending_rating_feedback", None)
+        session.extracted_criteria = ctx
+        session.info_step = 7
+        return await _next_property(session, db)
+
+    # Fetch property data for context
+    property_data: dict = {}
+    if record_id:
+        from app.services.matchmaking import get_record_data
+        property_data = get_record_data(db, record_id) or {}
+
+    # Extract preference adjustments from the feedback via Claude
+    adjustments: dict = {}
+    try:
+        from app.services.claude_service import extract_rating_feedback_criteria
+        adjustments = await extract_rating_feedback_criteria(text, rating, property_data)
+    except Exception as exc:
+        logger.warning("[feedback] criteria extraction failed: %s", exc)
+
+    # Merge adjustments into the user's persistent preferences
+    _MEANINGFUL_ADJ_KEYS = {"location", "bedrooms", "area_min", "area_max",
+                             "min_price", "max_price", "common_areas", "nearby_zones"}
+    has_meaningful = any(adjustments.get(k) for k in _MEANINGFUL_ADJ_KEYS)
+    confirmation_parts: list[str] = []
+    if has_meaningful and session.site_user_id:
+        _save_preferences(session.site_user_id, adjustments, "", db)
+        if adjustments.get("max_price"):
+            confirmation_parts.append(f"presupuesto máximo {int(adjustments['max_price']):,}")
+        if adjustments.get("min_price"):
+            confirmation_parts.append(f"presupuesto mínimo {int(adjustments['min_price']):,}")
+        if adjustments.get("area_min"):
+            confirmation_parts.append(f"mínimo {int(adjustments['area_min'])} m²")
+        if adjustments.get("area_max"):
+            confirmation_parts.append(f"máximo {int(adjustments['area_max'])} m²")
+        if adjustments.get("bedrooms"):
+            confirmation_parts.append(f"{adjustments['bedrooms']} dormitorios")
+        if adjustments.get("common_areas"):
+            confirmation_parts.append(f"con {', '.join(adjustments['common_areas'][:2])}")
+        if adjustments.get("nearby_zones"):
+            confirmation_parts.append(f"cerca de {', '.join(adjustments['nearby_zones'][:2])}")
+        if adjustments.get("location"):
+            confirmation_parts.append(f"en {adjustments['location']}")
+
+    # Clear pending state and return to normal presenting flow
+    ctx.pop("_pending_rating_feedback", None)
+    session.extracted_criteria = ctx
+    session.info_step = 7
+
+    if confirmation_parts:
+        msg = (
+            f"Anotado: {', '.join(confirmation_parts)}. "
+            "Tendré esto en cuenta para las siguientes recomendaciones. "
+            "¿Quieres ver la siguiente propiedad?"
+        )
+    else:
+        msg = "Gracias por el comentario, lo tendré en cuenta. ¿Seguimos buscando?"
+
+    return _text(msg)
+
+
 async def _handle_contact_capture_step(session: WebChatSession, user_text: str, db: Session) -> dict | None:
     step = session.info_step
     ctx = session.extracted_criteria or {}
@@ -1785,6 +1904,7 @@ def _build_intent_runtime(session: WebChatSession, user_text: str, db: Session, 
         "get_exhausted_revisit_ids": _get_exhausted_revisit_ids,
         "get_viewed_ranked_ids": lambda site_user_id: _get_viewed_ranked_ids(site_user_id, db),
         "rate_current_property": lambda rating: _rate_current_property(session, rating, db),
+        "rate_and_ask_feedback": lambda rating: _rate_and_ask_feedback(session, rating, db),
         "mark_interest": lambda text: _do_interested(session, text, db),
         "start_search": _start_search_action,
         "show_interested_properties": _show_interested_action,
@@ -2395,38 +2515,37 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
 
 
 async def _handle_presenting(session: WebChatSession, text: str, db: Session) -> dict:
+    # Step 20 = awaiting rating feedback. Let intents run first so "Lo quiero" / "Ver siguiente"
+    # still work. Clear step 20 before dispatch; intent handlers that re-rate will set it again.
+    was_awaiting_feedback = (session.info_step == 20)
+    if was_awaiting_feedback:
+        session.info_step = 7
+
     runtime = _build_intent_runtime(session, text, db, session.info_step)
     candidates = candidate_intents_for_state("presenting", session.info_step)
     intent_response = await dispatch_intents(runtime, candidates)
     if intent_response is not None:
         return intent_response
 
+    # No intent fired and we were waiting for feedback — process the text as feedback
+    if was_awaiting_feedback:
+        session.info_step = 20
+        return await _process_rating_feedback(session, text, db)
+
     t = _normalize_text(text)
 
     if session.site_user_id and _is_interested_list_request(text):
         return await _show_interested_properties(session, db)
 
+    # Fallback rating path (when intent dispatch didn't fire CALIFICAR_PROPIEDAD)
     rating = _extract_rating_from_text(text)
     if rating and session.site_user_id and session.matched_record_ids:
-        idx = session.current_match_index
-        if idx < len(session.matched_record_ids):
-            record_id = session.matched_record_ids[idx]
-            _upsert_interaction(
-                session.site_user_id,
-                record_id,
-                db,
-                rating=rating,
-                rated_at=datetime.now(timezone.utc),
-            )
-            _track_behavior_signal(session.site_user_id, "rated_record_ids", record_id, db)
-            if rating <= 2:
-                _track_behavior_signal(session.site_user_id, "discarded_record_ids", record_id, db)
-        return _text(_rating_feedback(rating))
+        return _text(_rate_and_ask_feedback(session, rating, db))
 
     if any(k in t for k in ["siguiente", "ver siguiente", "otra", "ver otra", "no me convence", "next", "skip"]):
         return await _next_property(session, db)
 
-    if _is_mark_current_property_interest(text) or any(k in t for k in ["me gusta", "asesor", "contactar"]):
+    if _is_mark_current_property_interest(text) or re.search(r'\bme gusta\b', t) or any(k in t for k in ["asesor", "contactar"]):
         return _do_interested(session, text, db)
 
     if _is_generic_adjust_request(text):
