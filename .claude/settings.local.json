@@ -12,7 +12,14 @@
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); deps={**d.get\\('dependencies',{}\\),**d.get\\('devDependencies',{}\\)}; [print\\(k,v\\) for k,v in deps.items\\(\\) if any\\(x in k for x in ['framer','fortawesome','font-awesome','motion','lucide']\\)]\")",
       "Bash(node -e \"require\\('framer-motion'\\); console.log\\('framer-motion ok'\\)\")",
       "Bash(node -e \"require\\('@fortawesome/react-fontawesome'\\); console.log\\('fontawesome ok'\\)\")",
-      "Bash(del app\\\\models\\\\url_node.py app\\\\models\\\\field.py app\\\\models\\\\selector.py app\\\\schemas\\\\url_node.py app\\\\schemas\\\\field.py app\\\\schemas\\\\selector.py)"
+      "Bash(del app\\\\models\\\\url_node.py app\\\\models\\\\field.py app\\\\models\\\\selector.py app\\\\schemas\\\\url_node.py app\\\\schemas\\\\field.py app\\\\schemas\\\\selector.py)",
+      "Bash(cd /d \"c:\\\\Users\\\\anton\\\\Documents\\\\DEV\\\\Depacasa\\\\dron\")",
+      "Bash(findstr /r /n \"ScrapedRecord\" backend\\\\*.py backend\\\\app\\\\*.py)",
+      "Bash(curl -s http://localhost:8000/api/site/catalog?limit=2)",
+      "Bash(python -m json.tool)",
+      "Bash(curl -s \"http://localhost:8000/api/public/catalog?limit=2\")",
+      "Bash(curl -s \"http://localhost:8000/api/public/records?level=1&limit=2\")",
+      "Bash(curl -s \"http://localhost:8000/api/public/featured\")"
     ]
   }
 }

@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.sales_advisor import SalesAdvisor
-from app.models.scraped_record import ScrapedRecord
+from app.models.propiedad import Propiedad
 from app.models.site_user import SiteUser
 from app.models.user_preference import UserPreference
 from app.models.web_chat_session import WebChatSession
@@ -19,7 +19,6 @@ from app.services.matchmaking import get_record_data
 from app.services.preference_service import build_preferences_v2_from_criteria, default_preferences_v2
 
 logger = logging.getLogger(__name__)
-
 
 def _norm_key(key: str) -> str:
     return (
@@ -89,7 +88,7 @@ def _format_optional(value: Any) -> str:
     return text if text else "-"
 
 
-def _summarize_property(record: ScrapedRecord | None, property_data: dict | None, record_id: str | None) -> dict:
+def _summarize_property(record, property_data: dict | None, record_id: str | None) -> dict:
     data = property_data if isinstance(property_data, dict) else {}
     title = _first_scalar_by_keys(
         data,
@@ -223,12 +222,12 @@ def notify_active_advisor_for_lead(
         return False, lead_payload
 
     record_id = lead_payload.get("record_id")
-    record: ScrapedRecord | None = None
+    record = None
     property_data: dict | None = None
     if record_id:
         try:
             rid = UUID(str(record_id))
-            record = db.query(ScrapedRecord).filter(ScrapedRecord.id == rid).first()
+            record = db.query(Propiedad).filter(Propiedad.id == rid).first()
             property_data = get_record_data(db, str(rid))
         except Exception as exc:
             logger.warning("[lead-email] could not load record %s: %s", record_id, exc)

@@ -26,4 +26,6 @@ class Developer(Base):
 
     extraction_template = relationship("ExtractionTemplate", back_populates="developer", uselist=False, cascade="all, delete-orphan")
     scraped_records     = relationship("ScrapedRecord", back_populates="developer", cascade="all, delete-orphan")
+    proyectos           = relationship("Proyecto", back_populates="developer", cascade="all, delete-orphan")
+    propiedades         = relationship("Propiedad", back_populates="developer", cascade="all, delete-orphan")
     scrape_jobs         = relationship("ScrapeJob", back_populates="developer", cascade="all, delete-orphan")

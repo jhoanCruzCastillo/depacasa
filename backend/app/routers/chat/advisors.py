@@ -11,7 +11,7 @@ from database import get_db
 from app.models.sales_advisor import SalesAdvisor
 from app.models.web_chat_session import WebChatSession
 from app.models.site_user import SiteUser
-from app.models.scraped_record import ScrapedRecord
+from app.models.propiedad import Propiedad
 
 router = APIRouter()
 
@@ -37,7 +37,7 @@ def _serialize(a: SalesAdvisor) -> dict:
     }
 
 
-def _summarize_record(record: ScrapedRecord | None) -> dict:
+def _summarize_record(record: Propiedad | None) -> dict:
     if not record:
         return {
             "record_id": None,
@@ -47,14 +47,14 @@ def _summarize_record(record: ScrapedRecord | None) -> dict:
             "price": None,
         }
 
-    data = record.data if isinstance(record.data, dict) else {}
+    data = record.to_data() if hasattr(record, 'to_data') else {}
     values = [str(v).strip() for v in data.values() if isinstance(v, (str, int, float))]
     return {
         "record_id": str(record.id),
         "source_url": record.source_url,
-        "title": next((v for v in values if len(v) >= 6), None),
-        "location": next((v for v in values if any(k in v.lower() for k in ["lima", "miraflores", "surco", "san "])) , None),
-        "price": next((v for v in values if any(ch.isdigit() for ch in v) and any(sym in v.lower() for sym in ["$", "s/", "usd", "precio"])), None),
+        "title": data.get("proyecto") or next((v for v in values if len(v) >= 6), None),
+        "location": data.get("ubicacion") or next((v for v in values if any(k in v.lower() for k in ["lima", "miraflores", "surco", "san "])), None),
+        "price": data.get("precio_desde") or next((v for v in values if any(ch.isdigit() for ch in v) and any(sym in v.lower() for sym in ["$", "s/", "usd", "precio"])), None),
     }
 
 
@@ -192,9 +192,9 @@ async def get_advisor_clients(advisor_id: UUID, db: Session = Depends(get_db)):
             record_ids.append(UUID(str(rid)))
         except Exception:
             continue
-    record_map: dict[UUID, ScrapedRecord] = {}
+    record_map: dict[UUID, Propiedad] = {}
     if record_ids:
-        rows = db.query(ScrapedRecord).filter(ScrapedRecord.id.in_(record_ids)).all()
+        rows = db.query(Propiedad).filter(Propiedad.id.in_(record_ids)).all()
         record_map = {r.id: r for r in rows}
 
     clients = []

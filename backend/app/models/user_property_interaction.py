@@ -12,7 +12,7 @@ class UserPropertyInteraction(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     site_user_id = Column(UUID(as_uuid=True), ForeignKey("site_users.id", ondelete="CASCADE"),
                           nullable=False, index=True)
-    record_id = Column(UUID(as_uuid=True), ForeignKey("scraped_records.id", ondelete="CASCADE"),
+    record_id = Column(UUID(as_uuid=True), ForeignKey("propiedades.id", ondelete="CASCADE"),
                        nullable=False, index=True)
 
     seen_in_chat = Column(Boolean, default=False)

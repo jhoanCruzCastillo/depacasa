@@ -1102,15 +1102,15 @@ def _get_viewed_source_urls(site_user_id, db: Session) -> set[str]:
     """Return detail-page source URLs already seen by the user across chats."""
     try:
         from app.models.user_property_interaction import UserPropertyInteraction
-        from app.models.scraped_record import ScrapedRecord
+        from app.models.propiedad import Propiedad
         uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
         rows = (
-            db.query(ScrapedRecord.source_url)
-            .join(UserPropertyInteraction, UserPropertyInteraction.record_id == ScrapedRecord.id)
+            db.query(Propiedad.source_url)
+            .join(UserPropertyInteraction, UserPropertyInteraction.record_id == Propiedad.id)
             .filter(
                 UserPropertyInteraction.site_user_id == uid,
                 UserPropertyInteraction.seen_in_chat.is_(True),
-                ScrapedRecord.source_url.isnot(None),
+                Propiedad.source_url.isnot(None),
             )
             .all()
         )
@@ -1127,9 +1127,9 @@ def _get_viewed_source_urls(site_user_id, db: Session) -> set[str]:
 
 def _get_record_source_url(db: Session, record_id: str) -> str:
     try:
-        from app.models.scraped_record import ScrapedRecord
+        from app.models.propiedad import Propiedad
         rid = UUID(record_id)
-        row = db.query(ScrapedRecord.source_url).filter(ScrapedRecord.id == rid).first()
+        row = db.query(Propiedad.source_url).filter(Propiedad.id == rid).first()
         return (row[0] or "").strip() if row else ""
     except Exception:
         return ""

@@ -18,6 +18,49 @@ logger = logging.getLogger(__name__)
 MEDIA_DIR = Path("/app/media/images")
 _VALID_IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "gif", "avif", "svg"}
 
+# ── Field name → column name mappings ────────────────────────────────────────
+
+_PROYECTO_COLS = {
+    "url_propiedad", "estado_del_proyecto", "proyecto",
+    "dormitorios", "m2", "ubicacion", "precio_desde", "imagen",
+}
+_PROYECTO_ALIASES = {
+    "estado del proyecto": "estado_del_proyecto",
+    "ubicación": "ubicacion",
+    "precio desde": "precio_desde",
+}
+_PROPIEDAD_COLS = {
+    "url_propiedad", "estado_del_proyecto", "ubicacion", "imagen_modelo",
+    "lugares_cercanos", "proyecto", "dormitorios", "m2",
+    "areas_comunes_e_interior", "modelo", "descripcion",
+    "precio_desde", "areas_comunes", "areas_comunes_imagenes", "imagen",
+}
+_PROPIEDAD_ALIASES = {
+    "estado del proyecto": "estado_del_proyecto",
+    "ubicación": "ubicacion",
+    "lugares cercanos": "lugares_cercanos",
+    "áreas comunes e interior": "areas_comunes_e_interior",
+    "áreas comunes (imágenes)": "areas_comunes_imagenes",
+    "descripción": "descripcion",
+    "precio desde": "precio_desde",
+    "áreas comunes": "areas_comunes",
+}
+
+
+def _map_data_to_columns(data: dict, is_child: bool) -> tuple[dict, dict]:
+    """Split scraped data dict into (column_kwargs, extra_data)."""
+    cols = _PROPIEDAD_COLS if is_child else _PROYECTO_COLS
+    aliases = _PROPIEDAD_ALIASES if is_child else _PROYECTO_ALIASES
+    kwargs: dict = {}
+    extra: dict = {}
+    for key, val in data.items():
+        col = aliases.get(key, key)
+        if col in cols:
+            kwargs[col] = val
+        else:
+            extra[key] = val
+    return kwargs, extra
+
 
 async def _download_image(url: str, developer_id: str) -> str:
     """Download an image from url into local media storage. Returns the relative media path."""
@@ -73,9 +116,8 @@ celery_app.conf.update(
 @celery_app.task(name="scrape_developer")
 def scrape_developer_task(developer_id: str, job_id: str):
     from database import get_db_context
-    from app.models import ScrapeJob, ScrapedRecord
+    from app.models import ScrapeJob
     from app.models.scrape_job import JobStatus
-    from app.models.scraped_record import RecordStatus
     from datetime import datetime
     from uuid import UUID
 
@@ -121,12 +163,8 @@ def scrape_developer_task(developer_id: str, job_id: str):
 
 @celery_app.task(name="scrape_single_field")
 def scrape_single_field_task(payload: dict):
-    """Background task to scrape a single field using the current editor payload.
-    This works for draft fields because it doesn't depend on persisted field ids.
-    """
+    """Background task to scrape a single field using the current editor payload."""
     from database import get_db_context
-    from app.models import ScrapedRecord
-    from app.models.scraped_record import RecordStatus
     from uuid import UUID
 
     try:
@@ -220,8 +258,9 @@ async def _run_scrape(developer_id, job_id) -> int:
 
 
 async def _scrape_single_field(browser, node: dict, developer_id: str) -> int:
+    """Preview scrape for a single field in the template editor (always a parent-level node)."""
     from database import get_db_context
-    from app.models import ScrapedRecord
+    from app.models.proyecto import Proyecto
     from app.models.scraped_record import RecordStatus
     from uuid import UUID
 
@@ -247,12 +286,14 @@ async def _scrape_single_field(browser, node: dict, developer_id: str) -> int:
 
         with get_db_context() as db:
             for item_data in items:
-                record = ScrapedRecord(
+                col_kwargs, extra = _map_data_to_columns(item_data, is_child=False)
+                record = Proyecto(
                     developer_id=UUID(str(developer_id)),
                     url_node_id=UUID(node["id"]),
                     source_url=node["url"],
-                    data=item_data,
                     status=RecordStatus.SUCCESS,
+                    extra_data=extra,
+                    **col_kwargs,
                 )
                 db.add(record)
             db.commit()
@@ -269,12 +310,18 @@ def _snapshot_nodes(db, developer_id) -> list:
     return list(tmpl.nodes) if tmpl and tmpl.nodes else []
 
 
-async def _scrape_node(browser, node: dict, all_nodes: list, developer_id, job_id, parent_url: str = None, parent_shared: dict | None = None) -> int:
+async def _scrape_node(
+    browser, node: dict, all_nodes: list, developer_id, job_id,
+    parent_url: str = None, parent_shared: dict | None = None,
+    proyecto_id=None,
+) -> int:
     from database import get_db_context
-    from app.models import ScrapedRecord
+    from app.models.proyecto import Proyecto
+    from app.models.propiedad import Propiedad
     from app.models.scraped_record import RecordStatus
     from uuid import UUID
 
+    is_child = bool(node.get("parent_id"))
     target_url = node["url"] or parent_url
     if not target_url:
         return 0
@@ -283,12 +330,9 @@ async def _scrape_node(browser, node: dict, all_nodes: list, developer_id, job_i
     try:
         page = await browser.new_page()
         await page.goto(target_url, wait_until="networkidle", timeout=30000)
-        # Simulate user interaction to trigger WP Rocket lazy-loaded scripts
-        # (CF7 and other scripts only load after keydown/mousemove/wheel events)
         await page.mouse.move(400, 300)
         await page.mouse.wheel(0, 500)
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        # Wait for lazy scripts to load and initialize the DOM
         try:
             await page.wait_for_load_state("networkidle", timeout=8000)
         except Exception:
@@ -297,32 +341,53 @@ async def _scrape_node(browser, node: dict, all_nodes: list, developer_id, job_i
 
         items = await _extract_items(page, node["fields"], node.get("container_selector"), developer_id=str(developer_id))
 
+        saved_proyecto_ids: list = []
+
         with get_db_context() as db:
             for item_data in items:
-                # Merge parent's shared data (if provided) so level-2 records inherit parent's fields
                 merged = {**(parent_shared or {}), **item_data} if parent_shared else item_data
-                record = ScrapedRecord(
-                    developer_id=UUID(str(developer_id)),
-                    url_node_id=UUID(node["id"]),
-                    source_url=target_url,
-                    data=merged,
-                    status=RecordStatus.SUCCESS,
-                )
+                col_kwargs, extra = _map_data_to_columns(merged, is_child=is_child)
+
+                if is_child:
+                    record = Propiedad(
+                        developer_id=UUID(str(developer_id)),
+                        proyecto_id=proyecto_id,
+                        url_node_id=UUID(node["id"]),
+                        source_url=target_url,
+                        status=RecordStatus.SUCCESS,
+                        extra_data=extra,
+                        **col_kwargs,
+                    )
+                else:
+                    record = Proyecto(
+                        developer_id=UUID(str(developer_id)),
+                        url_node_id=UUID(node["id"]),
+                        source_url=target_url,
+                        status=RecordStatus.SUCCESS,
+                        extra_data=extra,
+                        **col_kwargs,
+                    )
                 db.add(record)
+                db.flush()
+                saved_proyecto_ids.append(record.id if not is_child else None)
             db.commit()
             total += len(items)
 
         # Process child nodes via is_child_url fields
         child_nodes = [n for n in all_nodes if n["parent_id"] == node["id"]]
-        if child_nodes:
-            for item_data in items:
-                # For child scraping, pass the shared data of this parent item so children can inherit
-                parent_shared = {k: v for k, v in item_data.items()}
+        if child_nodes and not is_child:
+            for idx, item_data in enumerate(items):
+                item_proyecto_id = saved_proyecto_ids[idx] if idx < len(saved_proyecto_ids) else None
+                shared_data = {k: v for k, v in item_data.items()}
                 for field in node["fields"]:
                     if field["is_child_url"] and item_data.get(field["name"]):
                         child_url = item_data[field["name"]]
                         for child_node in child_nodes:
-                            count = await _scrape_node(browser, child_node, all_nodes, developer_id, job_id, child_url, parent_shared=parent_shared)
+                            count = await _scrape_node(
+                                browser, child_node, all_nodes, developer_id, job_id,
+                                child_url, parent_shared=shared_data,
+                                proyecto_id=item_proyecto_id,
+                            )
                             total += count
 
         await page.close()

@@ -17,7 +17,7 @@ from app.services.email_service import send_email
 from app.models.user_preference import UserPreference
 from app.models.user_property_interaction import UserPropertyInteraction
 from app.models.search_history import SearchHistory
-from app.models.scraped_record import ScrapedRecord
+from app.models.propiedad import Propiedad
 from app.models.web_chat_session import WebChatSession
 from app.services.preference_service import build_preferences_v2_from_criteria, default_preferences_v2
 from app.services.lead_scoring_service import compute_score, compute_score_for_user_id
@@ -138,7 +138,7 @@ def _first_scalar_by_keys(obj, keys: set[str]) -> Optional[str]:
     return None
 
 
-def _summarize_record(record: Optional[ScrapedRecord]) -> dict:
+def _summarize_record(record) -> dict:
     if not record:
         return {
             "source_url": None,
@@ -148,7 +148,7 @@ def _summarize_record(record: Optional[ScrapedRecord]) -> dict:
             "property_price": None,
         }
 
-    data = record.data if isinstance(record.data, dict) else {}
+    data = record.to_data() if hasattr(record, 'to_data') else (record.data if isinstance(getattr(record, 'data', None), dict) else {})
     title = _first_scalar_by_keys(
         data,
         {"titulo", "title", "nombre", "name", "proyecto", "project", "project_name"},
@@ -440,7 +440,7 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
     record_ids = [i.record_id for i in interactions if i.record_id]
     record_map = {}
     if record_ids:
-        rows = db.query(ScrapedRecord).filter(ScrapedRecord.id.in_(record_ids)).all()
+        rows = db.query(Propiedad).filter(Propiedad.id.in_(record_ids)).all()
         record_map = {r.id: r for r in rows}
 
     history = (

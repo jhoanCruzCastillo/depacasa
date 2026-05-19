@@ -112,6 +112,243 @@ def _migrate_templates_to_json(conn):
     conn.execute(text("DROP TABLE IF EXISTS url_nodes CASCADE"))
 
 
+def _create_standard_tables(conn):
+    """Create proyectos and propiedades tables with standardized columns."""
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS proyectos (
+            id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            developer_id        UUID NOT NULL REFERENCES developers(id) ON DELETE CASCADE,
+            url_node_id         UUID NOT NULL,
+            source_url          TEXT NOT NULL DEFAULT '',
+            status              recordstatus NOT NULL DEFAULT 'SUCCESS',
+            scraped_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            url_propiedad       TEXT,
+            estado_del_proyecto TEXT,
+            proyecto            TEXT,
+            dormitorios         TEXT,
+            m2                  TEXT,
+            ubicacion           TEXT,
+            precio_desde        TEXT,
+            imagen              JSONB,
+            extra_data          JSONB NOT NULL DEFAULT '{}'
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_proyectos_developer ON proyectos (developer_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_proyectos_node ON proyectos (url_node_id)"))
+
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS propiedades (
+            id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            developer_id             UUID NOT NULL REFERENCES developers(id) ON DELETE CASCADE,
+            proyecto_id              UUID REFERENCES proyectos(id) ON DELETE CASCADE,
+            url_node_id              UUID NOT NULL,
+            source_url               TEXT NOT NULL DEFAULT '',
+            status                   recordstatus NOT NULL DEFAULT 'SUCCESS',
+            scraped_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            url_propiedad            TEXT,
+            estado_del_proyecto      TEXT,
+            ubicacion                TEXT,
+            imagen_modelo            TEXT,
+            lugares_cercanos         JSONB,
+            proyecto                 TEXT,
+            dormitorios              TEXT,
+            m2                       TEXT,
+            areas_comunes_e_interior JSONB,
+            modelo                   TEXT,
+            descripcion              TEXT,
+            precio_desde             TEXT,
+            areas_comunes            JSONB,
+            areas_comunes_imagenes   JSONB,
+            imagen                   JSONB,
+            extra_data               JSONB NOT NULL DEFAULT '{}'
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_propiedades_developer ON propiedades (developer_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_propiedades_proyecto ON propiedades (proyecto_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_propiedades_node ON propiedades (url_node_id)"))
+
+
+def _migrate_scraped_records_to_tables(conn):
+    """One-time migration: copy scraped_records into proyectos and propiedades.
+    Uses the same UUIDs so user_property_interactions references remain valid.
+    """
+    import json
+
+    # Skip if already migrated
+    count = conn.execute(text("SELECT COUNT(*) FROM proyectos")).scalar()
+    if count > 0:
+        return
+
+    # Check scraped_records has data
+    sr_count = conn.execute(text(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='scraped_records')"
+    )).scalar()
+    if not sr_count:
+        return
+    sr_count = conn.execute(text("SELECT COUNT(*) FROM scraped_records")).scalar()
+    if not sr_count:
+        return
+
+    # Build node type map from templates
+    templates = conn.execute(text("SELECT nodes FROM extraction_templates")).fetchall()
+    parent_node_ids: set = set()
+    child_node_ids: set = set()
+    child_to_parent_node: dict = {}
+    for (nodes,) in templates:
+        for node in (nodes or []):
+            nid = node.get("id", "")
+            pid = node.get("parent_id") or ""
+            if pid:
+                child_node_ids.add(nid)
+                child_to_parent_node[nid] = pid
+            else:
+                parent_node_ids.add(nid)
+
+    PROYECTO_COLS = {
+        "url_propiedad", "estado_del_proyecto", "proyecto",
+        "dormitorios", "m2", "ubicacion", "precio_desde", "imagen",
+    }
+    PROYECTO_ALIASES = {
+        "estado del proyecto": "estado_del_proyecto",
+        "ubicación": "ubicacion",
+        "precio desde": "precio_desde",
+    }
+    PROPIEDAD_COLS = {
+        "url_propiedad", "estado_del_proyecto", "ubicacion", "imagen_modelo",
+        "lugares_cercanos", "proyecto", "dormitorios", "m2",
+        "areas_comunes_e_interior", "modelo", "descripcion",
+        "precio_desde", "areas_comunes", "areas_comunes_imagenes", "imagen",
+    }
+    PROPIEDAD_ALIASES = {
+        "estado del proyecto": "estado_del_proyecto",
+        "ubicación": "ubicacion",
+        "lugares cercanos": "lugares_cercanos",
+        "áreas comunes e interior": "areas_comunes_e_interior",
+        "áreas comunes (imágenes)": "areas_comunes_imagenes",
+        "descripción": "descripcion",
+        "precio desde": "precio_desde",
+        "áreas comunes": "areas_comunes",
+    }
+
+    JSONB_COLS = {"imagen", "lugares_cercanos", "areas_comunes_e_interior",
+                  "areas_comunes", "areas_comunes_imagenes"}
+
+    def map_data(data, cols, aliases):
+        kwargs, extra = {}, {}
+        for k, v in (data or {}).items():
+            col = aliases.get(k, k)
+            if col in cols:
+                kwargs[col] = v
+            else:
+                extra[k] = v
+        return kwargs, extra
+
+    def jsonb_val(v):
+        return json.dumps(v) if v is not None else None
+
+    # Read all records
+    rows = conn.execute(text(
+        "SELECT id, developer_id, url_node_id, source_url, data, status, scraped_at "
+        "FROM scraped_records"
+    )).fetchall()
+
+    # --- Insert parent records into proyectos ---
+    for rec_id, dev_id, node_id, source_url, data, status, scraped_at in rows:
+        if str(node_id) not in parent_node_ids:
+            continue
+        kw, extra = map_data(data, PROYECTO_COLS, PROYECTO_ALIASES)
+        status_val = status.value if hasattr(status, 'value') else str(status)
+        conn.execute(text("""
+            INSERT INTO proyectos (id, developer_id, url_node_id, source_url, status, scraped_at,
+                url_propiedad, estado_del_proyecto, proyecto, dormitorios, m2,
+                ubicacion, precio_desde, imagen, extra_data)
+            VALUES (:id, :dev_id, :node_id, :source_url, CAST(:status AS recordstatus), :scraped_at,
+                :url_propiedad, :estado_del_proyecto, :proyecto, :dormitorios, :m2,
+                :ubicacion, :precio_desde, CAST(:imagen AS jsonb), CAST(:extra_data AS jsonb))
+            ON CONFLICT (id) DO NOTHING
+        """), {
+            "id": str(rec_id), "dev_id": str(dev_id), "node_id": str(node_id),
+            "source_url": source_url or "", "status": status_val, "scraped_at": scraped_at,
+            "url_propiedad": kw.get("url_propiedad"),
+            "estado_del_proyecto": kw.get("estado_del_proyecto"),
+            "proyecto": kw.get("proyecto"),
+            "dormitorios": kw.get("dormitorios"),
+            "m2": kw.get("m2"),
+            "ubicacion": kw.get("ubicacion"),
+            "precio_desde": kw.get("precio_desde"),
+            "imagen": jsonb_val(kw.get("imagen")),
+            "extra_data": json.dumps(extra),
+        })
+
+    # Build lookup: (parent_node_id, url_propiedad) -> proyecto.id
+    proj_rows = conn.execute(text(
+        "SELECT id, url_node_id, url_propiedad FROM proyectos"
+    )).fetchall()
+    proj_map: dict = {}
+    for proj_id, proj_node_id, proj_url_prop in proj_rows:
+        if proj_url_prop:
+            proj_map[(str(proj_node_id), proj_url_prop)] = str(proj_id)
+
+    # --- Insert child records into propiedades ---
+    for rec_id, dev_id, node_id, source_url, data, status, scraped_at in rows:
+        if str(node_id) not in child_node_ids:
+            continue
+        kw, extra = map_data(data, PROPIEDAD_COLS, PROPIEDAD_ALIASES)
+        status_val = status.value if hasattr(status, 'value') else str(status)
+        parent_nid = child_to_parent_node.get(str(node_id))
+        proyecto_id = proj_map.get((parent_nid, source_url)) if parent_nid else None
+        conn.execute(text("""
+            INSERT INTO propiedades (id, developer_id, proyecto_id, url_node_id, source_url,
+                status, scraped_at, url_propiedad, estado_del_proyecto, ubicacion,
+                imagen_modelo, lugares_cercanos, proyecto, dormitorios, m2,
+                areas_comunes_e_interior, modelo, descripcion, precio_desde,
+                areas_comunes, areas_comunes_imagenes, imagen, extra_data)
+            VALUES (:id, :dev_id, :proyecto_id, :node_id, :source_url,
+                CAST(:status AS recordstatus), :scraped_at, :url_propiedad, :estado_del_proyecto, :ubicacion,
+                :imagen_modelo, CAST(:lugares_cercanos AS jsonb), :proyecto, :dormitorios, :m2,
+                CAST(:areas_comunes_e_interior AS jsonb), :modelo, :descripcion, :precio_desde,
+                CAST(:areas_comunes AS jsonb), CAST(:areas_comunes_imagenes AS jsonb),
+                CAST(:imagen AS jsonb), CAST(:extra_data AS jsonb))
+            ON CONFLICT (id) DO NOTHING
+        """), {
+            "id": str(rec_id), "dev_id": str(dev_id), "proyecto_id": proyecto_id,
+            "node_id": str(node_id), "source_url": source_url or "",
+            "status": status_val, "scraped_at": scraped_at,
+            "url_propiedad": kw.get("url_propiedad"),
+            "estado_del_proyecto": kw.get("estado_del_proyecto"),
+            "ubicacion": kw.get("ubicacion"),
+            "imagen_modelo": kw.get("imagen_modelo"),
+            "lugares_cercanos": jsonb_val(kw.get("lugares_cercanos")),
+            "proyecto": kw.get("proyecto"),
+            "dormitorios": kw.get("dormitorios"),
+            "m2": kw.get("m2"),
+            "areas_comunes_e_interior": jsonb_val(kw.get("areas_comunes_e_interior")),
+            "modelo": kw.get("modelo"),
+            "descripcion": kw.get("descripcion"),
+            "precio_desde": kw.get("precio_desde"),
+            "areas_comunes": jsonb_val(kw.get("areas_comunes")),
+            "areas_comunes_imagenes": jsonb_val(kw.get("areas_comunes_imagenes")),
+            "imagen": jsonb_val(kw.get("imagen")),
+            "extra_data": json.dumps(extra),
+        })
+
+    # Migrate user_property_interactions FK: scraped_records → propiedades
+    # Delete interactions pointing to records not in propiedades (e.g. parent records)
+    conn.execute(text("""
+        DELETE FROM user_property_interactions
+        WHERE record_id NOT IN (SELECT id FROM propiedades)
+    """))
+    conn.execute(text("""
+        ALTER TABLE user_property_interactions
+        DROP CONSTRAINT IF EXISTS user_property_interactions_record_id_fkey
+    """))
+    conn.execute(text("""
+        ALTER TABLE user_property_interactions
+        ADD CONSTRAINT user_property_interactions_record_id_fkey
+        FOREIGN KEY (record_id) REFERENCES propiedades(id) ON DELETE CASCADE
+    """))
+
+
 def run_migrations():
     """Add new columns to existing tables without dropping data."""
     # Legacy migrations only run if the old url_nodes/fields tables still exist.
@@ -167,6 +404,9 @@ def run_migrations():
         for sql in migrations:
             conn.execute(text(sql))
         _migrate_templates_to_json(conn)
+        _create_standard_tables(conn)
+        conn.commit()
+        _migrate_scraped_records_to_tables(conn)
         conn.commit()
 
 

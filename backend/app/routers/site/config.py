@@ -1,14 +1,14 @@
 """Admin site configuration endpoints."""
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
-import json
 
 from database import get_db
 from app.models.site_config import SiteConfig, DEFAULT_SITE_CONFIG_ID, DEFAULT_CARD_FIELDS
+from app.models.proyecto import Proyecto
+from app.models.propiedad import Propiedad
 
 router = APIRouter()
 
@@ -82,20 +82,6 @@ def update_config(body: SiteConfigIn, db: Session = Depends(get_db)):
     return cfg
 
 
-def _level_filter_sql(level: int) -> str:
-    if level == 1:
-        cond = "(node->>'parent_id') IS NULL"
-    elif level == 2:
-        cond = "(node->>'parent_id') IS NOT NULL"
-    else:
-        cond = "TRUE"
-    return (
-        f"sr.url_node_id::text IN ("
-        f"SELECT node->>'id' FROM extraction_templates, jsonb_array_elements(nodes) AS node WHERE {cond}"
-        f")"
-    )
-
-
 @router.get("/records/browse")
 def browse_records(
     level: int = 2,
@@ -105,41 +91,43 @@ def browse_records(
     db: Session = Depends(get_db),
 ):
     """Return paginated records for admin record browser (to pick hero items)."""
-    level_filter = _level_filter_sql(level)
-    params: dict = {"lim": limit, "skip": skip}
-
-    if search:
-        sql = text(
-            f"SELECT sr.id, sr.data FROM scraped_records sr WHERE {level_filter} "
-            "AND sr.data::text ILIKE :q ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
-        )
-        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr WHERE {level_filter} AND sr.data::text ILIKE :q")
-        params["q"] = f"%{search}%"
+    if level == 1:
+        q = db.query(Proyecto)
+        if search:
+            q = q.filter(
+                Proyecto.proyecto.ilike(f"%{search}%")
+                | Proyecto.ubicacion.ilike(f"%{search}%")
+            )
+        total = q.count()
+        items = q.order_by(Proyecto.scraped_at.desc()).offset(skip).limit(limit).all()
     else:
-        sql = text(
-            f"SELECT sr.id, sr.data FROM scraped_records sr WHERE {level_filter} "
-            "ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
-        )
-        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr WHERE {level_filter}")
+        q = db.query(Propiedad)
+        if search:
+            q = q.filter(
+                Propiedad.proyecto.ilike(f"%{search}%")
+                | Propiedad.ubicacion.ilike(f"%{search}%")
+                | Propiedad.dormitorios.ilike(f"%{search}%")
+            )
+        total = q.count()
+        items = q.order_by(Propiedad.scraped_at.desc()).offset(skip).limit(limit).all()
 
-    rows = db.execute(sql, params).fetchall()
-    total = db.execute(count_sql, {k: v for k, v in params.items() if k not in ("lim", "skip")}).scalar() or 0
-
-    items = [{"id": str(r[0]), "data": dict(r[1]) if r[1] else {}} for r in rows]
-    return {"total": int(total), "items": items}
+    return {
+        "total": int(total),
+        "items": [{"id": str(r.id), "data": r.to_data()} for r in items],
+    }
 
 
 @router.get("/fields/discover")
 def discover_fields(level: int = 2, db: Session = Depends(get_db)):
-    """Return unique field keys present in records at the given level (sample of 200 records)."""
-    level_filter = _level_filter_sql(level)
-    rows = db.execute(
-        text(f"SELECT sr.data FROM scraped_records sr WHERE {level_filter} ORDER BY sr.scraped_at DESC LIMIT 200")
-    ).fetchall()
-
-    keys: set = set()
-    for (data,) in rows:
-        if data and isinstance(data, dict):
-            keys.update(data.keys())
-
-    return sorted(keys)
+    """Return the standardized field keys available at the given level."""
+    if level == 1:
+        return sorted([
+            "url_propiedad", "estado_del_proyecto", "proyecto",
+            "dormitorios", "m2", "ubicacion", "precio_desde", "imagen",
+        ])
+    return sorted([
+        "url_propiedad", "estado_del_proyecto", "ubicacion", "imagen_modelo",
+        "lugares_cercanos", "proyecto", "dormitorios", "m2",
+        "areas_comunes_e_interior", "modelo", "descripcion", "precio_desde",
+        "areas_comunes", "areas_comunes_imagenes", "imagen",
+    ])

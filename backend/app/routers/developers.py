@@ -10,6 +10,8 @@ from datetime import datetime
 from database import get_db
 from app.models import Developer, ExtractionTemplate, ScrapedRecord
 from app.models.developer import DeveloperSource
+from app.models.proyecto import Proyecto
+from app.models.propiedad import Propiedad
 from app.schemas import DeveloperCreate, DeveloperUpdate, DeveloperResponse
 from app.schemas.scraped_record import ScrapedRecordResponse
 
@@ -168,7 +170,7 @@ async def get_developer_url_nodes(
     return [{"id": n["id"], "name": n["name"], "url": n.get("url", ""), "parent_id": n.get("parent_id"), "order": n.get("order", 0)} for n in nodes]
 
 
-@router.get("/{developer_id}/records", response_model=list[ScrapedRecordResponse])
+@router.get("/{developer_id}/records")
 async def get_developer_records(
     developer_id: UUID,
     node_id: Optional[UUID] = Query(None),
@@ -176,11 +178,22 @@ async def get_developer_records(
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
-    q = db.query(ScrapedRecord).filter(ScrapedRecord.developer_id == developer_id)
+    proyectos = db.query(Proyecto).filter(Proyecto.developer_id == developer_id)
+    propiedades = db.query(Propiedad).filter(Propiedad.developer_id == developer_id)
     if node_id:
-        q = q.filter(ScrapedRecord.url_node_id == node_id)
-    records = q.order_by(ScrapedRecord.scraped_at.desc()).offset(skip).limit(limit).all()
-    return records
+        proyectos = proyectos.filter(Proyecto.url_node_id == node_id)
+        propiedades = propiedades.filter(Propiedad.url_node_id == node_id)
+
+    result = []
+    for r in proyectos.order_by(Proyecto.scraped_at.desc()).all():
+        result.append({"id": str(r.id), "url_node_id": str(r.url_node_id), "source_url": r.source_url,
+                        "data": r.to_data(), "status": r.status.value if r.status else None,
+                        "scraped_at": r.scraped_at.isoformat(), "type": "proyecto"})
+    for r in propiedades.order_by(Propiedad.scraped_at.desc()).offset(skip).limit(limit).all():
+        result.append({"id": str(r.id), "url_node_id": str(r.url_node_id), "source_url": r.source_url,
+                        "data": r.to_data(), "status": r.status.value if r.status else None,
+                        "scraped_at": r.scraped_at.isoformat(), "type": "propiedad"})
+    return result
 
 
 @router.delete("/{developer_id}/records", status_code=status.HTTP_204_NO_CONTENT)
@@ -192,10 +205,14 @@ async def delete_developer_records(
     developer = db.query(Developer).filter(Developer.id == developer_id).first()
     if not developer:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Developer not found")
-    q = db.query(ScrapedRecord).filter(ScrapedRecord.developer_id == developer_id)
+
+    q_proj = db.query(Proyecto).filter(Proyecto.developer_id == developer_id)
+    q_prop = db.query(Propiedad).filter(Propiedad.developer_id == developer_id)
     if node_id:
-        q = q.filter(ScrapedRecord.url_node_id == node_id)
-    q.delete(synchronize_session=False)
+        q_proj = q_proj.filter(Proyecto.url_node_id == node_id)
+        q_prop = q_prop.filter(Propiedad.url_node_id == node_id)
+    q_prop.delete(synchronize_session=False)
+    q_proj.delete(synchronize_session=False)
     db.commit()
 
 

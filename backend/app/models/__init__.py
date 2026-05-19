@@ -1,6 +1,8 @@
 from .developer import Developer
 from .template import ExtractionTemplate
 from .scraped_record import ScrapedRecord, RecordStatus
+from .proyecto import Proyecto
+from .propiedad import Propiedad
 from .scrape_job import ScrapeJob, JobStatus
 from .chat_user import ChatUser
 from .chat_conversation import ChatConversation, ConversationState
@@ -12,6 +14,7 @@ from .chat_config import ChatConfig, DEFAULT_CONFIG_ID
 __all__ = [
     "Developer", "ExtractionTemplate",
     "ScrapedRecord", "RecordStatus",
+    "Proyecto", "Propiedad",
     "ScrapeJob", "JobStatus",
     "ChatUser", "ChatConversation", "ConversationState",
     "ChatMessage", "MessageDirection",
