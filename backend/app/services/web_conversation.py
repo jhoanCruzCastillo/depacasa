@@ -42,6 +42,7 @@ def _property_card(
     data: dict,
     state: str = "presenting",
     seen_by_user_before: bool | None = None,
+    user_rating: int | None = None,
 ) -> dict:
     return {
         "message": msg,
@@ -51,6 +52,7 @@ def _property_card(
             "record_id": record_id,
             "property_identifier": record_id,
             "seen_by_user_before": seen_by_user_before,
+            "user_rating": user_rating,
             "data": data,
         },
         "state": state,
@@ -1340,6 +1342,134 @@ def _get_disliked_ids(site_user_id, db: Session) -> set[str]:
         return set()
 
 
+def _get_user_rating(site_user_id, record_id: str, db: Session) -> int | None:
+    """Return the user's star rating for a property, or None if unrated."""
+    try:
+        from app.models.user_property_interaction import UserPropertyInteraction
+        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
+        rid = UUID(record_id)
+        row = (
+            db.query(UserPropertyInteraction.rating)
+            .filter(
+                UserPropertyInteraction.site_user_id == uid,
+                UserPropertyInteraction.record_id == rid,
+            )
+            .first()
+        )
+        return int(row[0]) if row and row[0] is not None else None
+    except Exception as e:
+        logger.warning(f"[tracking] could not fetch user rating: {e}")
+        return None
+
+
+def _get_properties_by_rating_filter(
+    site_user_id, db: Session,
+    min_rating: int | None = None,
+    max_rating: int | None = None,
+) -> list[str]:
+    """Return record IDs filtered by the user's star rating, ordered by rating desc."""
+    try:
+        from app.models.user_property_interaction import UserPropertyInteraction
+        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
+        q = db.query(UserPropertyInteraction).filter(
+            UserPropertyInteraction.site_user_id == uid,
+            UserPropertyInteraction.rating.isnot(None),
+        )
+        if min_rating is not None:
+            q = q.filter(UserPropertyInteraction.rating >= min_rating)
+        if max_rating is not None:
+            q = q.filter(UserPropertyInteraction.rating <= max_rating)
+        rows = q.order_by(UserPropertyInteraction.rating.desc()).all()
+        return [str(r.record_id) for r in rows]
+    except Exception as e:
+        logger.warning(f"[tracking] could not fetch properties by rating: {e}")
+        return []
+
+
+def _get_properties_without_price(db: Session) -> list[str]:
+    """Return record IDs (propiedades) that have no known price."""
+    try:
+        from app.models.propiedad import Propiedad
+        rows = (
+            db.query(Propiedad.id)
+            .filter(
+                (Propiedad.precio_desde.is_(None)) | (Propiedad.precio_desde == "")
+            )
+            .order_by(Propiedad.scraped_at.desc())
+            .limit(50)
+            .all()
+        )
+        return [str(r[0]) for r in rows]
+    except Exception as e:
+        logger.warning(f"[tracking] could not fetch properties without price: {e}")
+        return []
+
+
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
+_HIGH_RATING_KW = [
+    "muchas estrellas", "alta calificacion", "alta puntuacion", "bien calificad",
+    "mejor calificad", "calificacion alta", "buena calificacion", "alta nota",
+    "altas estrellas", "estrellas altas", "muchos puntos", "estrellas altas",
+]
+_LOW_RATING_KW = [
+    "pocas estrellas", "baja calificacion", "pocos puntos", "mala calificacion",
+    "baja nota", "estrellas bajas", "bajas estrellas", "mal calificad",
+]
+_NO_PRICE_KW = [
+    "sin precio", "precio desconocido", "no tiene precio", "precio no disponible",
+    "precio no se conoce", "sin saber el precio", "precio oculto", "sin precio conocido",
+]
+
+
+def _detect_exact_filter_request(text: str) -> dict | None:
+    """Detect explicit property filter requests.
+
+    Returns one of:
+      {"type": "by_id",     "record_id": str}
+      {"type": "by_rating", "min_rating": int, "max_rating": int, "label": str}
+      {"type": "no_price"}
+      None
+    """
+    # UUID detection — highest priority
+    m = _UUID_RE.search(text)
+    if m:
+        return {"type": "by_id", "record_id": m.group(0)}
+
+    n = _normalize_text(text)
+
+    # Exact N stars: "califiqué con 3 estrellas", "con 4 estrellas", etc.
+    exact = re.search(
+        r"(?:califiq\w*|con|de|puntuad\w*)\s+(?:con\s+)?(\d)\s*estrell", n
+    )
+    if exact:
+        r = int(exact.group(1))
+        if 1 <= r <= 5:
+            label = f"{r} estrella{'s' if r != 1 else ''}"
+            return {"type": "by_rating", "min_rating": r, "max_rating": r, "label": label}
+
+    # High rating
+    if any(kw in n for kw in _HIGH_RATING_KW):
+        return {"type": "by_rating", "min_rating": 4, "max_rating": 5, "label": "alta calificación (4-5 estrellas)"}
+
+    # Low rating
+    if any(kw in n for kw in _LOW_RATING_KW):
+        return {"type": "by_rating", "min_rating": 1, "max_rating": 2, "label": "baja calificación (1-2 estrellas)"}
+
+    # Generic "propiedades que califiqué" — any rating
+    if re.search(r"califiq\w+|calificad\w+|que\s+puntue\w*", n) and "estrell" in n:
+        return {"type": "by_rating", "min_rating": 1, "max_rating": 5, "label": "calificadas"}
+
+    # No known price
+    if any(kw in n for kw in _NO_PRICE_KW):
+        return {"type": "no_price"}
+
+    return None
+
+
 def _safe_flush(db: Session, *objects) -> None:
     """Add objects and flush inside a savepoint so a failure doesn't corrupt the outer session."""
     sp = db.begin_nested()
@@ -1927,6 +2057,9 @@ def _build_intent_runtime(session: WebChatSession, user_text: str, db: Session, 
         "handle_financial_document_step": _financial_doc_capture_action,
         "looks_like_financial_doc_text": _looks_like_financial_doc_text,
         "contextual_fallback_response": _contextual_fallback_action,
+        "detect_exact_filter": _detect_exact_filter_request,
+        "get_properties_by_rating_filter": lambda uid, mn, mx: _get_properties_by_rating_filter(uid, db, mn, mx),
+        "get_properties_without_price": lambda: _get_properties_without_price(db),
     }
     return IntentRuntime(
         session=session,
@@ -2792,10 +2925,12 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
         return await _next_property(session, db)
 
     seen_by_user_before: bool | None = None
+    user_rating: int | None = None
 
     # Track that this user saw this property
     if session.site_user_id:
         seen_by_user_before = _seen_in_chat_before(session.site_user_id, record_id, db)
+        user_rating = _get_user_rating(session.site_user_id, record_id, db)
         _upsert_interaction(
             session.site_user_id, record_id, db,
             seen_in_chat=True,
@@ -2806,7 +2941,9 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
     idx = session.current_match_index + 1
     total = len(session.matched_record_ids)
     ctx = session.extracted_criteria or {}
-    if ctx.get("_list_mode") == "interested":
+    list_mode = ctx.get("_list_mode")
+
+    if list_mode == "interested":
         if idx == 1:
             msg = (
                 f"Aqui tienes tus propiedades de interes ({total} en total). "
@@ -2814,11 +2951,32 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
             )
         else:
             msg = "Aqui va la siguiente propiedad que marcaste con interes:"
+    elif list_mode == "filtered_by_rating":
+        label = ctx.get("_list_label", "calificadas")
+        if idx == 1:
+            msg = (
+                f"Busque las propiedades que calificaste con {label}. "
+                f"Encontre {total} propiedad{'es' if total != 1 else ''}. "
+                "Aqui va la primera:"
+            )
+        else:
+            msg = f"Aqui va la siguiente propiedad con {label}:"
+    elif list_mode == "filtered_no_price":
+        if idx == 1:
+            msg = (
+                f"Encontre {total} propiedad{'es' if total != 1 else ''} "
+                "sin precio conocido. Aqui va la primera:"
+            )
+        else:
+            msg = "Aqui va la siguiente propiedad sin precio conocido:"
+    elif list_mode == "by_id":
+        msg = "Aqui esta la propiedad que buscaste:"
     else:
         msg = _compose_property_message(session, idx, total, data=data)
         status_warning = _build_project_status_warning(data)
         if status_warning:
             msg = f"{msg}\n\n{status_warning}"
+
     return _property_card(
         msg,
         idx,
@@ -2827,6 +2985,7 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
         data,
         state="presenting",
         seen_by_user_before=seen_by_user_before,
+        user_rating=user_rating,
     )
 
 

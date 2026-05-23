@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.services.chatbot_intents.ajustar_criterios_busqueda import handle as handle_ajustar
+from app.services.chatbot_intents.filtro_exacto_propiedades import handle as handle_filtro_exacto
 from app.services.chatbot_intents.calificar_propiedad import handle as handle_calificar
 from app.services.chatbot_intents.capturar_datos_contacto import handle as handle_capturar_contacto
 from app.services.chatbot_intents.capturar_sustento_financiero import handle as handle_capturar_sustento
@@ -15,6 +16,7 @@ from app.services.chatbot_intents.fallback_no_entendido import handle as handle_
 from app.services.chatbot_intents.inicio_busqueda import handle as handle_inicio_busqueda
 from app.services.chatbot_intents.marcar_interes_lo_quiero import handle as handle_marcar_interes
 from app.services.chatbot_intents.types import (
+    FILTRO_EXACTO_PROPIEDADES,
     AJUSTAR_CRITERIOS_BUSQUEDA,
     CALIFICAR_PROPIEDAD,
     CAPTURAR_DATOS_CONTACTO,
@@ -36,6 +38,7 @@ from app.services.chatbot_intents.ver_siguiente_propiedad import handle as handl
 
 
 _REGISTRY = {
+    FILTRO_EXACTO_PROPIEDADES: handle_filtro_exacto,
     INICIO_BUSQUEDA: handle_inicio_busqueda,
     CONTINUAR_CON_CONTEXTO: handle_continuar_contexto,
     VER_PROPIEDADES_NUEVAS_NO_VISTAS: handle_ver_nuevas,
@@ -58,6 +61,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
     if state == "collecting_info":
         if step == 8:
             return [
+                FILTRO_EXACTO_PROPIEDADES,
                 CONTINUAR_CON_CONTEXTO,
                 AJUSTAR_CRITERIOS_BUSQUEDA,
                 VER_PROPIEDADES_NUEVAS_NO_VISTAS,
@@ -68,6 +72,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
             ]
         if step == 6:
             return [
+                FILTRO_EXACTO_PROPIEDADES,
                 AJUSTAR_CRITERIOS_BUSQUEDA,
                 CONFIRMAR_RELAJACION_RESULTADOS,
                 INICIO_BUSQUEDA,
@@ -76,6 +81,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
             ]
         if step == 11:
             return [
+                FILTRO_EXACTO_PROPIEDADES,
                 AJUSTAR_CRITERIOS_BUSQUEDA,
                 INICIO_BUSQUEDA,
                 FALLBACK_FUERA_DE_ALCANCE,
@@ -84,6 +90,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
         if step in {9, 10}:
             # Contact capture steps: include search escapes so intent-shifting users aren't stuck
             return [
+                FILTRO_EXACTO_PROPIEDADES,
                 INICIO_BUSQUEDA,
                 AJUSTAR_CRITERIOS_BUSQUEDA,
                 CAPTURAR_DATOS_CONTACTO,
@@ -92,12 +99,14 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
         if step == 12:
             # Financial doc step: same escape hatches
             return [
+                FILTRO_EXACTO_PROPIEDADES,
                 INICIO_BUSQUEDA,
                 AJUSTAR_CRITERIOS_BUSQUEDA,
                 CAPTURAR_SUSTENTO_FINANCIERO,
                 FALLBACK_NO_ENTENDIDO,
             ]
         return [
+            FILTRO_EXACTO_PROPIEDADES,
             AJUSTAR_CRITERIOS_BUSQUEDA,
             VER_PROPIEDADES_NUEVAS_NO_VISTAS,
             VER_PROPIEDADES_VISTAS,
@@ -108,6 +117,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
 
     if state == "presenting":
         return [
+            FILTRO_EXACTO_PROPIEDADES,
             CALIFICAR_PROPIEDAD,
             VER_SIGUIENTE_PROPIEDAD,
             MARCAR_INTERES_LO_QUIERO,
@@ -122,6 +132,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
 
     if state == "contact_requested":
         return [
+            FILTRO_EXACTO_PROPIEDADES,
             INICIO_BUSQUEDA,
             AJUSTAR_CRITERIOS_BUSQUEDA,
             VER_PROPIEDADES_NUEVAS_NO_VISTAS,

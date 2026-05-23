@@ -1,5 +1,6 @@
 """Canonical intent names for the web chatbot."""
 
+FILTRO_EXACTO_PROPIEDADES = "filtro_exacto_propiedades"
 INICIO_BUSQUEDA = "inicio_busqueda"
 CONTINUAR_CON_CONTEXTO = "continuar_con_contexto"
 VER_PROPIEDADES_NUEVAS_NO_VISTAS = "ver_propiedades_nuevas_no_vistas"
@@ -16,6 +17,7 @@ FALLBACK_FUERA_DE_ALCANCE = "fallback_fuera_de_alcance"
 FALLBACK_NO_ENTENDIDO = "fallback_no_entendido"
 
 ALL_INTENTS = [
+    FILTRO_EXACTO_PROPIEDADES,
     INICIO_BUSQUEDA,
     CONTINUAR_CON_CONTEXTO,
     VER_PROPIEDADES_NUEVAS_NO_VISTAS,
