@@ -21,11 +21,13 @@ function titleFromUrlSlug(url: string): string {
 }
 
 // "TIPO 1 / 59 m2 / 1 dorms / 2 baños" → "Tipo 1"
+// "DUPLEX 2307 / 150 m2 / 3 dorms / 3 baños" → "Duplex 2307"
 function tipoFromModelo(d: Record<string, unknown>): string {
   const m = pick(d, ['modelo'])
   if (!m) return ''
-  const match = m.match(/^(TIPO\s+\S+)/i)
-  return match ? match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase() : ''
+  const part = m.split('/')[0].trim()
+  if (!part || /^\d/.test(part) || part.toLowerCase() === 'null') return ''
+  return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
 }
 
 // Parses "TIPO 1 / 59 m2 / 1 dorms / 2 baños" → { area, dorms, baths }

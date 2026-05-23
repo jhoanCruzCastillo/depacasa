@@ -55,10 +55,12 @@ export default function DeveloperDetailPage() {
     ;(records as ScrapedRecord[])
       .filter(r => {
         if (r.type !== 'propiedad' || !r.proyecto_id) return false
-        // Exclude records with no property-specific data (mis-scraped project cards)
         const d = r.data || {}
-        return d.modelo != null || d.dormitorios != null || d.m2 != null
-          || d.imagen_modelo != null || d.modelo_imagen != null
+        // Exclude records with no property-specific data (mis-scraped project cards)
+        if (!d.modelo && !d.dormitorios && !d.m2 && !d.imagen_modelo && !d.modelo_imagen) return false
+        // Exclude records where modelo is a placeholder (e.g. "null / m2 / dorms / 0 baños")
+        if (typeof d.modelo === 'string' && d.modelo.split('/')[0].trim().toLowerCase() === 'null') return false
+        return true
       })
       .forEach(r => { ;(m[r.proyecto_id!] ??= []).push(r) })
     return m

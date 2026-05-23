@@ -392,10 +392,14 @@ async def _scrape_node(
                 for item_data in items:
                     child_data = {k: v for k, v in item_data.items() if k not in shared_field_names}
                     col_kwargs, extra = _map_data_to_columns(child_data, is_child=True)
-                    # Skip records with no property-specific data (e.g. related-project cards
-                    # scraped from the detail page due to overly broad selectors)
+                    # Skip records with no property-specific data (e.g. related-project cards)
                     if not any(v is not None and v != '' for v in col_kwargs.values()):
                         logger.debug("[scrape] skipping child item with no propiedad columns")
+                        continue
+                    # Skip records where modelo is a null placeholder (e.g. "null / m2 / dorms / 0 baños")
+                    modelo_val = col_kwargs.get('modelo') or ''
+                    if modelo_val.split('/')[0].strip().lower() == 'null':
+                        logger.debug("[scrape] skipping child item with null modelo placeholder")
                         continue
                     record = Propiedad(
                         proyecto_id=proyecto_id,
