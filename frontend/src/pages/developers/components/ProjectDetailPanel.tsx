@@ -20,6 +20,88 @@ import { fadeUp } from '../animations'
 
 const PER_PAGE = 10
 
+// Fields already shown in the panel summary — exclude from the info dump
+const SUMMARY_FIELDS = new Set([
+  'ubicacion', 'ubicación', 'location', 'distrito', 'ciudad', 'zona', 'direccion', 'barrio',
+  'precio_desde', 'precio desde', 'precio', 'price', 'costo', 'valor', 'rango_precio', 'precio_venta',
+  'estado_del_proyecto', 'estado del proyecto', 'estado_proyecto', 'estado', 'status', 'disponibilidad', 'estado_disponibilidad',
+  'descripcion', 'descripción', 'description', 'resumen', 'detalle', 'acerca',
+  'nombre', 'name', 'titulo', 'title', 'proyecto', 'project_name', 'nombre_proyecto',
+  'url_propiedad', 'url_proyecto', 'url', 'link', 'href',
+])
+
+const FIELD_LABELS: Record<string, string> = {
+  areas_comunes_imagenes: 'Áreas comunes',
+  lugares_cercanos:       'Lugares cercanos',
+}
+
+function InfoTab({ d }: { d: Record<string, unknown> }) {
+  const desc = extractDesc(d)
+
+  const textFields = Object.entries(d).filter(([k, v]) => {
+    if (SUMMARY_FIELDS.has(k.toLowerCase())) return false
+    if (Array.isArray(v)) return false
+    if (looksLikeImage(v)) return false
+    if (_isUrlValue(v)) return false
+    const str = String(v ?? '').trim()
+    return str !== '' && str.toLowerCase() !== 'null'
+  })
+
+  const listFields = Object.entries(d).filter(([k, v]) => {
+    if (SUMMARY_FIELDS.has(k.toLowerCase())) return false
+    if (!Array.isArray(v) || v.length === 0) return false
+    return !(v as unknown[]).every(item => looksLikeImage(item))
+  }) as [string, unknown[]][]
+
+  const hasExtras = textFields.length > 0 || listFields.length > 0
+
+  return (
+    <motion.div variants={fadeUp} initial="hidden" animate="visible" exit="exit" className="p-4 space-y-5">
+      {desc && (
+        <div>
+          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Descripción</p>
+          <p className="text-xs text-gray-600 leading-relaxed">{desc}</p>
+        </div>
+      )}
+
+      {listFields.map(([k, items]) => (
+        <div key={k}>
+          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">
+            {FIELD_LABELS[k] ?? k.replace(/_/g, ' ')}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {(items as unknown[]).map((item, i) => (
+              <span key={i} className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-[10px] leading-tight">
+                {String(item)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {textFields.length > 0 && (
+        <div>
+          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">Datos del proyecto</p>
+          <div className="space-y-1.5">
+            {textFields.map(([k, v]) => (
+              <div key={k} className="flex gap-3 text-xs">
+                <span className="text-gray-400 font-medium w-28 flex-shrink-0 truncate capitalize">
+                  {FIELD_LABELS[k] ?? k.replace(/_/g, ' ')}
+                </span>
+                <span className="text-gray-700 flex-1 break-words">{String(v ?? '—')}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!desc && !hasExtras && (
+        <p className="text-center text-xs text-gray-400 py-6">Sin información adicional del proyecto</p>
+      )}
+    </motion.div>
+  )
+}
+
 interface Props {
   record: ScrapedRecord
   childRecords: ScrapedRecord[]
@@ -259,7 +341,7 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
                     <table className="w-full text-xs border-collapse">
                       <thead>
                         <tr className="bg-gray-50 text-gray-400 font-semibold uppercase tracking-wide text-[10px]">
-                          {['Propiedad', 'Tipo', 'Dorms', 'Baños', 'Área (m²)', 'Precio desde', 'Estado', 'Acción'].map(h => (
+                          {['Propiedad', 'Tipo', 'Dorms', 'Baños', 'Área (m²)', 'Estado', 'Acción'].map(h => (
                             <th key={h} className="py-2 px-3 text-left first:pl-4 last:pr-4 whitespace-nowrap">{h}</th>
                           ))}
                         </tr>
@@ -295,7 +377,6 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
                               <td className="py-2.5 px-3 text-center text-gray-700 font-medium">{extractBedrooms(rd) || '—'}</td>
                               <td className="py-2.5 px-3 text-center text-gray-700 font-medium">{extractBathrooms(rd) || '—'}</td>
                               <td className="py-2.5 px-3 text-center text-gray-600">{extractArea(rd) || '—'}</td>
-                              <td className="py-2.5 px-3 text-right font-semibold text-gray-800 whitespace-nowrap">{extractPrice(rd) || '—'}</td>
                               <td className="py-2.5 px-3 text-center">
                                 <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full whitespace-nowrap ${statusClass(pStat)}`}>
                                   ✓ {pStat}
@@ -337,29 +418,7 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
               )}
             </motion.div>
           ) : (
-            <motion.div key="info" variants={fadeUp} initial="hidden" animate="visible" exit="exit" className="p-4 space-y-4">
-              {extractDesc(d) && (
-                <div>
-                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Descripción</p>
-                  <p className="text-xs text-gray-600 leading-relaxed">{extractDesc(d)}</p>
-                </div>
-              )}
-              <div>
-                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">Datos del proyecto</p>
-                <div className="space-y-1.5">
-                  {Object.entries(d)
-                    .filter(([, v]) => !Array.isArray(v) && !looksLikeImage(v) && !_isUrlValue(v))
-                    .slice(0, 24)
-                    .map(([k, v]) => (
-                      <div key={k} className="flex gap-3 text-xs">
-                        <span className="text-gray-400 font-medium w-28 flex-shrink-0 truncate capitalize">{k.replace(/_/g, ' ')}</span>
-                        <span className="text-gray-700 flex-1 break-words">{String(v ?? '—')}</span>
-                      </div>
-                    ))
-                  }
-                </div>
-              </div>
-            </motion.div>
+            <InfoTab key="info" d={d} />
           )}
         </AnimatePresence>
       </div>
