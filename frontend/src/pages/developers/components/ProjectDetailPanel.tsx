@@ -1,14 +1,14 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   faBuilding, faXmark, faCircleCheck, faLocationDot, faGlobe,
   faArrowUpRightFromSquare, faHome, faCalendarDays,
   faMagnifyingGlass, faFilter, faChevronRight,
-  faAngleLeft, faAngleRight,
+  faAngleLeft, faAngleRight, faExpand,
 } from '@fortawesome/free-solid-svg-icons'
 import { ScrapedRecord } from '../../../types'
-import { heroImage, looksLikeImage } from '../helpers/media'
+import { allImages, looksLikeImage } from '../helpers/media'
 import { isUrlValue as _isUrlValue } from '../helpers/childUrls'
 import {
   extractTitle, extractLocation, extractPrice, extractStatus, extractDesc,
@@ -27,15 +27,46 @@ interface Props {
 }
 
 export default function ProjectDetailPanel({ record, childRecords, onClose, onOpenProperty }: Props) {
-  const [tab, setTab]       = useState<'props' | 'info'>('props')
-  const [page, setPage]     = useState(0)
-  const [search, setSearch] = useState('')
+  const [tab, setTab]               = useState<'props' | 'info'>('props')
+  const [page, setPage]             = useState(0)
+  const [search, setSearch]         = useState('')
+  const [imgIdx, setImgIdx]         = useState(0)
+  const [lightboxOpen, setLightbox] = useState(false)
+
+  const thumbStripRef  = useRef<HTMLDivElement>(null)
+  const thumbRefsStrip = useRef<(HTMLButtonElement | null)[]>([])
+  const thumbRefsBox   = useRef<(HTMLButtonElement | null)[]>([])
 
   const d       = record.data || {}
   const status  = extractStatus(d) || recordStatusLabel(record.status)
-  const img     = heroImage(d)
   const url     = pick(d, ['url_propiedad', 'url', 'link', 'href'])
   const lastUpd = new Date(record.scraped_at).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: '2-digit' })
+
+  const allImgs = useMemo(() => allImages(d), [d])
+
+  // Reset on record change
+  useEffect(() => { setImgIdx(0); setLightbox(false) }, [record.id])
+
+  // Scroll active thumbnail into view
+  useEffect(() => {
+    thumbRefsStrip.current[imgIdx]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+    thumbRefsBox.current[imgIdx]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+  }, [imgIdx])
+
+  const prevImg = useCallback(() => setImgIdx(i => (i - 1 + allImgs.length) % allImgs.length), [allImgs.length])
+  const nextImg = useCallback(() => setImgIdx(i => (i + 1) % allImgs.length), [allImgs.length])
+
+  // Keyboard nav for lightbox
+  useEffect(() => {
+    if (!lightboxOpen) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft')  prevImg()
+      if (e.key === 'ArrowRight') nextImg()
+      if (e.key === 'Escape')     setLightbox(false)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [lightboxOpen, prevImg, nextImg])
 
   const filtered = useMemo(() => {
     if (!search.trim()) return childRecords
@@ -50,26 +81,95 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
 
   const totalPages = Math.ceil(filtered.length / PER_PAGE)
   const pageItems  = filtered.slice(page * PER_PAGE, (page + 1) * PER_PAGE)
+  const hasImgs    = allImgs.length > 0
 
   return (
     <div className="flex flex-col h-full bg-white">
-      {/* Hero */}
+
+      {/* ── Hero carousel ─────────────────────────────────── */}
       <div className="relative flex-shrink-0">
-        <div className="h-36 bg-gray-200 overflow-hidden">
-          {img
-            ? <img src={img} alt="" className="w-full h-full object-cover" />
+
+        {/* Main image */}
+        <div
+          className="h-44 bg-gray-200 overflow-hidden relative group"
+          style={{ cursor: hasImgs ? 'zoom-in' : 'default' }}
+          onClick={() => hasImgs && setLightbox(true)}
+        >
+          {hasImgs
+            ? <img key={imgIdx} src={allImgs[imgIdx]} alt=""
+                className="w-full h-full object-cover transition-opacity duration-200" />
             : <div className="w-full h-full bg-gradient-to-br from-blue-100 to-gray-200 flex items-center justify-center">
                 <FontAwesomeIcon icon={faBuilding} className="text-4xl text-gray-300" />
               </div>
           }
+
+          {/* Hover expand hint */}
+          {hasImgs && (
+            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/15 transition-colors flex items-center justify-center pointer-events-none">
+              <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-black/50 text-white rounded-full p-2.5">
+                <FontAwesomeIcon icon={faExpand} className="text-sm" />
+              </div>
+            </div>
+          )}
+
+          {/* Counter */}
+          {allImgs.length > 1 && (
+            <div className="absolute bottom-2 right-2 bg-black/50 text-white text-[10px] px-2 py-0.5 rounded-full pointer-events-none">
+              {imgIdx + 1} / {allImgs.length}
+            </div>
+          )}
+
+          {/* Prev / Next arrows */}
+          {allImgs.length > 1 && (
+            <>
+              <button
+                onClick={e => { e.stopPropagation(); prevImg() }}
+                className="absolute left-2 top-1/2 -translate-y-1/2 w-7 h-7 bg-black/40 hover:bg-black/65 text-white rounded-full flex items-center justify-center transition opacity-0 group-hover:opacity-100 z-10"
+              >
+                <FontAwesomeIcon icon={faAngleLeft} className="text-xs" />
+              </button>
+              <button
+                onClick={e => { e.stopPropagation(); nextImg() }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 bg-black/40 hover:bg-black/65 text-white rounded-full flex items-center justify-center transition opacity-0 group-hover:opacity-100 z-10"
+              >
+                <FontAwesomeIcon icon={faAngleRight} className="text-xs" />
+              </button>
+            </>
+          )}
         </div>
+
+        {/* Close button (always visible) */}
         <button onClick={onClose}
-          className="absolute top-3 right-3 w-8 h-8 bg-white/90 hover:bg-white rounded-full flex items-center justify-center shadow transition">
+          className="absolute top-3 right-3 w-8 h-8 bg-white/90 hover:bg-white rounded-full flex items-center justify-center shadow transition z-20">
           <FontAwesomeIcon icon={faXmark} className="text-gray-600 text-sm" />
         </button>
+
+        {/* Thumbnail strip */}
+        {allImgs.length > 1 && (
+          <div
+            ref={thumbStripRef}
+            className="flex gap-1.5 overflow-x-auto px-3 py-2 bg-gray-50 border-b border-gray-100"
+            style={{ scrollbarWidth: 'none' }}
+          >
+            {allImgs.map((src, i) => (
+              <button
+                key={i}
+                ref={el => { thumbRefsStrip.current[i] = el }}
+                onClick={() => setImgIdx(i)}
+                className={`w-12 h-9 flex-shrink-0 rounded overflow-hidden border-2 transition-all ${
+                  i === imgIdx
+                    ? 'border-blue-500 opacity-100 scale-105'
+                    : 'border-transparent opacity-55 hover:opacity-85'
+                }`}
+              >
+                <img src={src} alt="" className="w-full h-full object-cover" />
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Project summary */}
+      {/* ── Project summary ───────────────────────────────── */}
       <div className="px-4 py-3 border-b border-gray-100 flex-shrink-0">
         <div className="flex items-start justify-between gap-2 mb-1.5">
           <h2 className="font-bold text-gray-900 text-sm leading-snug flex-1">{extractTitle(d)}</h2>
@@ -105,7 +205,7 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
         </div>
       </div>
 
-      {/* Stats bar */}
+      {/* ── Stats bar ─────────────────────────────────────── */}
       <div className="grid grid-cols-4 flex-shrink-0">
         {[
           { v: String(childRecords.length), l: 'Propiedades',        i: faHome },
@@ -121,7 +221,7 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
         ))}
       </div>
 
-      {/* Tabs */}
+      {/* ── Tabs ──────────────────────────────────────────── */}
       <div className="flex border-b border-gray-200 px-4 flex-shrink-0">
         {(['props', 'info'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
@@ -133,7 +233,7 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
         ))}
       </div>
 
-      {/* Tab content */}
+      {/* ── Tab content ───────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto">
         <AnimatePresence mode="wait">
           {tab === 'props' ? (
@@ -166,7 +266,8 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
                       <tbody>
                         {pageItems.map(r => {
                           const rd     = r.data || {}
-                          const pImg   = heroImage(rd)
+                          const pImgs  = allImages(rd)
+                          const pImg   = pImgs[0] ?? null
                           const pTitle = extractTitle(rd)
                           const pId    = extractPropId(rd, r.id)
                           const pStat  = extractStatus(rd) || recordStatusLabel(r.status)
@@ -261,6 +362,92 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
           )}
         </AnimatePresence>
       </div>
+
+      {/* ── Lightbox ──────────────────────────────────────── */}
+      <AnimatePresence>
+        {lightboxOpen && (
+          <motion.div
+            className="fixed inset-0 z-50 flex flex-col bg-black/92"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            onClick={() => setLightbox(false)}
+          >
+            {/* Main image area */}
+            <div
+              className="flex-1 flex items-center justify-center relative px-16 py-6 min-h-0"
+              onClick={e => e.stopPropagation()}
+            >
+              <AnimatePresence mode="wait">
+                <motion.img
+                  key={imgIdx}
+                  src={allImgs[imgIdx]}
+                  alt=""
+                  className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                  initial={{ opacity: 0, scale: 0.97 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.97 }}
+                  transition={{ duration: 0.15 }}
+                />
+              </AnimatePresence>
+
+              {/* Counter */}
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/50 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
+                {imgIdx + 1} / {allImgs.length}
+              </div>
+
+              {/* Close */}
+              <button
+                onClick={() => setLightbox(false)}
+                className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/25 text-white rounded-full flex items-center justify-center transition"
+              >
+                <FontAwesomeIcon icon={faXmark} />
+              </button>
+
+              {/* Prev */}
+              {allImgs.length > 1 && (
+                <button
+                  onClick={e => { e.stopPropagation(); prevImg() }}
+                  className="absolute left-4 top-1/2 -translate-y-1/2 w-12 h-12 bg-white/10 hover:bg-white/25 text-white rounded-full flex items-center justify-center transition"
+                >
+                  <FontAwesomeIcon icon={faAngleLeft} className="text-lg" />
+                </button>
+              )}
+
+              {/* Next */}
+              {allImgs.length > 1 && (
+                <button
+                  onClick={e => { e.stopPropagation(); nextImg() }}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 w-12 h-12 bg-white/10 hover:bg-white/25 text-white rounded-full flex items-center justify-center transition"
+                >
+                  <FontAwesomeIcon icon={faAngleRight} className="text-lg" />
+                </button>
+              )}
+            </div>
+
+            {/* Thumbnail strip */}
+            <div
+              className="flex-shrink-0 flex gap-2 overflow-x-auto px-6 py-3 bg-black/40 border-t border-white/10"
+              style={{ scrollbarWidth: 'thin', scrollbarColor: '#555 transparent' }}
+              onClick={e => e.stopPropagation()}
+            >
+              {allImgs.map((src, i) => (
+                <button
+                  key={i}
+                  ref={el => { thumbRefsBox.current[i] = el }}
+                  onClick={() => setImgIdx(i)}
+                  className={`w-16 h-12 flex-shrink-0 rounded overflow-hidden border-2 transition-all ${
+                    i === imgIdx
+                      ? 'border-white opacity-100 scale-105'
+                      : 'border-transparent opacity-45 hover:opacity-80'
+                  }`}
+                >
+                  <img src={src} alt="" className="w-full h-full object-cover" />
+                </button>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
