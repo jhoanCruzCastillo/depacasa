@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.sales_advisor import SalesAdvisor
-from app.models.propiedad import Propiedad
+
 from app.models.site_user import SiteUser
 from app.models.user_preference import UserPreference
 from app.models.web_chat_session import WebChatSession
@@ -88,7 +88,7 @@ def _format_optional(value: Any) -> str:
     return text if text else "-"
 
 
-def _summarize_property(record, property_data: dict | None, record_id: str | None) -> dict:
+def _summarize_property(property_data: dict | None, record_id: str | None) -> dict:
     data = property_data if isinstance(property_data, dict) else {}
     title = _first_scalar_by_keys(
         data,
@@ -102,7 +102,6 @@ def _summarize_property(record, property_data: dict | None, record_id: str | Non
     price = _first_scalar_by_keys(data, {"precio", "price", "precio_desde", "from_price", "monto"})
     return {
         "record_id": record_id,
-        "source_url": record.source_url if record else None,
         "title": title,
         "model": model,
         "location": location,
@@ -183,7 +182,6 @@ def _build_lead_email_html(
       <p><strong>Modelo:</strong> {html.escape(_format_optional(property_payload.get("model")))}</p>
       <p><strong>Ubicacion:</strong> {html.escape(_format_optional(property_payload.get("location")))}</p>
       <p><strong>Precio:</strong> {html.escape(_format_optional(property_payload.get("price")))}</p>
-      <p><strong>URL fuente:</strong> {html.escape(_format_optional(property_payload.get("source_url")))}</p>
 
       <h3 style="margin:16px 0 8px 0">Perfilamiento (criterios de busqueda)</h3>
       <pre style="white-space:pre-wrap;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin:0 0 12px 0">{html.escape(criteria_text)}</pre>
@@ -222,17 +220,15 @@ def notify_active_advisor_for_lead(
         return False, lead_payload
 
     record_id = lead_payload.get("record_id")
-    record = None
     property_data: dict | None = None
     if record_id:
         try:
             rid = UUID(str(record_id))
-            record = db.query(Propiedad).filter(Propiedad.id == rid).first()
             property_data = get_record_data(db, str(rid))
         except Exception as exc:
             logger.warning("[lead-email] could not load record %s: %s", record_id, exc)
 
-    property_payload = _summarize_property(record, property_data, str(record_id) if record_id else None)
+    property_payload = _summarize_property(property_data, str(record_id) if record_id else None)
     profile_payload = _build_profile_payload(session, db)
     site_user = None
     if session.site_user_id:

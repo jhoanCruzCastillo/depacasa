@@ -21,38 +21,51 @@ _VALID_IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "gif", "avif", "svg"}
 # ── Field name → column name mappings ────────────────────────────────────────
 
 _PROYECTO_COLS = {
-    "url_propiedad", "estado_del_proyecto", "proyecto",
-    "dormitorios", "m2", "ubicacion", "precio_desde", "imagen",
+    # url_propiedad is NOT stored — it's only used for child-page navigation
+    "nombre",
+    "estado_del_proyecto",
+    "ubicacion",
+    "precio_desde",
+    "imagen",
+    "descripcion",
+    "areas_comunes_exterior_e_interior_img",
+    "areas_comunes",
+    "areas_comunes_imagenes",
+    "lugares_cercanos",
 }
 _PROYECTO_ALIASES = {
+    "nombre del proyecto": "nombre",
+    "proyecto":            "nombre",   # backwards compat with old templates
     "estado del proyecto": "estado_del_proyecto",
-    "ubicación": "ubicacion",
-    "precio desde": "precio_desde",
+    "ubicación":           "ubicacion",
+    "precio desde":        "precio_desde",
+    "descripción":         "descripcion",
+    "lugares cercanos":    "lugares_cercanos",
+    "áreas comunes":       "areas_comunes",
+    "áreas comunes (imágenes)": "areas_comunes_imagenes",
+    "áreas comunes e interior": "areas_comunes_exterior_e_interior_img",
 }
+
 _PROPIEDAD_COLS = {
-    "url_propiedad", "estado_del_proyecto", "ubicacion", "imagen_modelo",
-    "lugares_cercanos", "proyecto", "dormitorios", "m2",
-    "areas_comunes_e_interior", "modelo", "descripcion",
-    "precio_desde", "areas_comunes", "areas_comunes_imagenes", "imagen",
+    "imagen_modelo",
+    "dormitorios",
+    "m2",
+    "modelo",
+    "modelo_imagen",
 }
 _PROPIEDAD_ALIASES = {
-    "estado del proyecto": "estado_del_proyecto",
-    "ubicación": "ubicacion",
-    "lugares cercanos": "lugares_cercanos",
-    "áreas comunes e interior": "areas_comunes_e_interior",
-    "áreas comunes (imágenes)": "areas_comunes_imagenes",
-    "descripción": "descripcion",
-    "precio desde": "precio_desde",
-    "áreas comunes": "areas_comunes",
+    "imagen del modelo":      "imagen_modelo",
+    "metros cuadrados":       "m2",
+    "metros cuadrados (m²)":  "m2",
 }
 
 
 def _map_data_to_columns(data: dict, is_child: bool) -> tuple[dict, dict]:
     """Split scraped data dict into (column_kwargs, extra_data)."""
-    cols = _PROPIEDAD_COLS if is_child else _PROYECTO_COLS
+    cols    = _PROPIEDAD_COLS    if is_child else _PROYECTO_COLS
     aliases = _PROPIEDAD_ALIASES if is_child else _PROYECTO_ALIASES
     kwargs: dict = {}
-    extra: dict = {}
+    extra:  dict = {}
     for key, val in data.items():
         col = aliases.get(key, key)
         if col in cols:
@@ -60,6 +73,22 @@ def _map_data_to_columns(data: dict, is_child: bool) -> tuple[dict, dict]:
         else:
             extra[key] = val
     return kwargs, extra
+
+
+def _update_proyecto_shared(db, proyecto_id, shared_data: dict) -> None:
+    """Update a Proyecto record with shared fields extracted from its detail page."""
+    if not proyecto_id or not shared_data:
+        return
+    from app.models.proyecto import Proyecto
+    from uuid import UUID
+    proj = db.query(Proyecto).filter(Proyecto.id == proyecto_id).first()
+    if not proj:
+        return
+    col_kwargs, _ = _map_data_to_columns(shared_data, is_child=False)
+    for col, val in col_kwargs.items():
+        if getattr(proj, col, None) is None:
+            setattr(proj, col, val)
+    db.flush()
 
 
 async def _download_image(url: str, developer_id: str) -> str:
@@ -289,8 +318,6 @@ async def _scrape_single_field(browser, node: dict, developer_id: str) -> int:
                 col_kwargs, extra = _map_data_to_columns(item_data, is_child=False)
                 record = Proyecto(
                     developer_id=UUID(str(developer_id)),
-                    url_node_id=UUID(node["id"]),
-                    source_url=node["url"],
                     status=RecordStatus.SUCCESS,
                     extra_data=extra,
                     **col_kwargs,
@@ -312,7 +339,7 @@ def _snapshot_nodes(db, developer_id) -> list:
 
 async def _scrape_node(
     browser, node: dict, all_nodes: list, developer_id, job_id,
-    parent_url: str = None, parent_shared: dict | None = None,
+    parent_url: str = None,
     proyecto_id=None,
 ) -> int:
     from database import get_db_context
@@ -325,6 +352,9 @@ async def _scrape_node(
     target_url = node["url"] or parent_url
     if not target_url:
         return 0
+
+    # Names of shared fields in this node (is_shared=True in child → go to proyectos)
+    shared_field_names = {f["name"] for f in node.get("fields", []) if f.get("is_shared")}
 
     total = 0
     try:
@@ -344,32 +374,36 @@ async def _scrape_node(
         saved_proyecto_ids: list = []
 
         with get_db_context() as db:
-            for item_data in items:
-                merged = {**(parent_shared or {}), **item_data} if parent_shared else item_data
-                col_kwargs, extra = _map_data_to_columns(merged, is_child=is_child)
+            if is_child:
+                # Shared fields in the child node → update the parent Proyecto record
+                if proyecto_id and shared_field_names and items:
+                    shared_vals = {k: v for k, v in items[0].items() if k in shared_field_names}
+                    _update_proyecto_shared(db, proyecto_id, shared_vals)
 
-                if is_child:
+                for item_data in items:
+                    child_data = {k: v for k, v in item_data.items() if k not in shared_field_names}
+                    col_kwargs, extra = _map_data_to_columns(child_data, is_child=True)
                     record = Propiedad(
-                        developer_id=UUID(str(developer_id)),
                         proyecto_id=proyecto_id,
-                        url_node_id=UUID(node["id"]),
-                        source_url=target_url,
                         status=RecordStatus.SUCCESS,
                         extra_data=extra,
                         **col_kwargs,
                     )
-                else:
+                    db.add(record)
+                    db.flush()
+                    saved_proyecto_ids.append(None)
+            else:
+                for item_data in items:
+                    col_kwargs, extra = _map_data_to_columns(item_data, is_child=False)
                     record = Proyecto(
                         developer_id=UUID(str(developer_id)),
-                        url_node_id=UUID(node["id"]),
-                        source_url=target_url,
                         status=RecordStatus.SUCCESS,
                         extra_data=extra,
                         **col_kwargs,
                     )
-                db.add(record)
-                db.flush()
-                saved_proyecto_ids.append(record.id if not is_child else None)
+                    db.add(record)
+                    db.flush()
+                    saved_proyecto_ids.append(record.id)
             db.commit()
             total += len(items)
 
@@ -378,14 +412,13 @@ async def _scrape_node(
         if child_nodes and not is_child:
             for idx, item_data in enumerate(items):
                 item_proyecto_id = saved_proyecto_ids[idx] if idx < len(saved_proyecto_ids) else None
-                shared_data = {k: v for k, v in item_data.items()}
                 for field in node["fields"]:
                     if field["is_child_url"] and item_data.get(field["name"]):
                         child_url = item_data[field["name"]]
                         for child_node in child_nodes:
                             count = await _scrape_node(
                                 browser, child_node, all_nodes, developer_id, job_id,
-                                child_url, parent_shared=shared_data,
+                                child_url,
                                 proyecto_id=item_proyecto_id,
                             )
                             total += count

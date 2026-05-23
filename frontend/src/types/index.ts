@@ -4,6 +4,7 @@ export interface Developer {
   description: string | null
   base_url: string
   logo_url: string | null
+  proyectos_url: string | null
   source: 'tavily' | 'manual'
   created_at: string
 }
@@ -38,9 +39,8 @@ export interface Selector {
 
 export interface ScrapedRecord {
   id: string
-  developer_id: string
-  url_node_id: string
-  source_url: string
+  type: 'proyecto' | 'propiedad'
+  proyecto_id: string | null
   data: Record<string, any>
   status: 'success' | 'partial' | 'failed'
   scraped_at: string

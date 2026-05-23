@@ -19,7 +19,28 @@
       "Bash(python -m json.tool)",
       "Bash(curl -s \"http://localhost:8000/api/public/catalog?limit=2\")",
       "Bash(curl -s \"http://localhost:8000/api/public/records?level=1&limit=2\")",
-      "Bash(curl -s \"http://localhost:8000/api/public/featured\")"
+      "Bash(curl -s \"http://localhost:8000/api/public/featured\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'Total developers: {len\\(d\\)}'\\); [print\\(f'  - {dev[\\\\\"name\\\\\"]} | proyectos_url: {dev.get\\(\\\\\"proyectos_url\\\\\"\\)}'\\) for dev in d[:3]]\")",
+      "Bash(curl -s \"http://localhost:8000/api/developers\")",
+      "Bash(python -c \"import sys,json; devs=json.load\\(sys.stdin\\); dev=devs[0]; id=dev['id']; print\\('Dev ID:', id\\)\")",
+      "Bash(curl -s \"http://localhost:8000/api/developers/$\\(curl -s http://localhost:8000/api/developers)",
+      "Bash(python -c \"import sys,json; t=json.load\\(sys.stdin\\); print\\('Template nodes:', len\\(t.get\\('nodes',[]\\)\\), '| updated_at:', t.get\\('updated_at','N/A'\\)[:19]\\)\")",
+      "Bash(python -c \"import sys,json; recs=json.load\\(sys.stdin\\); print\\(f'Records: {len\\(recs\\)}'\\); [print\\(f'  type={r.get\\(\\\\\"type\\\\\"\\)} status={r.get\\(\\\\\"status\\\\\"\\)} keys={list\\(r.get\\(\\\\\"data\\\\\",{}\\).keys\\(\\)\\)[:4]}'\\) for r in recs[:3]]\")",
+      "Bash(curl -s \"http://localhost:8000/api/site/public/records?limit=3\")",
+      "Bash(python -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\(f'total={r[\\\\\"total\\\\\"]} items={len\\(r[\\\\\"items\\\\\"]\\)}'\\); [print\\(f'  id={i[\\\\\"id\\\\\"]} keys={list\\(i[\\\\\"data\\\\\"].keys\\(\\)\\)[:5]}'\\) for i in r[\\\\\"items\\\\\"]]\")",
+      "Bash(python -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\(json.dumps\\(r, indent=2\\)[:500]\\)\")",
+      "Bash(curl -s \"http://localhost:8000/api/public/records?limit=3\")",
+      "Bash(python -c \"import sys,json; t=json.load\\(sys.stdin\\); nodes=t.get\\('nodes',[]\\); print\\(f'developer_id={t.get\\(\\\\\"developer_id\\\\\"\\)}\\\\nnodes={len\\(nodes\\)}'\\); [print\\(f'  node: name={n.get\\(\\\\\"name\\\\\"\\)} fields={len\\(n.get\\(\\\\\"fields\\\\\",[]\\)\\)} parent_id={n.get\\(\\\\\"parent_id\\\\\"\\)}'\\) for n in nodes]\")",
+      "Bash(python -c \"import sys,json; devs=json.load\\(sys.stdin\\); print\\(f'Total: {len\\(devs\\)}'\\); [print\\(f'  {d[\\\\\"name\\\\\"]} | proyectos_url: {d.get\\(\\\\\"proyectos_url\\\\\",\\\\\"N/A\\\\\"\\)} | id: {d[\\\\\"id\\\\\"]}'\\) for d in devs]\")",
+      "Bash(curl -s \"http://localhost:8000/api/developers/742e20f6-4e53-47c5-96e4-a1f5a1376bad/template\")",
+      "Bash(curl -s \"http://localhost:8000/api/developers/742e20f6-4e53-47c5-96e4-a1f5a1376bad/records\")",
+      "Bash(curl -s -X POST \"http://localhost:8000/api/developers/742e20f6-4e53-47c5-96e4-a1f5a1376bad/scrape\")",
+      "Bash(python -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\(json.dumps\\(r, indent=2\\)\\)\")",
+      "Bash(curl -s -X POST \"http://localhost:8000/api/scrape/742e20f6-4e53-47c5-96e4-a1f5a1376bad\")",
+      "Bash(curl -s \"http://localhost:8000/openapi.json\")",
+      "Bash(curl -s -X POST \"http://localhost:8000/api/scrape/742e20f6-4e53-47c5-96e4-a1f5a1376bad/run\")",
+      "Bash(curl -s \"http://localhost:8000/api/scrape/jobs/0fc6239c-32b7-45ec-9e6a-96d1349e0c77\")",
+      "Bash(python -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\('job_id:', r['id']\\)\")"
     ]
   }
 }

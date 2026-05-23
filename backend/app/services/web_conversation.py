@@ -1100,50 +1100,45 @@ def _get_viewed_record_ids(site_user_id, db: Session) -> list[str]:
         return []
 
 
-def _get_viewed_source_urls(site_user_id, db: Session) -> set[str]:
-    """Return detail-page source URLs already seen by the user across chats."""
+def _get_viewed_proyecto_ids(site_user_id, db: Session) -> set[str]:
+    """Return proyecto UUIDs whose properties have already been seen by the user in chat."""
     try:
         from app.models.user_property_interaction import UserPropertyInteraction
         from app.models.propiedad import Propiedad
         uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
         rows = (
-            db.query(Propiedad.source_url)
+            db.query(Propiedad.proyecto_id)
             .join(UserPropertyInteraction, UserPropertyInteraction.record_id == Propiedad.id)
             .filter(
                 UserPropertyInteraction.site_user_id == uid,
                 UserPropertyInteraction.seen_in_chat.is_(True),
-                Propiedad.source_url.isnot(None),
+                Propiedad.proyecto_id.isnot(None),
             )
             .all()
         )
-        out: set[str] = set()
-        for row in rows:
-            url = (row[0] or "").strip()
-            if url:
-                out.add(url)
-        return out
+        return {str(row[0]) for row in rows if row[0]}
     except Exception as e:
-        logger.warning(f"[tracking] could not fetch viewed source urls: {e}")
+        logger.warning(f"[tracking] could not fetch viewed proyecto ids: {e}")
         return set()
 
 
-def _get_record_source_url(db: Session, record_id: str) -> str:
+def _get_record_proyecto_id(db: Session, record_id: str) -> str:
     try:
         from app.models.propiedad import Propiedad
         rid = UUID(record_id)
-        row = db.query(Propiedad.source_url).filter(Propiedad.id == rid).first()
-        return (row[0] or "").strip() if row else ""
+        row = db.query(Propiedad.proyecto_id).filter(Propiedad.id == rid).first()
+        return str(row[0]) if row and row[0] else ""
     except Exception:
         return ""
 
 
-def _exclude_seen_sources(db: Session, candidate_ids: list[str], seen_urls: set[str]) -> list[str]:
-    if not seen_urls:
+def _exclude_seen_sources(db: Session, candidate_ids: list[str], seen_proyecto_ids: set[str]) -> list[str]:
+    if not seen_proyecto_ids:
         return candidate_ids
     filtered: list[str] = []
     for rid in candidate_ids:
-        src = _get_record_source_url(db, rid)
-        if src and src in seen_urls:
+        pid = _get_record_proyecto_id(db, rid)
+        if pid and pid in seen_proyecto_ids:
             continue
         filtered.append(rid)
     return filtered
@@ -1243,7 +1238,7 @@ async def _build_alternative_bedroom_pool(
     excluded_ids: set[str],
     raw_description: str,
     current_ids: list[str],
-    seen_source_urls: set[str] | None = None,
+    seen_proyecto_ids: set[str] | None = None,
 ) -> tuple[list[str], list[int]]:
     """Find same-location properties with bedroom counts different from requested bedrooms."""
     from app.services.matchmaking import _extract_bedroom_counts
@@ -1268,9 +1263,9 @@ async def _build_alternative_bedroom_pool(
     for rid in candidates:
         if rid in current_set:
             continue
-        if seen_source_urls:
-            src = _get_record_source_url(db, rid)
-            if src and src in seen_source_urls:
+        if seen_proyecto_ids:
+            pid = _get_record_proyecto_id(db, rid)
+            if pid and pid in seen_proyecto_ids:
                 continue
         data = get_record_data(db, rid) or {}
         counts = _extract_bedroom_counts(data)
@@ -2493,7 +2488,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
     # Exclude properties this user has already disliked
     disliked_excluded: set[str] = set()
     excluded: set[str] = set()
-    seen_source_urls: set[str] = set()
+    seen_proyecto_ids: set[str] = set()
     viewed_ids_set: set[str] = set()
     if session.site_user_id:
         disliked_excluded = _get_disliked_ids(session.site_user_id, db)
@@ -2501,11 +2496,11 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         if existing_mode == "new_unseen":
             viewed_ids_set = set(_get_viewed_record_ids(session.site_user_id, db))
             excluded = excluded.union(viewed_ids_set)
-            seen_source_urls = _get_viewed_source_urls(session.site_user_id, db)
+            seen_proyecto_ids = _get_viewed_proyecto_ids(session.site_user_id, db)
 
     matches = await find_matches(db, merged, top_n, excluded_ids=excluded, raw_description=full_desc)
-    if existing_mode == "new_unseen" and seen_source_urls:
-        matches = _exclude_seen_sources(db, matches, seen_source_urls)
+    if existing_mode == "new_unseen" and seen_proyecto_ids:
+        matches = _exclude_seen_sources(db, matches, seen_proyecto_ids)
 
     # Build deferred alternatives (same location, different bedroom counts) to offer later.
     alt_ids: list[str] = []
@@ -2518,7 +2513,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
             excluded,
             full_desc,
             matches,
-            seen_source_urls if existing_mode == "new_unseen" else None,
+            seen_proyecto_ids if existing_mode == "new_unseen" else None,
         )
 
     if alt_ids:
@@ -2579,8 +2574,8 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
             # 1st try: same location, remove bedroom filter
             _c1 = {k: v for k, v in merged.items() if k != "bedrooms"}
             relaxed_matches = await find_matches(db, _c1, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
-            if existing_mode == "new_unseen" and seen_source_urls:
-                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_source_urls)
+            if existing_mode == "new_unseen" and seen_proyecto_ids:
+                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
             if relaxed_matches:
                 relax_type = "loc_only"   # location has properties, just not matching beds
                 offer_msg = (
@@ -2593,8 +2588,8 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
                 # 2nd try: same bedrooms, remove location filter
                 _c2 = {k: v for k, v in merged.items() if k != "location"}
                 relaxed_matches = await find_matches(db, _c2, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
-                if existing_mode == "new_unseen" and seen_source_urls:
-                    relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_source_urls)
+                if existing_mode == "new_unseen" and seen_proyecto_ids:
+                    relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
                 if relaxed_matches:
                     relax_type = "beds_only"   # location truly has nothing; beds available elsewhere
                     offer_msg = (
@@ -2606,8 +2601,8 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
             hab = "dormitorio" if beds == 1 else "dormitorios"
             _c = {k: v for k, v in merged.items() if k != "bedrooms"}
             relaxed_matches = await find_matches(db, _c, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
-            if existing_mode == "new_unseen" and seen_source_urls:
-                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_source_urls)
+            if existing_mode == "new_unseen" and seen_proyecto_ids:
+                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
             if relaxed_matches:
                 relax_type = "no_beds"
                 offer_msg = (
@@ -2618,8 +2613,8 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         elif loc:
             _c = {k: v for k, v in merged.items() if k != "location"}
             relaxed_matches = await find_matches(db, _c, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
-            if existing_mode == "new_unseen" and seen_source_urls:
-                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_source_urls)
+            if existing_mode == "new_unseen" and seen_proyecto_ids:
+                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
             if relaxed_matches:
                 relax_type = "no_loc"
                 offer_msg = (

@@ -141,7 +141,6 @@ def _first_scalar_by_keys(obj, keys: set[str]) -> Optional[str]:
 def _summarize_record(record) -> dict:
     if not record:
         return {
-            "source_url": None,
             "property_title": None,
             "property_model": None,
             "property_location": None,
@@ -164,7 +163,6 @@ def _summarize_record(record) -> dict:
     )
 
     return {
-        "source_url": record.source_url,
         "property_title": title,
         "property_model": model,
         "property_location": location,

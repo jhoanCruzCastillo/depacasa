@@ -268,12 +268,12 @@ def _extract_price_values(data: dict) -> list[float]:
     return sorted({round(p, 2) for p in prices})
 
 
-# ── SQL — query propiedades with optional parent project data ─────────────────
+# ── SQL — query propiedades joined with parent proyecto data ──────────────────
 
 _CANDIDATES_SQL = """
-SELECT p.id, p.dormitorios, p.m2, p.precio_desde, p.ubicacion, p.proyecto,
-       p.modelo, p.descripcion, p.estado_del_proyecto, p.extra_data,
-       COALESCE(pr.proyecto, '') AS parent_proyecto
+SELECT p.id, p.dormitorios, p.m2, p.modelo, p.extra_data,
+       pr.precio_desde, pr.ubicacion, pr.nombre, pr.descripcion, pr.estado_del_proyecto,
+       COALESCE(pr.nombre, '') AS parent_nombre
 FROM propiedades p
 LEFT JOIN proyectos pr ON pr.id = p.proyecto_id
 ORDER BY p.scraped_at DESC
@@ -285,17 +285,17 @@ def _build_data_dict(row) -> tuple[str, dict, str]:
     """Return (record_id, data_dict, parent_text) from a candidates SQL row."""
     record_id = str(row[0])
     data: dict = {
-        "dormitorios": row[1],
-        "m2": row[2],
-        "precio_desde": row[3],
-        "ubicacion": row[4],
-        "proyecto": row[5],
-        "modelo": row[6],
-        "descripcion": row[7],
-        "estado_del_proyecto": row[8],
+        "dormitorios":        row[1],
+        "m2":                 row[2],
+        "modelo":             row[3],
+        "precio_desde":       row[5],
+        "ubicacion":          row[6],
+        "nombre":             row[7],
+        "descripcion":        row[8],
+        "estado_del_proyecto": row[9],
     }
-    if row[9]:  # extra_data
-        data.update(row[9])
+    if row[4]:  # extra_data de propiedad
+        data.update(row[4])
     data = {k: v for k, v in data.items() if v is not None}
     parent_text = str(row[10] or "")
     return record_id, data, parent_text
@@ -535,18 +535,17 @@ async def find_matches(
 
 
 def get_record_data(db: Session, record_id: str) -> dict | None:
-    """Return merged property data for a given Propiedad ID."""
+    """Return merged property+project data for a given Propiedad ID."""
     try:
         row = db.execute(
             text("""
-                SELECT p.url_propiedad, p.estado_del_proyecto, p.ubicacion, p.imagen_modelo,
-                       p.lugares_cercanos, p.proyecto, p.dormitorios, p.m2,
-                       p.areas_comunes_e_interior, p.modelo, p.descripcion, p.precio_desde,
-                       p.areas_comunes, p.areas_comunes_imagenes, p.imagen, p.extra_data,
-                       p.source_url,
-                       pr.proyecto AS parent_proyecto, pr.ubicacion AS parent_ubicacion,
-                       pr.precio_desde AS parent_precio, pr.imagen AS parent_imagen,
-                       pr.estado_del_proyecto AS parent_estado, pr.extra_data AS parent_extra
+                SELECT p.imagen_modelo, p.dormitorios, p.m2, p.modelo, p.modelo_imagen,
+                       p.extra_data,
+                       pr.nombre, pr.estado_del_proyecto, pr.ubicacion, pr.precio_desde,
+                       pr.imagen, pr.descripcion,
+                       pr.areas_comunes_exterior_e_interior_img, pr.areas_comunes,
+                       pr.areas_comunes_imagenes, pr.lugares_cercanos,
+                       pr.extra_data AS parent_extra
                 FROM propiedades p
                 LEFT JOIN proyectos pr ON pr.id = p.proyecto_id
                 WHERE p.id = :id
@@ -557,43 +556,38 @@ def get_record_data(db: Session, record_id: str) -> dict | None:
         if not row:
             return None
 
+        # Propiedad fields
         data: dict = {
-            "url_propiedad": row[0],
-            "estado_del_proyecto": row[1],
-            "ubicacion": row[2],
-            "imagen_modelo": row[3],
-            "lugares_cercanos": row[4],
-            "proyecto": row[5],
-            "dormitorios": row[6],
-            "m2": row[7],
-            "areas_comunes_e_interior": row[8],
-            "modelo": row[9],
-            "descripcion": row[10],
-            "precio_desde": row[11],
-            "areas_comunes": row[12],
-            "areas_comunes_imagenes": row[13],
-            "imagen": row[14],
+            "imagen_modelo": row[0],
+            "dormitorios":   row[1],
+            "m2":            row[2],
+            "modelo":        row[3],
+            "modelo_imagen": row[4],
         }
-        if row[15]:  # extra_data
-            data.update(row[15])
+        if row[5]:  # propiedad.extra_data
+            data.update(row[5])
 
-        data["source_url"] = row[16]
-
-        # Fill missing fields from parent proyecto
-        parent_extra = row[22] or {}
-        if not data.get("proyecto") and row[17]:
-            data["proyecto"] = row[17]
-        if not data.get("ubicacion") and row[18]:
-            data["ubicacion"] = row[18]
-        if not data.get("precio_desde") and row[19]:
-            data["precio_desde"] = row[19]
-        if not data.get("imagen") and row[20]:
-            data["imagen"] = row[20]
-        if not data.get("estado_del_proyecto") and row[21]:
-            data["estado_del_proyecto"] = row[21]
-        for k, v in parent_extra.items():
-            if k not in data:
+        # Proyecto fields (always authoritative)
+        proyecto_fields = {
+            "nombre":                              row[6],
+            "estado_del_proyecto":                 row[7],
+            "ubicacion":                           row[8],
+            "precio_desde":                        row[9],
+            "imagen":                              row[10],
+            "descripcion":                         row[11],
+            "areas_comunes_exterior_e_interior_img": row[12],
+            "areas_comunes":                       row[13],
+            "areas_comunes_imagenes":              row[14],
+            "lugares_cercanos":                    row[15],
+        }
+        for k, v in proyecto_fields.items():
+            if v is not None:
                 data[k] = v
+
+        if row[16]:  # parent_extra
+            for k, v in row[16].items():
+                if k not in data:
+                    data[k] = v
 
         return {k: v for k, v in data.items() if v is not None}
 

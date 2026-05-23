@@ -7,18 +7,18 @@ from datetime import datetime
 class ProyectoResponse(BaseModel):
     id: UUID
     developer_id: UUID
-    url_node_id: UUID
-    source_url: str
     status: str
     scraped_at: datetime
-    url_propiedad: Optional[str] = None
+    nombre: Optional[str] = None
     estado_del_proyecto: Optional[str] = None
-    proyecto: Optional[str] = None
-    dormitorios: Optional[str] = None
-    m2: Optional[str] = None
     ubicacion: Optional[str] = None
     precio_desde: Optional[str] = None
     imagen: Optional[Any] = None
+    descripcion: Optional[str] = None
+    areas_comunes_exterior_e_interior_img: Optional[Any] = None
+    areas_comunes: Optional[Any] = None
+    areas_comunes_imagenes: Optional[Any] = None
+    lugares_cercanos: Optional[Any] = None
     extra_data: Optional[dict] = None
 
     class Config:

@@ -95,17 +95,17 @@ def browse_records(
         q = db.query(Proyecto)
         if search:
             q = q.filter(
-                Proyecto.proyecto.ilike(f"%{search}%")
+                Proyecto.nombre.ilike(f"%{search}%")
                 | Proyecto.ubicacion.ilike(f"%{search}%")
             )
         total = q.count()
         items = q.order_by(Proyecto.scraped_at.desc()).offset(skip).limit(limit).all()
     else:
-        q = db.query(Propiedad)
+        q = db.query(Propiedad).join(Proyecto, Propiedad.proyecto_id == Proyecto.id)
         if search:
             q = q.filter(
-                Propiedad.proyecto.ilike(f"%{search}%")
-                | Propiedad.ubicacion.ilike(f"%{search}%")
+                Proyecto.nombre.ilike(f"%{search}%")
+                | Proyecto.ubicacion.ilike(f"%{search}%")
                 | Propiedad.dormitorios.ilike(f"%{search}%")
             )
         total = q.count()
@@ -122,12 +122,14 @@ def discover_fields(level: int = 2, db: Session = Depends(get_db)):
     """Return the standardized field keys available at the given level."""
     if level == 1:
         return sorted([
-            "url_propiedad", "estado_del_proyecto", "proyecto",
-            "dormitorios", "m2", "ubicacion", "precio_desde", "imagen",
+            "nombre", "estado_del_proyecto", "ubicacion", "precio_desde",
+            "imagen", "descripcion", "areas_comunes", "areas_comunes_imagenes",
+            "areas_comunes_exterior_e_interior_img", "lugares_cercanos",
         ])
     return sorted([
-        "url_propiedad", "estado_del_proyecto", "ubicacion", "imagen_modelo",
-        "lugares_cercanos", "proyecto", "dormitorios", "m2",
-        "areas_comunes_e_interior", "modelo", "descripcion", "precio_desde",
-        "areas_comunes", "areas_comunes_imagenes", "imagen",
+        "imagen_modelo", "dormitorios", "m2", "modelo", "modelo_imagen",
+        # fields merged from proyecto:
+        "nombre", "estado_del_proyecto", "ubicacion", "precio_desde",
+        "imagen", "descripcion", "areas_comunes", "areas_comunes_imagenes",
+        "areas_comunes_exterior_e_interior_img", "lugares_cercanos",
     ])

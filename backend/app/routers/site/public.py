@@ -70,36 +70,40 @@ def public_records(
         q = db.query(Proyecto)
         if search:
             q = q.filter(
-                Proyecto.proyecto.ilike(f"%{search}%")
+                Proyecto.nombre.ilike(f"%{search}%")
                 | Proyecto.ubicacion.ilike(f"%{search}%")
                 | Proyecto.estado_del_proyecto.ilike(f"%{search}%")
             )
         total = q.count()
         items = q.order_by(Proyecto.scraped_at.desc()).offset(skip).limit(limit).all()
+        return {
+            "total": total,
+            "items": [
+                {"id": str(r.id), "developer_id": str(r.developer_id), "data": r.to_data(), "scraped_at": r.scraped_at.isoformat()}
+                for r in items
+            ],
+        }
     else:
-        q = db.query(Propiedad)
+        q = (
+            db.query(Propiedad)
+            .join(Proyecto, Propiedad.proyecto_id == Proyecto.id)
+        )
         if search:
             q = q.filter(
-                Propiedad.proyecto.ilike(f"%{search}%")
-                | Propiedad.ubicacion.ilike(f"%{search}%")
+                Proyecto.nombre.ilike(f"%{search}%")
+                | Proyecto.ubicacion.ilike(f"%{search}%")
                 | Propiedad.dormitorios.ilike(f"%{search}%")
-                | Propiedad.precio_desde.ilike(f"%{search}%")
+                | Proyecto.precio_desde.ilike(f"%{search}%")
             )
         total = q.count()
         items = q.order_by(Propiedad.scraped_at.desc()).offset(skip).limit(limit).all()
-
-    return {
-        "total": total,
-        "items": [
-            {
-                "id": str(r.id),
-                "developer_id": str(r.developer_id),
-                "data": r.to_data(),
-                "scraped_at": r.scraped_at.isoformat(),
-            }
-            for r in items
-        ],
-    }
+        return {
+            "total": total,
+            "items": [
+                {"id": str(r.id), "proyecto_id": str(r.proyecto_id) if r.proyecto_id else None, "data": r.to_data(), "scraped_at": r.scraped_at.isoformat()}
+                for r in items
+            ],
+        }
 
 
 @router.get("/records/grouped")
@@ -133,7 +137,7 @@ def public_records_grouped(
         if records or not search:
             result.append({
                 "proyecto_id": str(proy.id),
-                "proyecto_name": proy.proyecto or proy.source_url,
+                "proyecto_name": proy.nombre,
                 "records": records,
                 "proyecto_data": proy.to_data(),
             })
@@ -172,7 +176,7 @@ def public_catalog(
                 empty = cv is None or (isinstance(cv, list) and not cv) or (isinstance(cv, str) and not cv.strip())
                 if empty:
                     child_data[k] = v
-            all_projects[str(proy.id)] = proy.proyecto or proy.source_url
+            all_projects[str(proy.id)] = proy.nombre or ""
 
         loc = child_data.get("ubicacion") or ""
         if isinstance(loc, str) and loc.strip():
@@ -182,8 +186,8 @@ def public_catalog(
             "id": str(prop.id),
             "data": child_data,
             "project_id": str(proy.id) if proy else None,
-            "project_name": (proy.proyecto or proy.source_url) if proy else None,
-            "developer_id": str(prop.developer_id),
+            "project_name": proy.nombre if proy else None,
+            "proyecto_id": str(prop.proyecto_id) if prop.proyecto_id else None,
             "scraped_at": prop.scraped_at.isoformat() if prop.scraped_at else None,
             "_loc": loc.strip().lower() if isinstance(loc, str) else "",
         })
@@ -264,7 +268,7 @@ def public_featured(db: Session = Depends(get_db)):
     return [
         {
             "id": str(r.id),
-            "developer_id": str(r.developer_id),
+            "developer_id": str(r.developer_id) if hasattr(r, "developer_id") else None,
             "data": r.to_data(),
             "scraped_at": r.scraped_at.isoformat(),
         }

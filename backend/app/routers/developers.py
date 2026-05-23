@@ -13,7 +13,6 @@ from app.models.developer import DeveloperSource
 from app.models.proyecto import Proyecto
 from app.models.propiedad import Propiedad
 from app.schemas import DeveloperCreate, DeveloperUpdate, DeveloperResponse
-from app.schemas.scraped_record import ScrapedRecordResponse
 
 router = APIRouter(prefix="/api/developers", tags=["developers"])
 
@@ -173,46 +172,49 @@ async def get_developer_url_nodes(
 @router.get("/{developer_id}/records")
 async def get_developer_records(
     developer_id: UUID,
-    node_id: Optional[UUID] = Query(None),
     skip: int = 0,
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
-    proyectos = db.query(Proyecto).filter(Proyecto.developer_id == developer_id)
-    propiedades = db.query(Propiedad).filter(Propiedad.developer_id == developer_id)
-    if node_id:
-        proyectos = proyectos.filter(Proyecto.url_node_id == node_id)
-        propiedades = propiedades.filter(Propiedad.url_node_id == node_id)
+    proyectos_q = db.query(Proyecto).filter(Proyecto.developer_id == developer_id)
+    propiedades_q = (
+        db.query(Propiedad)
+        .join(Proyecto, Propiedad.proyecto_id == Proyecto.id)
+        .filter(Proyecto.developer_id == developer_id)
+    )
 
     result = []
-    for r in proyectos.order_by(Proyecto.scraped_at.desc()).all():
-        result.append({"id": str(r.id), "url_node_id": str(r.url_node_id), "source_url": r.source_url,
-                        "data": r.to_data(), "status": r.status.value if r.status else None,
-                        "scraped_at": r.scraped_at.isoformat(), "type": "proyecto"})
-    for r in propiedades.order_by(Propiedad.scraped_at.desc()).offset(skip).limit(limit).all():
-        result.append({"id": str(r.id), "url_node_id": str(r.url_node_id), "source_url": r.source_url,
-                        "data": r.to_data(), "status": r.status.value if r.status else None,
-                        "scraped_at": r.scraped_at.isoformat(), "type": "propiedad"})
+    for r in proyectos_q.order_by(Proyecto.scraped_at.desc()).all():
+        result.append({
+            "id": str(r.id),
+            "data": r.to_data(),
+            "status": r.status.value if r.status else None,
+            "scraped_at": r.scraped_at.isoformat(),
+            "type": "proyecto",
+        })
+    for r in propiedades_q.order_by(Propiedad.scraped_at.desc()).offset(skip).limit(limit).all():
+        result.append({
+            "id": str(r.id),
+            "proyecto_id": str(r.proyecto_id) if r.proyecto_id else None,
+            "data": r.to_data(),
+            "status": r.status.value if r.status else None,
+            "scraped_at": r.scraped_at.isoformat(),
+            "type": "propiedad",
+        })
     return result
 
 
 @router.delete("/{developer_id}/records", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_developer_records(
     developer_id: UUID,
-    node_id: Optional[UUID] = Query(None),
     db: Session = Depends(get_db),
 ):
     developer = db.query(Developer).filter(Developer.id == developer_id).first()
     if not developer:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Developer not found")
 
-    q_proj = db.query(Proyecto).filter(Proyecto.developer_id == developer_id)
-    q_prop = db.query(Propiedad).filter(Propiedad.developer_id == developer_id)
-    if node_id:
-        q_proj = q_proj.filter(Proyecto.url_node_id == node_id)
-        q_prop = q_prop.filter(Propiedad.url_node_id == node_id)
-    q_prop.delete(synchronize_session=False)
-    q_proj.delete(synchronize_session=False)
+    # propiedades cascade via proyectos (ON DELETE CASCADE), so deleting proyectos is enough
+    db.query(Proyecto).filter(Proyecto.developer_id == developer_id).delete(synchronize_session=False)
     db.commit()
 
 

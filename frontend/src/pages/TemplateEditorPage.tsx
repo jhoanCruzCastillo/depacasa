@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -30,7 +30,7 @@ interface NodeDraft { client_id: string; parent_client_id: string | null; name: 
 
 let _c = 0
 const uid = () => `d${++_c}`
-const emptyNode = (parent: string | null = null, order = 0): NodeDraft => ({ client_id: uid(), parent_client_id: parent, name: '', url: '', container_selector: '', order, fields: [] })
+const emptyNode = (parent: string | null = null, order = 0): NodeDraft => ({ client_id: uid(), parent_client_id: parent, name: parent ? 'Propiedades' : 'Proyectos', url: '', container_selector: '', order, fields: [] })
 const emptyField = (order = 0): FieldDraft => ({ id: uid(), name: '', is_child_url: false, plain_text: false, is_shared: false, is_list: false, list_container: '', is_image: false, extract_attr: '', order, selectors: [] })
 const emptySelector = (order = 0): SelectorDraft => ({ id: uid(), value: '', order })
 
@@ -42,33 +42,35 @@ interface ColumnDef {
   autoToggles?: Partial<FieldDraft>
 }
 
+// Campos de la tabla proyectos (nodo raíz)
 const PROYECTO_COLUMNS: ColumnDef[] = [
-  { value: 'url_propiedad', label: 'URL de propiedad', autoToggles: { is_child_url: true } },
+  { value: 'url_propiedad',    label: 'URL del proyecto (enlace detalle)', autoToggles: { is_child_url: true } },
+  { value: 'nombre',           label: 'Nombre del proyecto' },
   { value: 'estado_del_proyecto', label: 'Estado del proyecto' },
-  { value: 'proyecto', label: 'Nombre del proyecto' },
-  { value: 'dormitorios', label: 'Dormitorios' },
-  { value: 'm2', label: 'Metros cuadrados (m²)' },
-  { value: 'ubicacion', label: 'Ubicación' },
-  { value: 'precio_desde', label: 'Precio desde' },
-  { value: 'imagen', label: 'Imagen', autoToggles: { is_list: true, is_image: true } },
+  { value: 'ubicacion',        label: 'Ubicación' },
+  { value: 'precio_desde',     label: 'Precio desde' },
+  { value: 'imagen',           label: 'Imagen del proyecto', autoToggles: { is_list: true, is_image: true } },
+  { value: 'descripcion',      label: 'Descripción' },
+  { value: 'areas_comunes_exterior_e_interior_img', label: 'Imágenes áreas (ext/int)', autoToggles: { is_list: true, is_image: true } },
+  { value: 'areas_comunes',    label: 'Áreas comunes (lista)', autoToggles: { is_list: true } },
+  { value: 'areas_comunes_imagenes', label: 'Áreas comunes (imágenes)', autoToggles: { is_list: true, is_image: true } },
+  { value: 'lugares_cercanos', label: 'Lugares cercanos', autoToggles: { is_list: true } },
 ]
 
+// Campos de la tabla propiedades (nodo hijo)
+// Los marcados is_shared=true se guardarán en la tabla proyectos del proyecto padre
 const PROPIEDAD_COLUMNS: ColumnDef[] = [
-  { value: 'url_propiedad', label: 'URL de propiedad', autoToggles: { is_child_url: true } },
-  { value: 'estado_del_proyecto', label: 'Estado del proyecto' },
-  { value: 'ubicacion', label: 'Ubicación' },
-  { value: 'imagen_modelo', label: 'Imagen del modelo', autoToggles: { is_image: true, extract_attr: 'src' } },
-  { value: 'lugares_cercanos', label: 'Lugares cercanos', autoToggles: { is_list: true } },
-  { value: 'proyecto', label: 'Nombre del proyecto' },
-  { value: 'dormitorios', label: 'Dormitorios' },
-  { value: 'm2', label: 'Metros cuadrados (m²)' },
-  { value: 'areas_comunes_e_interior', label: 'Áreas comunes e interior', autoToggles: { is_list: true, is_image: true } },
-  { value: 'modelo', label: 'Modelo' },
-  { value: 'descripcion', label: 'Descripción' },
-  { value: 'precio_desde', label: 'Precio desde' },
-  { value: 'areas_comunes', label: 'Áreas comunes', autoToggles: { is_list: true, is_image: true } },
-  { value: 'areas_comunes_imagenes', label: 'Áreas comunes (imágenes)', autoToggles: { is_list: true } },
-  { value: 'imagen', label: 'Imagen', autoToggles: { is_list: true, is_image: true } },
+  { value: 'imagen_modelo',    label: 'Imagen del modelo', autoToggles: { is_image: true, extract_attr: 'src' } },
+  { value: 'dormitorios',      label: 'Dormitorios' },
+  { value: 'm2',               label: 'Metros cuadrados (m²)' },
+  { value: 'modelo',           label: 'Modelo' },
+  { value: 'modelo_imagen',    label: 'Imagen adicional del modelo', autoToggles: { is_image: true } },
+  { value: 'descripcion',      label: 'Descripción del proyecto (→ proyecto)', autoToggles: { is_shared: true } },
+  { value: 'ubicacion',        label: 'Ubicación (→ proyecto)', autoToggles: { is_shared: true } },
+  { value: 'lugares_cercanos', label: 'Lugares cercanos (→ proyecto)', autoToggles: { is_shared: true, is_list: true } },
+  { value: 'areas_comunes',    label: 'Áreas comunes lista (→ proyecto)', autoToggles: { is_shared: true, is_list: true } },
+  { value: 'areas_comunes_imagenes', label: 'Áreas comunes imágenes (→ proyecto)', autoToggles: { is_shared: true, is_list: true, is_image: true } },
+  { value: 'areas_comunes_exterior_e_interior_img', label: 'Imágenes áreas ext/int (→ proyecto)', autoToggles: { is_shared: true, is_list: true, is_image: true } },
 ]
 
 // ─── Tab types ────────────────────────────────────────────────────────────────
@@ -518,13 +520,17 @@ function TabProperties({ developer, developerId }: { developer: Developer; devel
   const [name, setName] = useState(developer.name)
   const [description, setDescription] = useState(developer.description || '')
   const [baseUrl, setBaseUrl] = useState(developer.base_url)
+  const [proyectosUrl, setProyectosUrl] = useState(developer.proyectos_url || '')
   const [saving, setSaving] = useState(false)
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
     try {
-      await updateDeveloper(developerId, { name, description, base_url: baseUrl })
+      await updateDeveloper(developerId, {
+        name, description, base_url: baseUrl,
+        proyectos_url: proyectosUrl || null,
+      })
       queryClient.invalidateQueries({ queryKey: ['developer', developerId] })
       queryClient.invalidateQueries({ queryKey: ['developers'] })
       toast.success('Propiedades guardadas')
@@ -557,6 +563,16 @@ function TabProperties({ developer, developerId }: { developer: Developer; devel
               type="url"
               value={baseUrl}
               onChange={e => setBaseUrl(e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">URL Proyectos</label>
+            <input
+              type="url"
+              value={proyectosUrl}
+              onChange={e => setProyectosUrl(e.target.value)}
+              placeholder="https://ejemplo.com/proyectos"
               className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
@@ -661,14 +677,9 @@ function TabRecords({ developerId }: { developerId: string }) {
                     : <><ChevronDown className="w-3 h-3" /> Ver {keys.length - 3} más</>}
                 </button>
               )}
-              <a
-                href={rec.source_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-2 block text-xs text-blue-400 hover:text-blue-600 truncate"
-              >
-                {rec.source_url}
-              </a>
+              {rec.type && (
+                <span className="mt-2 block text-xs text-gray-400 capitalize">{rec.type}</span>
+              )}
             </div>
           )
         })}
@@ -882,31 +893,10 @@ function ColumnSelect({
   onChange: (name: string, toggles: Partial<FieldDraft>) => void
 }) {
   const columns = isChild ? PROPIEDAD_COLUMNS : PROYECTO_COLUMNS
-  const isKnownColumn = columns.some(c => c.value === value)
-  const [customMode, setCustomMode] = useState(!isKnownColumn && value !== '')
-  const [customValue, setCustomValue] = useState(!isKnownColumn ? value : '')
-
-  useEffect(() => {
-    const cols = isChild ? PROPIEDAD_COLUMNS : PROYECTO_COLUMNS
-    const known = cols.some(c => c.value === value)
-    if (!known && value) {
-      setCustomMode(true)
-      setCustomValue(value)
-    } else if (known) {
-      setCustomMode(false)
-    }
-  }, [value, isChild])
 
   const handleSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value
-    if (v === '__custom__') {
-      setCustomMode(true)
-      setCustomValue('')
-      onChange('', { is_child_url: false, is_list: false, is_image: false, extract_attr: '' })
-      return
-    }
     const col = columns.find(c => c.value === v)
-    setCustomMode(false)
     onChange(v, {
       is_child_url: false, is_list: false, is_image: false, extract_attr: '',
       ...(col?.autoToggles || {}),
@@ -914,9 +904,9 @@ function ColumnSelect({
   }
 
   return (
-    <div className="flex-1 flex flex-col gap-1.5">
+    <div className="flex-1">
       <select
-        value={customMode ? '__custom__' : (value || '')}
+        value={columns.some(c => c.value === value) ? value : ''}
         onChange={handleSelect}
         className="w-full border border-gray-200 bg-white rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
       >
@@ -926,17 +916,7 @@ function ColumnSelect({
             {col.label}  ·  {col.value}
           </option>
         ))}
-        <option value="__custom__">⚙ Campo personalizado (extra_data)</option>
       </select>
-      {customMode && (
-        <input
-          value={customValue}
-          onChange={e => { setCustomValue(e.target.value); onChange(e.target.value, {}) }}
-          placeholder="nombre_campo_personalizado"
-          autoFocus
-          className="w-full border border-amber-200 bg-amber-50 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent"
-        />
-      )}
     </div>
   )
 }

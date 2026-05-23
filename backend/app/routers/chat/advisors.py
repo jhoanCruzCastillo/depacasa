@@ -41,7 +41,6 @@ def _summarize_record(record: Propiedad | None) -> dict:
     if not record:
         return {
             "record_id": None,
-            "source_url": None,
             "title": None,
             "location": None,
             "price": None,
@@ -51,8 +50,7 @@ def _summarize_record(record: Propiedad | None) -> dict:
     values = [str(v).strip() for v in data.values() if isinstance(v, (str, int, float))]
     return {
         "record_id": str(record.id),
-        "source_url": record.source_url,
-        "title": data.get("proyecto") or next((v for v in values if len(v) >= 6), None),
+        "title": data.get("nombre") or next((v for v in values if len(v) >= 6), None),
         "location": data.get("ubicacion") or next((v for v in values if any(k in v.lower() for k in ["lima", "miraflores", "surco", "san "])), None),
         "price": data.get("precio_desde") or next((v for v in values if any(ch.isdigit() for ch in v) and any(sym in v.lower() for sym in ["$", "s/", "usd", "precio"])), None),
     }
