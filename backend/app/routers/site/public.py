@@ -12,6 +12,24 @@ from app.models.propiedad import Propiedad
 
 router = APIRouter()
 
+
+def _proyecto_display_name(proy: "Proyecto") -> str:
+    """Best available display name for a project (falls back to URL slug)."""
+    if proy.nombre:
+        return proy.nombre
+    url = (proy.extra_data or {}).get("url_propiedad", "") or ""
+    if url:
+        try:
+            from urllib.parse import urlparse
+            SKIP = {"proyecto", "projects", "propiedad", "property", "venta", "sale", "en-venta", "departamentos"}
+            parts = [p for p in urlparse(url).path.split("/") if p and p.lower() not in SKIP]
+            if parts:
+                return " ".join(w.capitalize() for w in parts[-1].split("-"))
+        except Exception:
+            pass
+    return ""
+
+
 _DEFAULTS = {
     "site_name": "Mi Portal Inmobiliario",
     "tagline": None,
@@ -176,17 +194,18 @@ def public_catalog(
                 empty = cv is None or (isinstance(cv, list) and not cv) or (isinstance(cv, str) and not cv.strip())
                 if empty:
                     child_data[k] = v
-            all_projects[str(proy.id)] = proy.nombre or ""
+            all_projects[str(proy.id)] = _proyecto_display_name(proy)
 
         loc = child_data.get("ubicacion") or ""
         if isinstance(loc, str) and loc.strip():
-            all_locations.add(loc.strip())
+            # Normalize newlines for location filter matching
+            all_locations.add(loc.split("\n")[0].strip())
 
         all_items.append({
             "id": str(prop.id),
             "data": child_data,
             "project_id": str(proy.id) if proy else None,
-            "project_name": proy.nombre if proy else None,
+            "project_name": _proyecto_display_name(proy) if proy else None,
             "proyecto_id": str(prop.proyecto_id) if prop.proyecto_id else None,
             "scraped_at": prop.scraped_at.isoformat() if prop.scraped_at else None,
             "_loc": loc.strip().lower() if isinstance(loc, str) else "",
@@ -194,7 +213,7 @@ def public_catalog(
 
     filtered = all_items
     if location:
-        filtered = [i for i in filtered if location.lower() in i["_loc"]]
+        filtered = [i for i in filtered if location.lower() in i["_loc"] or i["_loc"] in location.lower()]
     if project_id:
         filtered = [i for i in filtered if i["project_id"] == project_id]
     if search:

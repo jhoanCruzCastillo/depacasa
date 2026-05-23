@@ -66,17 +66,23 @@ function detectImages(data: Record<string, unknown>): string[] {
   return out
 }
 
+const FIELD_LABELS: Record<string, string> = {
+  areas_comunes_imagenes: 'Áreas Comunes',
+  lugares_cercanos:       'Lugares Cercanos',
+}
+
 function detectTextEntries(data: Record<string, unknown>, images: string[]): TextEntry[] {
   const imgSet = new Set(images)
   const isImg = (v: string) => v.startsWith('/media/') || imgSet.has(v) || imgSet.has(toFull(v)) || (HTTP.test(v) && IMG_EXT.test(v))
-  const humanize = (k: string) => k.replace(/_/g, ' ').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+  const humanize = (k: string) => FIELD_LABELS[k] ?? k.replace(/_/g, ' ').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
   const entries: TextEntry[] = []
   for (const [key, val] of Object.entries(data)) {
     if (val === null || val === undefined) continue
     const label = humanize(key)
     if (typeof val === 'string') {
-      if (!val.trim() || isImg(val)) continue
-      entries.push({ key, label, value: val.trim(), isArray: false })
+      const cleaned = val.trim().replace(/\s*\n\s*/g, ', ').replace(/\s{2,}/g, ' ')
+      if (!cleaned || isImg(val) || HTTP.test(val)) continue
+      entries.push({ key, label, value: cleaned, isArray: false })
     } else if (typeof val === 'number') {
       entries.push({ key, label, value: String(val), isArray: false })
     } else if (Array.isArray(val)) {
@@ -122,6 +128,28 @@ function extractArea(data: Record<string, unknown>): string | null {
     if (v && (typeof v === 'number' || typeof v === 'string')) return `${v} m²`
   }
   return null
+}
+
+function statusBadgeClass(s: string): string {
+  const t = (s || '').toLowerCase()
+  if (t.includes('complet') || t.includes('disponib') || t.includes('inmediata') || t.includes('entrega')) return 'bg-emerald-100 text-emerald-700'
+  if (t.includes('preventa') || t.includes('construc') || t.includes('próx') || t.includes('prox')) return 'bg-amber-100 text-amber-700'
+  if (t.includes('agotad') || t.includes('vendid')) return 'bg-red-100 text-red-700'
+  return 'bg-slate-100 text-slate-600'
+}
+
+function resolveProjectName(record: CatalogRecord): string {
+  if (record.project_name) return record.project_name
+  const url = String(record.data['url_propiedad'] ?? record.data['url_proyecto'] ?? record.data['url'] ?? '')
+  if (url) {
+    try {
+      const SKIP = new Set(['proyecto', 'projects', 'propiedad', 'property', 'venta', 'sale', 'en-venta', 'departamentos'])
+      const parts = new URL(url).pathname.split('/').filter(p => p && !SKIP.has(p.toLowerCase()))
+      const slug = parts[parts.length - 1]
+      if (slug) return slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+    } catch { /* invalid url */ }
+  }
+  return ''
 }
 
 // ─── StarRating ───────────────────────────────────────────────────────────────
@@ -199,10 +227,15 @@ function PropertyDetailModal({ record, primaryColor, secondaryColor, token = nul
   const [cur, setCur] = useState(0)
   const images = detectImages(record.data)
   const entries = detectTextEntries(record.data, images)
-  const priceEntry = findRole(entries, /precio|price|costo|valor|monto/i)
-  const titleEntry = findRole(entries, /nombre|name|proyecto|titulo|title/i)
-  const locEntry = findRole(entries, /ubicacion|location|district|zona|ciudad/i)
-  const others = entries.filter(e => e !== priceEntry && e !== titleEntry && e !== locEntry)
+  const priceEntry  = findRole(entries, /precio|price|costo|valor|monto/i)
+  const titleEntry  = findRole(entries, /nombre|name|proyecto|titulo|title/i)
+  const locEntry    = findRole(entries, /ubicacion|location|district|zona|ciudad/i)
+  const statusEntry = findRole(entries, /^estado/i)
+  const descEntry   = findRole(entries, /^descripci/i)
+  const modelEntry  = entries.find(e => e.key === 'modelo')
+  const excluded    = new Set([priceEntry, titleEntry, locEntry, statusEntry, descEntry, modelEntry].filter(Boolean) as TextEntry[])
+  const others      = entries.filter(e => !excluded.has(e))
+  const title       = record.project_name || titleEntry?.value || '—'
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -213,12 +246,23 @@ function PropertyDetailModal({ record, primaryColor, secondaryColor, token = nul
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
-          <div>
-            <h3 className="font-bold text-slate-800 text-lg">{record.project_name}</h3>
-            {locEntry && <p className="text-sm text-slate-500 flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3" />{locEntry.value}</p>}
+        <div className="flex items-start justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-bold text-slate-800 text-lg leading-snug">{title}</h3>
+              {statusEntry && (
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${statusBadgeClass(statusEntry.value)}`}>
+                  {statusEntry.value}
+                </span>
+              )}
+            </div>
+            {locEntry && (
+              <p className="text-sm text-slate-500 flex items-center gap-1 mt-0.5">
+                <MapPin className="w-3 h-3 flex-shrink-0" />{locEntry.value}
+              </p>
+            )}
           </div>
-          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors flex-shrink-0">
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors flex-shrink-0 ml-2">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -275,28 +319,38 @@ function PropertyDetailModal({ record, primaryColor, secondaryColor, token = nul
               )}
             </div>
 
+            {/* Description */}
+            {descEntry && (
+              <div className="mb-5 pb-5 border-b border-slate-100">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Descripción</p>
+                <p className="text-sm text-slate-600 leading-relaxed">{descEntry.value}</p>
+              </div>
+            )}
+
             {/* Star rating */}
             <div className="mb-5 pb-5 border-b border-slate-100">
               <StarRating recordId={record.id} token={token} onLoginRequired={onLoginRequired} />
             </div>
 
-            {/* All fields */}
-            <div className="space-y-2">
-              {others.map(e => (
-                <div key={e.key} className="flex gap-3 items-start py-2.5 border-b border-slate-50 last:border-0">
-                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide w-32 flex-shrink-0 pt-0.5">{e.label}</span>
-                  <span className="text-sm text-slate-700 flex-1 leading-relaxed break-words">
-                    {e.isArray && e.items ? (
-                      <span className="flex flex-wrap gap-1">
-                        {e.items.map((it, i) => (
-                          <span key={i} className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded-md">{it}</span>
-                        ))}
-                      </span>
-                    ) : e.value}
-                  </span>
-                </div>
-              ))}
-            </div>
+            {/* Other fields */}
+            {others.length > 0 && (
+              <div className="space-y-2">
+                {others.map(e => (
+                  <div key={e.key} className="flex gap-3 items-start py-2.5 border-b border-slate-50 last:border-0">
+                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide w-32 flex-shrink-0 pt-0.5">{e.label}</span>
+                    <span className="text-sm text-slate-700 flex-1 leading-relaxed break-words">
+                      {e.isArray && e.items ? (
+                        <span className="flex flex-wrap gap-1">
+                          {e.items.map((it, i) => (
+                            <span key={i} className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded-md">{it}</span>
+                          ))}
+                        </span>
+                      ) : e.value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -320,6 +374,8 @@ function PropertyCard({ record, primaryColor, secondaryColor, token, onLoginRequ
   const model = extractModel(record.data)
   const beds = extractBedrooms(record.data)
   const area = extractArea(record.data)
+  const projectName = resolveProjectName(record)
+  const locShort = locEntry ? locEntry.value.split(',')[0].trim() : null
 
   return (
     <>
@@ -338,18 +394,20 @@ function PropertyCard({ record, primaryColor, secondaryColor, token, onLoginRequ
             )
           }
           {/* Project badge top-right */}
-          <div className="absolute top-3 right-3">
-            <span className="text-[11px] font-bold text-white px-2.5 py-1 rounded-full shadow-lg backdrop-blur-sm"
-              style={{ backgroundColor: primaryColor + 'e0' }}>
-              {record.project_name}
-            </span>
-          </div>
+          {projectName && (
+            <div className="absolute top-3 right-3">
+              <span className="text-[11px] font-bold text-white px-2.5 py-1 rounded-full shadow-lg backdrop-blur-sm"
+                style={{ backgroundColor: primaryColor + 'e0' }}>
+                {projectName}
+              </span>
+            </div>
+          )}
           {/* Location badge bottom-left */}
-          {locEntry && (
+          {locShort && (
             <div className="absolute bottom-0 left-0 right-0 px-3 py-2 bg-gradient-to-t from-black/60 to-transparent">
               <p className="text-white text-xs flex items-center gap-1 font-medium">
                 <MapPin className="w-3 h-3 flex-shrink-0" />
-                {locEntry.value}
+                {locShort}
               </p>
             </div>
           )}
