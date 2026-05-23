@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
@@ -363,91 +364,99 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
         </AnimatePresence>
       </div>
 
-      {/* ── Lightbox ──────────────────────────────────────── */}
-      <AnimatePresence>
-        {lightboxOpen && (
-          <motion.div
-            className="fixed inset-0 z-50 flex flex-col bg-black/92"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            transition={{ duration: 0.18 }}
-            onClick={() => setLightbox(false)}
-          >
-            {/* Main image area */}
-            <div
-              className="flex-1 flex items-center justify-center relative px-16 py-6 min-h-0"
-              onClick={e => e.stopPropagation()}
+      {/* ── Lightbox (portal → escapes any transform stacking context) ── */}
+      {createPortal(
+        <AnimatePresence>
+          {lightboxOpen && (
+            <motion.div
+              className="fixed inset-0 flex flex-col bg-black"
+              style={{ zIndex: 9999 }}
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              onClick={() => setLightbox(false)}
             >
-              <AnimatePresence mode="wait">
-                <motion.img
-                  key={imgIdx}
-                  src={allImgs[imgIdx]}
-                  alt=""
-                  className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-                  initial={{ opacity: 0, scale: 0.97 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.97 }}
-                  transition={{ duration: 0.15 }}
-                />
-              </AnimatePresence>
-
-              {/* Counter */}
-              <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/50 text-white text-xs px-3 py-1 rounded-full pointer-events-none">
-                {imgIdx + 1} / {allImgs.length}
+              {/* Top bar */}
+              <div
+                className="flex-shrink-0 flex items-center justify-between px-5 py-3 bg-black/60 border-b border-white/10"
+                onClick={e => e.stopPropagation()}
+              >
+                <span className="text-white/70 text-sm font-medium">
+                  {imgIdx + 1} <span className="text-white/30">/ {allImgs.length}</span>
+                </span>
+                <button
+                  onClick={() => setLightbox(false)}
+                  className="flex items-center gap-2 px-4 py-1.5 bg-white/10 hover:bg-white/20 text-white text-sm font-semibold rounded-lg border border-white/20 transition"
+                >
+                  <FontAwesomeIcon icon={faXmark} />
+                  Cerrar
+                </button>
               </div>
 
-              {/* Close */}
-              <button
-                onClick={() => setLightbox(false)}
-                className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/25 text-white rounded-full flex items-center justify-center transition"
+              {/* Main image */}
+              <div
+                className="flex-1 flex items-center justify-center relative px-16 py-6 min-h-0"
+                onClick={e => e.stopPropagation()}
               >
-                <FontAwesomeIcon icon={faXmark} />
-              </button>
+                <AnimatePresence mode="wait">
+                  <motion.img
+                    key={imgIdx}
+                    src={allImgs[imgIdx]}
+                    alt=""
+                    className="max-w-full max-h-full object-contain rounded-xl shadow-2xl"
+                    initial={{ opacity: 0, scale: 0.96 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.96 }}
+                    transition={{ duration: 0.14 }}
+                  />
+                </AnimatePresence>
 
-              {/* Prev */}
-              {allImgs.length > 1 && (
-                <button
-                  onClick={e => { e.stopPropagation(); prevImg() }}
-                  className="absolute left-4 top-1/2 -translate-y-1/2 w-12 h-12 bg-white/10 hover:bg-white/25 text-white rounded-full flex items-center justify-center transition"
-                >
-                  <FontAwesomeIcon icon={faAngleLeft} className="text-lg" />
-                </button>
-              )}
+                {/* Prev */}
+                {allImgs.length > 1 && (
+                  <button
+                    onClick={e => { e.stopPropagation(); prevImg() }}
+                    className="absolute left-4 top-1/2 -translate-y-1/2 w-12 h-12 bg-white/10 hover:bg-white/25 text-white rounded-full flex items-center justify-center transition"
+                  >
+                    <FontAwesomeIcon icon={faAngleLeft} className="text-lg" />
+                  </button>
+                )}
 
-              {/* Next */}
-              {allImgs.length > 1 && (
-                <button
-                  onClick={e => { e.stopPropagation(); nextImg() }}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 w-12 h-12 bg-white/10 hover:bg-white/25 text-white rounded-full flex items-center justify-center transition"
-                >
-                  <FontAwesomeIcon icon={faAngleRight} className="text-lg" />
-                </button>
-              )}
-            </div>
+                {/* Next */}
+                {allImgs.length > 1 && (
+                  <button
+                    onClick={e => { e.stopPropagation(); nextImg() }}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 w-12 h-12 bg-white/10 hover:bg-white/25 text-white rounded-full flex items-center justify-center transition"
+                  >
+                    <FontAwesomeIcon icon={faAngleRight} className="text-lg" />
+                  </button>
+                )}
+              </div>
 
-            {/* Thumbnail strip */}
-            <div
-              className="flex-shrink-0 flex gap-2 overflow-x-auto px-6 py-3 bg-black/40 border-t border-white/10"
-              style={{ scrollbarWidth: 'thin', scrollbarColor: '#555 transparent' }}
-              onClick={e => e.stopPropagation()}
-            >
-              {allImgs.map((src, i) => (
-                <button
-                  key={i}
-                  ref={el => { thumbRefsBox.current[i] = el }}
-                  onClick={() => setImgIdx(i)}
-                  className={`w-16 h-12 flex-shrink-0 rounded overflow-hidden border-2 transition-all ${
-                    i === imgIdx
-                      ? 'border-white opacity-100 scale-105'
-                      : 'border-transparent opacity-45 hover:opacity-80'
-                  }`}
-                >
-                  <img src={src} alt="" className="w-full h-full object-cover" />
-                </button>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+              {/* Thumbnail strip */}
+              <div
+                className="flex-shrink-0 flex gap-2 overflow-x-auto px-6 py-3 bg-black/50 border-t border-white/10"
+                style={{ scrollbarWidth: 'thin', scrollbarColor: '#555 transparent' }}
+                onClick={e => e.stopPropagation()}
+              >
+                {allImgs.map((src, i) => (
+                  <button
+                    key={i}
+                    ref={el => { thumbRefsBox.current[i] = el }}
+                    onClick={() => setImgIdx(i)}
+                    className={`w-16 h-12 flex-shrink-0 rounded-lg overflow-hidden border-2 transition-all ${
+                      i === imgIdx
+                        ? 'border-white opacity-100 scale-105'
+                        : 'border-transparent opacity-40 hover:opacity-80'
+                    }`}
+                  >
+                    <img src={src} alt="" className="w-full h-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </div>
   )
 }

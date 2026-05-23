@@ -95,7 +95,9 @@ def _update_proyecto_shared(db, proyecto_id, shared_data: dict) -> None:
         return
     col_kwargs, _ = _map_data_to_columns(shared_data, is_child=False)
     for col, val in col_kwargs.items():
-        if getattr(proj, col, None) is None:
+        # Child shared fields come from the project detail page (more specific than
+        # the listing page), so they always overwrite whatever the root node scraped.
+        if val is not None and val != '':
             setattr(proj, col, val)
     db.flush()
 

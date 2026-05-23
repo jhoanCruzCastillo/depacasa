@@ -58,7 +58,8 @@ export function extractTitle(d: Record<string, unknown>): string {
 }
 
 export function extractLocation(d: Record<string, unknown>) {
-  return pick(d, ['ubicación', 'ubicacion', 'location', 'distrito', 'ciudad', 'zona', 'direccion', 'barrio'])
+  const raw = pick(d, ['ubicación', 'ubicacion', 'location', 'distrito', 'ciudad', 'zona', 'direccion', 'barrio'])
+  return raw.replace(/\s*\n\s*/g, ', ').replace(/\s{2,}/g, ' ').trim()
 }
 
 export function extractStatus(d: Record<string, unknown>) {
