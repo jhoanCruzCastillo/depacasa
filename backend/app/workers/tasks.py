@@ -60,6 +60,13 @@ _PROPIEDAD_ALIASES = {
 }
 
 
+_PROJECT_LEVEL_FIELDS = (
+    _PROYECTO_COLS
+    | set(_PROYECTO_ALIASES.keys())
+    | {"url_propiedad", "url_proyecto"}
+)
+
+
 def _map_data_to_columns(data: dict, is_child: bool) -> tuple[dict, dict]:
     """Split scraped data dict into (column_kwargs, extra_data)."""
     cols    = _PROPIEDAD_COLS    if is_child else _PROYECTO_COLS
@@ -70,6 +77,8 @@ def _map_data_to_columns(data: dict, is_child: bool) -> tuple[dict, dict]:
         col = aliases.get(key, key)
         if col in cols:
             kwargs[col] = val
+        elif is_child and (key in _PROJECT_LEVEL_FIELDS or col in _PROJECT_LEVEL_FIELDS):
+            pass  # drop project-level fields from propiedad records
         else:
             extra[key] = val
     return kwargs, extra
@@ -383,6 +392,11 @@ async def _scrape_node(
                 for item_data in items:
                     child_data = {k: v for k, v in item_data.items() if k not in shared_field_names}
                     col_kwargs, extra = _map_data_to_columns(child_data, is_child=True)
+                    # Skip records with no property-specific data (e.g. related-project cards
+                    # scraped from the detail page due to overly broad selectors)
+                    if not any(v is not None and v != '' for v in col_kwargs.values()):
+                        logger.debug("[scrape] skipping child item with no propiedad columns")
+                        continue
                     record = Propiedad(
                         proyecto_id=proyecto_id,
                         status=RecordStatus.SUCCESS,

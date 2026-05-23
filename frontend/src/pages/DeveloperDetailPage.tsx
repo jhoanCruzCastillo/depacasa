@@ -9,15 +9,13 @@ import {
   faScrewdriverWrench,
 } from '@fortawesome/free-solid-svg-icons'
 import {
-  getDeveloper, updateDeveloper, getDeveloperUrlNodes,
-  getDeveloperRecords, deleteRecords, getDeveloperTemplate,
+  getDeveloper, updateDeveloper,
+  getDeveloperRecords, deleteRecords,
 } from '../services/api'
 import { ScrapedRecord } from '../types'
 import toast from 'react-hot-toast'
-import { TNode } from './developers/types'
 import { slidePanel } from './developers/animations'
 import { extractTitle, extractLocation } from './developers/helpers/extractors'
-import { collectChildUrls, normalizeUrl } from './developers/helpers/childUrls'
 import ProjectCard         from './developers/components/ProjectCard'
 import PropertyModal       from './developers/components/PropertyModal'
 import ProjectDetailPanel  from './developers/components/ProjectDetailPanel'
@@ -40,52 +38,29 @@ export default function DeveloperDetailPage() {
     enabled: !!id,
   })
 
-  const { data: nodes = [] } = useQuery({
-    queryKey: ['developerNodes', id],
-    queryFn:  () => getDeveloperUrlNodes(id!).then(r => r.data),
-    enabled: !!id,
-  })
-
-  const { data: templateData } = useQuery({
-    queryKey: ['template', id],
-    queryFn:  () => getDeveloperTemplate(id!).then(r => r.data),
-    enabled: !!id,
-  })
-
   const { data: records = [], isLoading: loadingRecords } = useQuery({
     queryKey: ['records', id],
     queryFn:  () => getDeveloperRecords(id!).then(r => r.data),
     enabled: !!id,
   })
 
-  const templateNodes = (templateData?.nodes || []) as TNode[]
-  const treeNodes     = (templateNodes.length ? templateNodes : nodes) as TNode[]
-
-  const rootNodes = useMemo(() =>
-    treeNodes.filter(n => !n.parent_id).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
-    [treeNodes]
+  // Separate records by type using the new schema
+  const proyectos = useMemo(() =>
+    (records as ScrapedRecord[]).filter(r => r.type === 'proyecto'),
+    [records]
   )
 
-  const childNodesByParent = useMemo(() => {
-    const m: Record<string, TNode[]> = {}
-    treeNodes.forEach(n => {
-      if (!n.parent_id) return
-      ;(m[n.parent_id] ??= []).push(n)
-    })
-    return m
-  }, [treeNodes])
-
-  const childUrlFieldsByNode = useMemo(() => {
-    const m: Record<string, string[]> = {}
-    templateNodes.forEach(n => { m[n.id] = (n.fields || []).filter(f => f.is_child_url).map(f => f.name) })
-    return m
-  }, [templateNodes])
-
-  const recordsByNodeId = useMemo(() => {
+  const propiedadesByProyectoId = useMemo(() => {
     const m: Record<string, ScrapedRecord[]> = {}
-    ;(records as ScrapedRecord[]).forEach(r => {
-      ;(m[r.url_node_id] ??= []).push(r)
-    })
+    ;(records as ScrapedRecord[])
+      .filter(r => {
+        if (r.type !== 'propiedad' || !r.proyecto_id) return false
+        // Exclude records with no property-specific data (mis-scraped project cards)
+        const d = r.data || {}
+        return d.modelo != null || d.dormitorios != null || d.m2 != null
+          || d.imagen_modelo != null || d.modelo_imagen != null
+      })
+      .forEach(r => { ;(m[r.proyecto_id!] ??= []).push(r) })
     return m
   }, [records])
 
@@ -117,51 +92,27 @@ export default function DeveloperDetailPage() {
     finally { setClearing(false) }
   }
 
-  const allProjects = useMemo(() =>
-    rootNodes.flatMap(n => recordsByNodeId[n.id] || []),
-    [rootNodes, recordsByNodeId]
-  )
-
   const filteredProjects = useMemo(() => {
-    if (!projectSearch.trim()) return allProjects
+    if (!projectSearch.trim()) return proyectos
     const q = projectSearch.toLowerCase()
-    return allProjects.filter(r => {
+    return proyectos.filter(r => {
       const d = r.data || {}
       return extractTitle(d).toLowerCase().includes(q) || extractLocation(d).toLowerCase().includes(q)
     })
-  }, [allProjects, projectSearch])
+  }, [proyectos, projectSearch])
 
   const childRecordsForSelected = useMemo((): ScrapedRecord[] => {
     if (!selectedId) return []
-    const parent = allProjects.find(r => r.id === selectedId)
-    if (!parent) return []
-    const children = childNodesByParent[parent.url_node_id] || []
-    if (!children.length) return []
-    return children.flatMap(childNode => {
-      const allForNode = recordsByNodeId[childNode.id] || []
-      const childUrls  = collectChildUrls(parent, childUrlFieldsByNode[parent.url_node_id])
-      if (!childUrls.length) return allForNode
-      const urlSet = new Set(childUrls.map(normalizeUrl))
-      return allForNode.filter(r => urlSet.has(normalizeUrl(r.source_url || '')))
-    })
-  }, [selectedId, allProjects, childNodesByParent, recordsByNodeId, childUrlFieldsByNode])
+    return propiedadesByProyectoId[selectedId] || []
+  }, [selectedId, propiedadesByProyectoId])
 
   const childCountByProjectId = useMemo(() => {
     const m: Record<string, number> = {}
-    allProjects.forEach(proj => {
-      const children  = childNodesByParent[proj.url_node_id] || []
-      if (!children.length) { m[proj.id] = 0; return }
-      const childUrls = collectChildUrls(proj, childUrlFieldsByNode[proj.url_node_id])
-      const urlSet    = new Set(childUrls.map(normalizeUrl))
-      m[proj.id] = children.reduce((sum, cn) => {
-        const all = recordsByNodeId[cn.id] || []
-        return sum + (childUrls.length ? all.filter(r => urlSet.has(normalizeUrl(r.source_url || ''))).length : all.length)
-      }, 0)
-    })
+    proyectos.forEach(p => { m[p.id] = (propiedadesByProyectoId[p.id] || []).length })
     return m
-  }, [allProjects, childNodesByParent, childUrlFieldsByNode, recordsByNodeId])
+  }, [proyectos, propiedadesByProyectoId])
 
-  const selectedRecord = selectedId ? allProjects.find(r => r.id === selectedId) ?? null : null
+  const selectedRecord = selectedId ? proyectos.find(r => r.id === selectedId) ?? null : null
   const panelOpen      = !!selectedRecord
 
   if (loadingDev) {

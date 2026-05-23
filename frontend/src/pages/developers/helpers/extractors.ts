@@ -60,7 +60,7 @@ export function extractLocation(d: Record<string, unknown>) {
 }
 
 export function extractStatus(d: Record<string, unknown>) {
-  return pick(d, ['estado del proyecto', 'estado', 'estado_proyecto', 'status', 'disponibilidad', 'estado_disponibilidad'])
+  return pick(d, ['estado_del_proyecto', 'estado del proyecto', 'estado', 'estado_proyecto', 'status', 'disponibilidad', 'estado_disponibilidad'])
 }
 
 export function extractBedrooms(d: Record<string, unknown>): string {
@@ -97,7 +97,10 @@ export function extractPrice(d: Record<string, unknown>): string {
   if (!raw) return ''
   if (/S\/|USD|\$|PEN/i.test(raw)) return raw
   const n = parseFloat(raw.replace(/[^\d.]/g, ''))
-  return (!isNaN(n) && n > 0) ? `S/ ${n.toLocaleString('es-PE')}` : raw
+  if (!isNaN(n) && n > 0) return `S/ ${n.toLocaleString('es-PE')}`
+  // Si no tiene dígitos ni símbolo de moneda, no es un precio válido
+  if (!/\d/.test(raw)) return ''
+  return raw
 }
 
 export function extractArea(d: Record<string, unknown>): string {
@@ -122,8 +125,8 @@ export function extractTags(d: Record<string, unknown>, keys: string[]): string[
 
 export function statusClass(s: string) {
   const t = (s || '').toLowerCase()
-  if (t.includes('complet') || t.includes('disponib') || t.includes('inmediata')) return 'bg-green-100 text-green-700'
-  if (t.includes('parcial') || t.includes('preventa') || t.includes('construc')) return 'bg-yellow-100 text-yellow-700'
+  if (t.includes('complet') || t.includes('disponib') || t.includes('inmediata') || t.includes('entrega')) return 'bg-green-100 text-green-700'
+  if (t.includes('parcial') || t.includes('preventa') || t.includes('construc') || t.includes('próx') || t.includes('prox')) return 'bg-yellow-100 text-yellow-700'
   if (t.includes('error') || t.includes('agotad') || t.includes('vendid'))       return 'bg-red-100 text-red-700'
   return 'bg-gray-100 text-gray-600'
 }
