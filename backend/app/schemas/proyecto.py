@@ -19,6 +19,8 @@ class ProyectoResponse(BaseModel):
     areas_comunes: Optional[Any] = None
     areas_comunes_imagenes: Optional[Any] = None
     lugares_cercanos: Optional[Any] = None
+    gmaps_url: Optional[str] = None
+    gmaps_coordinates: Optional[str] = None
     extra_data: Optional[dict] = None
 
     class Config:

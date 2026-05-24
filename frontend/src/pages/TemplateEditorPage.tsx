@@ -71,6 +71,8 @@ const PROPIEDAD_COLUMNS: ColumnDef[] = [
   { value: 'areas_comunes',    label: 'Áreas comunes lista (→ proyecto)', autoToggles: { is_shared: true, is_list: true } },
   { value: 'areas_comunes_imagenes', label: 'Áreas comunes imágenes (→ proyecto)', autoToggles: { is_shared: true, is_list: true, is_image: true } },
   { value: 'areas_comunes_exterior_e_interior_img', label: 'Imágenes áreas ext/int (→ proyecto)', autoToggles: { is_shared: true, is_list: true, is_image: true } },
+  { value: 'gmaps_url',         label: 'URL Google Maps (→ proyecto)',         autoToggles: { is_shared: true, extract_attr: 'href' } },
+  { value: 'gmaps_coordinates', label: 'Coordenadas Google Maps (→ proyecto)', autoToggles: { is_shared: true } },
 ]
 
 // ─── Tab types ────────────────────────────────────────────────────────────────

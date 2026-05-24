@@ -32,6 +32,8 @@ _PROYECTO_COLS = {
     "areas_comunes",
     "areas_comunes_imagenes",
     "lugares_cercanos",
+    "gmaps_url",
+    "gmaps_coordinates",
 }
 _PROYECTO_ALIASES = {
     "nombre del proyecto": "nombre",
@@ -100,6 +102,23 @@ def _update_proyecto_shared(db, proyecto_id, shared_data: dict) -> None:
         if val is not None and val != '':
             setattr(proj, col, val)
     db.flush()
+
+
+async def _resolve_gmaps_coordinates(short_url: str) -> str | None:
+    """Follow a maps.app.goo.gl (or any Google Maps) short URL and extract 'lat,lng'."""
+    import httpx, re
+    if not short_url or "google.com/maps" not in short_url and "goo.gl" not in short_url and "maps.app" not in short_url:
+        return None
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
+            r = await client.get(short_url)
+            final_url = str(r.url)
+        m = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', final_url)
+        if m:
+            return f"{m.group(1)},{m.group(2)}"
+    except Exception:
+        pass
+    return None
 
 
 async def _download_image(url: str, developer_id: str) -> str:
@@ -384,12 +403,19 @@ async def _scrape_node(
 
         saved_proyecto_ids: list = []
 
+        # Track gmaps_url that need coordinate resolution after the DB transaction
+        _gmaps_to_resolve: list[tuple] = []  # list of (proyecto_id, gmaps_url)
+
         with get_db_context() as db:
             if is_child:
                 # Shared fields in the child node → update the parent Proyecto record
                 if proyecto_id and shared_field_names and items:
                     shared_vals = {k: v for k, v in items[0].items() if k in shared_field_names}
                     _update_proyecto_shared(db, proyecto_id, shared_vals)
+                    # Queue coordinate resolution if gmaps_url was shared
+                    gurl = shared_vals.get("gmaps_url")
+                    if gurl and proyecto_id:
+                        _gmaps_to_resolve.append((proyecto_id, gurl))
 
                 for item_data in items:
                     child_data = {k: v for k, v in item_data.items() if k not in shared_field_names}
@@ -424,8 +450,23 @@ async def _scrape_node(
                     db.add(record)
                     db.flush()
                     saved_proyecto_ids.append(record.id)
+                    # Root node can also supply gmaps_url directly
+                    if col_kwargs.get("gmaps_url") and not col_kwargs.get("gmaps_coordinates"):
+                        _gmaps_to_resolve.append((record.id, col_kwargs["gmaps_url"]))
             db.commit()
             total += len(items)
+
+        # Resolve Google Maps short URLs → coordinates (after DB transaction)
+        for proj_id, gurl in _gmaps_to_resolve:
+            coords = await _resolve_gmaps_coordinates(gurl)
+            if coords:
+                with get_db_context() as db2:
+                    from app.models.proyecto import Proyecto as _Proj
+                    proj = db2.query(_Proj).filter(_Proj.id == proj_id).first()
+                    if proj and not proj.gmaps_coordinates:
+                        proj.gmaps_coordinates = coords
+                        db2.commit()
+                        logger.info(f"[gmaps] resolved coords for proyecto {proj_id}: {coords}")
 
         # Process child nodes via is_child_url fields
         child_nodes = [n for n in all_nodes if n["parent_id"] == node["id"]]

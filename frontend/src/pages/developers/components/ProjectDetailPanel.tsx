@@ -6,7 +6,7 @@ import {
   faBuilding, faXmark, faCircleCheck, faLocationDot, faGlobe,
   faArrowUpRightFromSquare, faHome, faCalendarDays,
   faMagnifyingGlass, faFilter, faChevronRight,
-  faAngleLeft, faAngleRight, faExpand,
+  faAngleLeft, faAngleRight, faExpand, faMapLocationDot,
 } from '@fortawesome/free-solid-svg-icons'
 import { ScrapedRecord } from '../../../types'
 import { allImages, looksLikeImage } from '../helpers/media'
@@ -28,6 +28,7 @@ const SUMMARY_FIELDS = new Set([
   'descripcion', 'descripción', 'description', 'resumen', 'detalle', 'acerca',
   'nombre', 'name', 'titulo', 'title', 'proyecto', 'project_name', 'nombre_proyecto',
   'url_propiedad', 'url_proyecto', 'url', 'link', 'href',
+  'gmaps_url', 'gmaps_coordinates',
 ])
 
 const FIELD_LABELS: Record<string, string> = {
@@ -120,10 +121,12 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
   const thumbRefsStrip = useRef<(HTMLButtonElement | null)[]>([])
   const thumbRefsBox   = useRef<(HTMLButtonElement | null)[]>([])
 
-  const d       = record.data || {}
-  const status  = extractStatus(d) || recordStatusLabel(record.status)
-  const url     = pick(d, ['url_propiedad', 'url', 'link', 'href'])
-  const lastUpd = new Date(record.scraped_at).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: '2-digit' })
+  const d             = record.data || {}
+  const status        = extractStatus(d) || recordStatusLabel(record.status)
+  const url           = pick(d, ['url_propiedad', 'url', 'link', 'href'])
+  const gmapsUrl      = pick(d, ['gmaps_url'])
+  const gmapsCoords   = pick(d, ['gmaps_coordinates'])
+  const lastUpd       = new Date(record.scraped_at).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: '2-digit' })
 
   const allImgs = useMemo(() => allImages(d), [d])
 
@@ -283,6 +286,21 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
                 {url.replace(/^https?:\/\//, '').slice(0, 50)}
                 <FontAwesomeIcon icon={faArrowUpRightFromSquare} className="ml-1 text-[9px]" />
               </a>
+            </div>
+          )}
+          {gmapsUrl && (
+            <div className="flex items-center gap-1.5">
+              <FontAwesomeIcon icon={faMapLocationDot} className="text-green-500 w-3 flex-shrink-0" />
+              <a href={gmapsUrl} target="_blank" rel="noopener noreferrer"
+                className="text-green-600 hover:underline truncate text-xs font-medium">
+                Ver en Google Maps
+                <FontAwesomeIcon icon={faArrowUpRightFromSquare} className="ml-1 text-[9px]" />
+              </a>
+              {gmapsCoords && (
+                <span className="text-gray-400 text-[10px] font-mono ml-1 truncate">
+                  ({gmapsCoords})
+                </span>
+              )}
             </div>
           )}
         </div>

@@ -26,6 +26,8 @@ class Proyecto(Base):
     areas_comunes                        = Column(JSONB, nullable=True)
     areas_comunes_imagenes               = Column(JSONB, nullable=True)
     lugares_cercanos                     = Column(JSONB, nullable=True)
+    gmaps_url                            = Column(Text, nullable=True)
+    gmaps_coordinates                    = Column(Text, nullable=True)
     extra_data                           = Column(JSONB, default=dict)
 
     developer   = relationship("Developer", back_populates="proyectos")
@@ -35,7 +37,8 @@ class Proyecto(Base):
         d = {}
         for col in ("nombre", "estado_del_proyecto", "ubicacion", "precio_desde", "imagen",
                     "descripcion", "areas_comunes_exterior_e_interior_img",
-                    "areas_comunes", "areas_comunes_imagenes", "lugares_cercanos"):
+                    "areas_comunes", "areas_comunes_imagenes", "lugares_cercanos",
+                    "gmaps_url", "gmaps_coordinates"):
             val = getattr(self, col)
             if val is not None:
                 d[col] = val

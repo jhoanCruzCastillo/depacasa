@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
     FROM_EMAIL: str = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
 
+    # Google Maps
+    GOOGLE_MAPS_API_KEY: str = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    VITE_GOOGLE_MAPS_API_KEY: str = os.getenv("VITE_GOOGLE_MAPS_API_KEY", "")
+
     # CORS
     CORS_ORIGINS: list = ["http://localhost:5173", "http://localhost:3000"]
     
