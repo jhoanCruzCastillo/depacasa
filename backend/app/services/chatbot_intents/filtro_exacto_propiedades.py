@@ -29,14 +29,49 @@ async def handle(runtime: IntentRuntime) -> IntentResult | None:
     # ── by_id: fetch exact property by UUID ──────────────────────────────────
     if filter_type == "by_id":
         record_id = filter_spec["record_id"]
-        ctx = dict(session.extracted_criteria or {})
+        prev_ctx = dict(session.extracted_criteria or {})
+        prev_list = list(session.matched_record_ids or [])
+        prev_index = session.current_match_index or 0
+        prev_list_mode = prev_ctx.get("_list_mode")
+
+        # Only suspend if we're interrupting an active multi-item search result
+        has_suspendable_list = (
+            runtime.state == "presenting"
+            and len(prev_list) > 1
+            and prev_list_mode != "by_id"
+        )
+
+        ctx = {k: v for k, v in prev_ctx.items() if k != "_suspended_list"}
+        if has_suspendable_list:
+            ctx["_suspended_list"] = {
+                "ids": prev_list,
+                "index": prev_index,
+                "list_mode": prev_list_mode,
+            }
         ctx["_list_mode"] = "by_id"
         session.extracted_criteria = ctx
         session.matched_record_ids = [record_id]
         session.current_match_index = 0
         session.state = "presenting"
         session.info_step = 7
-        return IntentResult(response=await runtime.acall("show_property_by_id", record_id))
+
+        response = await runtime.acall("show_property_by_id", record_id)
+
+        if has_suspendable_list:
+            response = dict(response)
+            msg = (response.get("message") or "").strip()
+            if prev_list_mode == "filtered_by_rating":
+                resume_q = "¿Seguimos con tus propiedades calificadas?"
+            elif prev_list_mode == "interested":
+                resume_q = "¿Seguimos viendo tus propiedades de interés?"
+            else:
+                resume_q = "¿Seguimos con las propiedades que estabamos revisando?"
+            response["message"] = msg + "\n\n" + resume_q
+            session.state = "collecting_info"
+            session.info_step = 13
+            response["state"] = "collecting_info"
+
+        return IntentResult(response=response)
 
     # ── by_rating: filter by star rating ─────────────────────────────────────
     if filter_type == "by_rating":

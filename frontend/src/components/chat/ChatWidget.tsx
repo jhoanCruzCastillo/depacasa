@@ -593,9 +593,15 @@ export default function ChatWidget({
     try {
       const res = await sendWebChatMessage(sessionId, payload)
       setMessages(m => {
-        const next = [...m, { role: 'assistant' as const, content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }]
+        const preludes: Message[] = (res.data.prelude_messages || []).map((content: string) => ({
+          role: 'assistant' as const,
+          content,
+          card: null,
+          quick_replies: [],
+        }))
+        const main: Message = { role: 'assistant', content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }
         if (res.data.card && !user && !showRegBanner) setShowRegBanner(true)
-        return next
+        return [...m, ...preludes, main]
       })
       setState(res.data.state)
     } catch {

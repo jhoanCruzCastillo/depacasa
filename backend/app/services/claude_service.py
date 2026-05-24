@@ -292,23 +292,20 @@ def _fallback_quick_replies(
     st = (state or "").strip().lower()
 
     if has_card:
-        return ["Ver siguiente", "Lo quiero", "Quiero ajustar filtros"]
-
-    if "elige una opcion" in msg or ("1." in assistant_message and "2." in assistant_message):
-        return ["1", "2", "Quiero ajustar busqueda"]
+        return ["Ver siguiente", "Lo quiero", "Ajustar criterios"]
 
     if "solo me falta" in msg or "aun me faltan" in msg:
         return ["Te comparto mis datos", "Prefiero continuar buscando"]
 
     if "ya viste todas" in msg:
-        return ["Ajustar mis parametros de busqueda", "Volver a ver las propiedades"]
+        return ["Ajustar criterios", "Ver propiedades vistas"]
 
     if st == "contact_requested":
-        return ["Ver propiedades similares", "Ver propiedades que me interesan"]
+        return ["Ver opciones nuevas", "Ver propiedades vistas"]
 
     if has_saved_criteria:
-        return ["Si, adelante", "Ver propiedades no vistas", "Ver propiedades vistas"]
-    return ["Si, adelante", "No por ahora", "Quiero ajustar la busqueda"]
+        return ["Iniciar busqueda ahora", "Ver novedades", "Ajustar criterios"]
+    return ["Si, busca propiedades", "No por ahora", "Ajustar criterios"]
 
 
 _QUICK_REPLIES_SYSTEM = """\
@@ -317,15 +314,18 @@ Responde SOLO JSON valido sin markdown con este formato:
 {"options": ["opcion 1", "opcion 2", "opcion 3"]}
 
 Reglas:
-- Entre 2 y 4 opciones cortas (max 64 caracteres), accionables y clickeables.
+- Entre 2 y 4 opciones cortas (max 50 caracteres), accionables y clickeables.
 - Deben encajar con el ultimo mensaje del asistente y el estado conversacional.
-- Incluye opciones tipo Si/No cuando aplique.
 - No inventes datos.
 
-Acciones DISPONIBLES en el chatbot:
-  calificar la propiedad, ver la siguiente propiedad, ajustar criterios de busqueda,
-  iniciar una nueva busqueda, ver propiedades ya vistas, marcar interes ("Lo quiero"),
-  consultar detalles de la propiedad actual.
+USA EXACTAMENTE estas frases cuando correspondan (el sistema las detecta por texto exacto):
+  PARA BUSCAR NUEVAS/NO VISTAS: "Ver novedades" | "Ver opciones nuevas" | "Ver propiedades nuevas"
+  PARA CONFIRMAR/BUSCAR CON PREFERENCIAS: "Iniciar busqueda ahora" | "Usar preferencias actuales" | "Si, busca propiedades"
+  PARA VER YA VISTAS: "Ver propiedades vistas" | "Propiedades que ya vi"
+  PARA AJUSTAR: "Ajustar criterios" | "Ajustar preferencias" | "Cambiar criterios"
+  PARA SIGUIENTE PROPIEDAD: "Ver siguiente"
+  PARA MARCAR INTERES: "Lo quiero"
+  PARA NEGAR: "No por ahora" | "Prefiero no"
 
 Acciones PROHIBIDAS — NO sugieras NUNCA:
   - "Guardar esta propiedad" ni ninguna variante de guardar/favoritos/lista de deseos.
@@ -1004,6 +1004,7 @@ Reglas:
 - Si el mensaje es saludo o charla informal: responde con naturalidad e invita a continuar segun el estado.
 - Si es una pregunta fuera del dominio inmobiliario: explica brevemente lo que puedes hacer.
 - NO inventes propiedades ni datos. NO uses emojis excesivos.
+- NUNCA uses listas numeradas ni viñetas. No ofrezcas opciones numeradas (1. ... 2. ...).
 - Responde SOLO el texto, sin JSON, sin markdown, en espanol, maximo 2 oraciones.
 """
 
@@ -1062,3 +1063,44 @@ async def generate_criteria_acknowledgment(user_text: str) -> str:
     except Exception as e:
         logger.warning(f"generate_criteria_acknowledgment error: {e}")
         return "Entendido, aplicando los nuevos parametros."
+
+
+_RETURNING_USER_GREETING_SYSTEM = """\
+Eres un asesor inmobiliario amigable que retoma la conversacion con un cliente que ya habia hablado contigo antes.
+Tu objetivo es darle la bienvenida de forma natural, mencionar brevemente sus preferencias guardadas (sin listas ni datos crudos), \
+y preguntarle como quiere continuar.
+Reglas:
+- Maximo 70 palabras.
+- Tono calido y cercano, como un amigo que te conoce.
+- Menciona una o dos preferencias clave de forma conversacional, no como una lista.
+- Termina con una pregunta abierta o dos opciones breves (sin numeros).
+- Sin "Rehidrate", "contexto", "criterios", "registros" ni jerga tecnica.
+- Sin signos de exclamacion en exceso (maximo uno).
+- NUNCA uses listas numeradas ni opciones (1. ... 2. ...). Las opciones aparecen como botones.
+- Solo el texto del mensaje, sin markdown ni JSON.
+"""
+
+
+async def generate_returning_user_greeting(user_name: str, summary: str) -> str:
+    """Generate a warm, natural greeting for a returning user with saved preferences."""
+    prompt = (
+        f"El nombre del cliente es: {user_name}\n"
+        f"Sus preferencias guardadas son: {summary}\n"
+        "Escribe el mensaje de bienvenida."
+    )
+    try:
+        response = _get_client().messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=150,
+            system=_RETURNING_USER_GREETING_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        logger.warning(f"generate_returning_user_greeting error: {e}")
+        name_part = user_name if user_name and user_name != "de nuevo" else ""
+        greeting = f"Hola{' ' + name_part if name_part else ''}. Qué bueno tenerte de nuevo."
+        if summary and summary != "sin criterios guardados todavía":
+            greeting += f" Recuerdo que estabas buscando: {summary}."
+        greeting += " ¿Seguimos con esa búsqueda o prefieres ajustar algo?"
+        return greeting

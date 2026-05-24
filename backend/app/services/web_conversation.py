@@ -288,7 +288,7 @@ def _has_actionable_criteria(criteria: dict | None) -> bool:
 def _is_affirmative_message(text: str) -> bool:
     yes_words = {
         "si", "sí", "claro", "dale", "ok", "okay", "bueno", "vamos",
-        "adelante", "perfecto", "listo", "de acuerdo", "hazlo", "busca",
+        "adelante", "perfecto", "listo", "de acuerdo", "hazlo",
     }
     norm = _normalize_text(text).strip()
     if not norm:
@@ -302,7 +302,13 @@ def _is_affirmative_message(text: str) -> bool:
         return True
     if tokens[0] in {"si", "sí"}:
         return True
-    return any(w in norm for w in ["verlas", "ver opciones", "mostrar opciones", "quiero ver", "si, ver", "si ver"])
+    affirmative_phrases = [
+        "verlas", "ver opciones", "mostrar opciones", "quiero ver", "si, ver", "si ver",
+        "usar mis preferencias", "iniciar busqueda ahora", "iniciar con estas preferencias",
+        "buscar con mis preferencias", "buscar ahora", "empezar busqueda", "iniciar busqueda",
+        "continuar con mis preferencias", "usar preferencias actuales", "buscar con mis datos",
+    ]
+    return any(w in norm for w in affirmative_phrases)
 
 
 def _is_negative_message(text: str) -> bool:
@@ -405,7 +411,14 @@ def _summarize_preferences(criteria: dict | None) -> str:
     if c.get("area_exact"):
         parts.append(f"{c.get('area_exact')} m2")
     elif c.get("area_min") or c.get("area_max"):
-        parts.append(f"área {c.get('area_min', '?')}–{c.get('area_max', '?')} m2")
+        a_min = c.get("area_min")
+        a_max = c.get("area_max")
+        if a_min is not None and a_max is not None:
+            parts.append(f"área {int(a_min)}–{int(a_max)} m2")
+        elif a_min is not None:
+            parts.append(f"área desde {int(a_min)} m2")
+        else:
+            parts.append(f"área hasta {int(a_max)} m2")
     budget = _format_budget(c.get("min_price"), c.get("max_price"))
     if budget:
         parts.append(f"presupuesto {budget}")
@@ -512,7 +525,7 @@ def _fallback_not_understood() -> dict:
 
 def _is_new_unseen_request(text: str) -> bool:
     t = _normalize_text(text)
-    if t.strip() in {"1", "uno", "nuevas", "nueva"}:
+    if t.strip() in {"1", "uno", "nuevas", "nueva", "novedades"}:
         return True
 
     patterns = [
@@ -531,6 +544,12 @@ def _is_new_unseen_request(text: str) -> bool:
         "que no vi",
         "que no he visto",
         "no me mostraste",
+        "novedades disponibles",
+        "ver novedades",
+        "opciones nuevas",
+        "ver opciones nuevas",
+        "opciones disponibles",
+        "propiedades disponibles",
     ]
     if any(p in t for p in patterns):
         return True
@@ -551,7 +570,12 @@ def _is_viewed_request(text: str) -> bool:
         or "ya vistas" in t
         or "vistas" in t
         or "anteriores" in t
-        or t.strip() in {"2", "dos"}
+        or "propiedades vistas" in t
+        or "ver vistas" in t
+        or "ver las vistas" in t
+        or "propiedades que ya vi" in t
+        or "que ya revise" in t
+        or t.strip() in {"2", "dos", "vistas"}
     )
 
 
@@ -588,16 +612,25 @@ def _is_adjust_search_intent(text: str) -> bool:
         "ajustar la busqueda",
         "ajustar parametros",
         "ajustar filtros",
+        "ajustar criterios",
+        "ajustar mis criterios",
+        "ajustar preferencias",
+        "ajustar mis preferencias",
         "cambiar parametros",
         "cambiar filtros",
+        "cambiar criterios",
+        "cambiar mis criterios",
+        "cambiar preferencias",
         "cambiar zona",
         "cambiar ciudad",
         "cambiar zona o ciudad",
         "otra zona",
         "otra ciudad",
         "modificar parametros",
+        "modificar criterios",
         "nueva busqueda",
         "quiero ajustar",
+        "quiero cambiar",
     ]
     return any(h in t for h in hints)
 
@@ -626,9 +659,10 @@ def _contains_adjustment_details(text: str) -> bool:
     # Bare location token after an adjustment prompt, e.g. "Miraflores".
     tokens = re.findall(r"[a-z0-9]+", t)
     ignored = {
-        "si", "no", "ok", "okay", "hola", "gracias",
+        "si", "no", "ok", "okay", "hola", "gracias", "mis", "los", "las", "la", "el",
         "ajustar", "ajuste", "cambiar", "cambio", "filtro", "filtros",
         "parametro", "parametros", "busqueda", "zona", "ciudad", "distrito", "ubicacion",
+        "criterio", "criterios", "preferencia", "preferencias", "modificar",
     }
     if 1 <= len(tokens) <= 3 and not any(tok in ignored for tok in tokens):
         return True
@@ -669,10 +703,7 @@ def _rating_feedback(rating: int) -> str:
             "Buena señal. Esta propiedad se acerca bastante a lo que buscas, "
             "así que tomaré sus características como referencia."
         )
-    return (
-        "Excelente, esta parece una opción muy fuerte para ti. "
-        "Guardaré esta preferencia para mostrarte propiedades similares."
-    )
+    return "Excelente, esta encaja muy bien contigo."
 
 
 def _country_to_doc_label(country: str | None) -> str:
@@ -1064,13 +1095,24 @@ def _finalize_lead_request(session: WebChatSession, clean: dict, lead: dict, db:
             },
         )
 
-    session.info_step = 4
-    session.state = "collecting_info"
-    return _text(
+    confirm_msg = (
         "Listo, ya registré tu interés en esta propiedad. "
-        "Un asesor podrá contactarte por WhatsApp para darte más información. "
-        "Si quieres, también puedo seguir mostrándote opciones similares."
+        "Un asesor podrá contactarte por WhatsApp para darte más información."
     )
+
+    next_idx = (session.current_match_index or 0) + 1
+    remaining = len(session.matched_record_ids or []) - next_idx
+    if remaining > 0:
+        hab = "propiedad" if remaining == 1 else "propiedades"
+        confirm_msg += f" Tengo {remaining} {hab} más de tu búsqueda si quieres seguir viendo."
+        session.state = "presenting"
+        session.info_step = 7
+    else:
+        confirm_msg += " ¿Quieres que busque más propiedades similares?"
+        session.state = "collecting_info"
+        session.info_step = 4
+
+    return _text(confirm_msg)
 
 
 def _get_viewed_record_ids(site_user_id, db: Session) -> list[str]:
@@ -1664,13 +1706,8 @@ async def create_session(db: Session, site_user=None) -> tuple[WebChatSession, d
             rehydrated = True
             context_summary = summary
             user_name = site_user.name or "de nuevo"
-            greeting = (
-                f"Hola {user_name}. Rehidrate tu contexto anterior: {summary}.\n"
-                "¿Cómo quieres continuar?\n"
-                "1. Ver propiedades nuevas o que aun no has visto.\n"
-                "2. Volver a ver propiedades que ya revisaste.\n"
-                "3. Ajustar tu búsqueda."
-            )
+            from app.services.claude_service import generate_returning_user_greeting
+            greeting = await generate_returning_user_greeting(user_name, summary)
         elif isinstance(pref_v2, dict):
             context_summary = summarize_preferences_v2(pref_v2, {})
 
@@ -1869,13 +1906,9 @@ async def _process_rating_feedback(session: WebChatSession, text: str, db: Sessi
     session.info_step = 7
 
     if confirmation_parts:
-        msg = (
-            f"Anotado: {', '.join(confirmation_parts)}. "
-            "Tendré esto en cuenta para las siguientes recomendaciones. "
-            "¿Quieres ver la siguiente propiedad?"
-        )
+        msg = "Perfecto, lo tendremos en cuenta. ¿Seguimos viendo propiedades?"
     else:
-        msg = "Gracias por el comentario, lo tendré en cuenta. ¿Seguimos buscando?"
+        msg = "Gracias, lo tendré en cuenta. ¿Seguimos viendo propiedades?"
 
     return _text(msg)
 
@@ -2225,13 +2258,12 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
             session.info_step = 4
             return _text("Listo. Cuando quieras, dime qué propiedad buscas y arrancamos.")
 
-        summary = _summarize_preferences(current_criteria if has_saved_criteria else {})
         if has_saved_criteria:
             return _text(
-                f"Si quieres, busco con tus preferencias ({summary}). "
-                "También puedes responder 1 (nuevas/no vistas) o 2 (vistas)."
+                "¿Buscamos con las preferencias que ya tienes guardadas, "
+                "o prefieres ajustar algo antes?"
             )
-        return _text("¿Quieres que empecemos una búsqueda? Puedes contarme zona, dormitorios y presupuesto.")
+        return _text("¿Quieres que empecemos? Cuéntame zona, dormitorios y presupuesto.")
 
     if step == 6:
         if _is_generic_adjust_request(user_text):
@@ -2274,6 +2306,63 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
             )
         session.info_step = 5
         return await _start_search(session, user_text, db)
+
+    if step == 13:
+        # User was shown a specific property by ID and asked if they want to resume the previous list
+        ctx13 = dict(session.extracted_criteria or {})
+        suspended = dict(ctx13.get("_suspended_list") or {})
+
+        _RESUME_SIGNALS = {"sigamos", "seguimos", "continuemos", "continua", "retomemos", "retoma", "las otras", "las demas", "las restantes", "verlas", "mostrame mas", "mas opciones"}
+        _is_resume_yes = _is_affirmative_message(user_text) and (
+            not _looks_like_search_update(user_text)
+            or any(p in _normalize_text(user_text) for p in _RESUME_SIGNALS)
+        )
+        if _is_resume_yes and suspended.get("ids"):
+            suspended_ids = list(suspended["ids"])
+            suspended_index = int(suspended.get("index") or 0)
+            suspended_list_mode = suspended.get("list_mode")
+            next_index = suspended_index + 1
+
+            ctx13.pop("_suspended_list", None)
+            if suspended_list_mode:
+                ctx13["_list_mode"] = suspended_list_mode
+            else:
+                ctx13.pop("_list_mode", None)
+            session.extracted_criteria = ctx13
+            session.matched_record_ids = suspended_ids
+            session.state = "presenting"
+            session.info_step = 7
+
+            if next_index >= len(suspended_ids):
+                session.state = "collecting_info"
+                session.info_step = 4
+                session.current_match_index = len(suspended_ids)
+                return _text(
+                    "Claro, pero ya viste todas las propiedades de esa búsqueda. "
+                    "¿Quieres que busque más opciones o ajustamos los filtros?"
+                )
+
+            session.current_match_index = next_index
+            return await _show_property(session, db, suspended_ids[next_index])
+
+        if _is_negative_message(user_text):
+            ctx13.pop("_suspended_list", None)
+            ctx13.pop("_list_mode", None)
+            session.extracted_criteria = ctx13
+            session.info_step = 4
+            session.state = "collecting_info"
+            return _text("Entendido. ¿En qué más puedo ayudarte?")
+
+        # Other response: drop suspension and re-dispatch as step 4
+        ctx13.pop("_suspended_list", None)
+        session.extracted_criteria = ctx13
+        session.info_step = 4
+        runtime4 = _build_intent_runtime(session, user_text, db, 4)
+        candidates4 = candidate_intents_for_state("collecting_info", 4)
+        intent_resp4 = await dispatch_intents(runtime4, candidates4)
+        if intent_resp4 is not None:
+            return intent_resp4
+        return _fallback_not_understood()
 
     if step == 9:
         country = user_text[:80]
@@ -2351,11 +2440,11 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
     prev_snap = _clean_criteria(session.extracted_criteria)
     is_adjustment = bool(prev_snap)
     result = await _run_search(session, description, db)
-    if is_adjustment:
+    if is_adjustment and result.get("message"):
         from app.services.claude_service import generate_criteria_acknowledgment
         ack = await generate_criteria_acknowledgment(description)
-        if result.get("message"):
-            result = {**result, "message": f"{ack}\n\n{result['message']}"}
+        preludes = list(result.get("prelude_messages") or [])
+        result = {**result, "prelude_messages": [ack] + preludes}
     return result
 
 
@@ -2557,11 +2646,13 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
                     "_result_mode": existing_mode,
                     "_exhausted_unseen_ids": revisit_ids,
                 }
+                criteria_summary = _summarize_preferences(merged)
+                exhausted_detail = (
+                    f" ({criteria_summary})" if criteria_summary and criteria_summary != "sin criterios guardados todavia" else ""
+                )
                 return _text(
-                    "Ya viste todas las propiedades disponibles con esas caracteristicas. "
-                    "Elige una opcion:\n"
-                    "1. Ajustar mis parametros de busqueda.\n"
-                    "2. Volver a ver las propiedades."
+                    f"Ya viste todas las propiedades disponibles{exhausted_detail}. "
+                    "¿Quieres ajustar los criterios o volver a ver las mismas opciones?"
                 )
 
         # â”€â”€ Relaxed search: find something close to offer proactively â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2641,18 +2732,14 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         # â”€â”€ Truly nothing found â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         session.state = "collecting_info"
         session.info_step = 4
-        if beds and loc:
-            hab = "habitación" if beds == 1 else "habitaciones"
-            msg = (
-                f"Lo siento{name_part}, no encontré propiedades de {beds} {hab} "
-                f"en {loc} 😕 ¿Quieres ajustar la búsqueda?"
-            )
-        elif beds:
-            hab = "habitación" if beds == 1 else "habitaciones"
-            msg = (
-                f"Lo siento{name_part}, no encontré propiedades de {beds} {hab} 😕 "
-                "¿Quieres intentar con otros criterios?"
-            )
+        criteria_summary = _summarize_preferences(merged)
+        has_summary = criteria_summary and criteria_summary != "sin criterios guardados todavia"
+        if has_summary:
+            msg = "\n".join([
+                f"Lo siento{name_part}, no encontré propiedades que coincidan 😕",
+                f"Busqué con: {criteria_summary}",
+                "¿Quieres ajustar algún criterio para ampliar la búsqueda?",
+            ])
         elif loc:
             msg = (
                 f"Lo siento{name_part}, no encontré propiedades en {loc} 😕 "
@@ -2661,7 +2748,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         else:
             msg = (
                 f"Lo siento{name_part}, no encontré propiedades que coincidan 😕 "
-                "Descríbeme de nuevo lo que buscas y lo intento."
+                "Descíbeme de nuevo lo que buscas y lo intento."
             )
         return _text(msg)
 

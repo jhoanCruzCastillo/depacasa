@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import re
+
+_UUID_QUICK = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
 from app.services.chatbot_intents.ajustar_criterios_busqueda import handle as handle_ajustar
 from app.services.chatbot_intents.filtro_exacto_propiedades import handle as handle_filtro_exacto
 from app.services.chatbot_intents.calificar_propiedad import handle as handle_calificar
@@ -87,6 +94,16 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
                 FALLBACK_FUERA_DE_ALCANCE,
                 FALLBACK_NO_ENTENDIDO,
             ]
+        if step == 13:
+            # Awaiting yes/no to "¿Seguimos con las propiedades que estabamos revisando?"
+            # Fallbacks excluded: _collect_info step 13 handles yes/no/other directly
+            return [
+                FILTRO_EXACTO_PROPIEDADES,
+                INICIO_BUSQUEDA,
+                AJUSTAR_CRITERIOS_BUSQUEDA,
+                VER_PROPIEDADES_NUEVAS_NO_VISTAS,
+                VER_PROPIEDADES_VISTAS,
+            ]
         if step in {9, 10}:
             # Contact capture steps: include search escapes so intent-shifting users aren't stuck
             return [
@@ -147,12 +164,12 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
 def _merge_preludes(response: dict, preludes: list[str]) -> dict:
     if not preludes:
         return response
-    message = str(response.get("message") or "").strip()
-    prelude_text = "\n".join(part.strip() for part in preludes if part and part.strip())
-    if not prelude_text:
+    clean = [p.strip() for p in preludes if p and p.strip()]
+    if not clean:
         return response
     merged = dict(response)
-    merged["message"] = f"{prelude_text}\n\n{message}" if message else prelude_text
+    existing = list(response.get("prelude_messages") or [])
+    merged["prelude_messages"] = clean + existing
     return merged
 
 
@@ -160,6 +177,10 @@ async def _rank_candidates(runtime: IntentRuntime, candidates: list[str]) -> lis
     """Rank candidates using Claude with a deterministic local fallback."""
     if not candidates:
         return []
+    # Deterministic fast path: UUID in message → filtro_exacto must lead
+    if FILTRO_EXACTO_PROPIEDADES in candidates and _UUID_QUICK.search(runtime.user_text or ""):
+        rest = [c for c in candidates if c != FILTRO_EXACTO_PROPIEDADES]
+        return [FILTRO_EXACTO_PROPIEDADES] + rest
     try:
         from app.services.claude_service import rank_intents
 

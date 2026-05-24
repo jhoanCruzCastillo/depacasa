@@ -60,9 +60,21 @@ async def handle(runtime: IntentRuntime) -> IntentResult | None:
                 )
             )
         if runtime.call("looks_like_search_update", text):
+            # Clear private mode flags so a fresh search shows all matching properties
+            session.extracted_criteria = current_criteria
             session.info_step = 5
             return IntentResult(response=await runtime.acall("start_search", text))
         return None
+
+    if step == 13:
+        # Resume confirmation step: a search message abandons the suspended list and starts fresh
+        if not runtime.call("is_scope_message", text):
+            return None
+        if runtime.call("is_affirmative_message", text) or runtime.call("is_negative_message", text):
+            return None
+        session.info_step = 5
+        session.ideal_description = text
+        return IntentResult(response=await runtime.acall("start_search", text))
 
     if step != 4:
         return None
@@ -78,6 +90,9 @@ async def handle(runtime: IntentRuntime) -> IntentResult | None:
     if runtime.call("is_generic_adjust_request", text):
         return None
 
+    # Clear private mode flags (e.g. _result_mode: "new_unseen") so a fresh
+    # search shows all matching properties, not just previously unseen ones.
+    session.extracted_criteria = runtime.call("clean_criteria", session.extracted_criteria)
     session.ideal_description = text
     session.info_step = 5
     return IntentResult(response=await runtime.acall("start_search", text))

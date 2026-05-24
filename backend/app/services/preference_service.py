@@ -255,7 +255,14 @@ def summarize_preferences_v2(preferences_v2: dict | None, context: dict | None =
     if area.get("exacto") is not None:
         parts.append(f"{area['exacto']} m2")
     elif area.get("min") is not None or area.get("max") is not None:
-        parts.append(f"área {area.get('min', '?')}–{area.get('max', '?')} m2")
+        a_min = area.get("min")
+        a_max = area.get("max")
+        if a_min is not None and a_max is not None:
+            parts.append(f"área {int(a_min)}–{int(a_max)} m2")
+        elif a_min is not None:
+            parts.append(f"área desde {int(a_min)} m2")
+        else:
+            parts.append(f"área hasta {int(a_max)} m2")
 
     nearby = _clean_terms(pref.get("zonas_cercanas", {}).get("valor") or [])
     if nearby:
@@ -267,7 +274,17 @@ def summarize_preferences_v2(preferences_v2: dict | None, context: dict | None =
 
     ctx = context if isinstance(context, dict) else {}
     budget = ctx.get("budget_context") if isinstance(ctx.get("budget_context"), dict) else {}
-    if budget and (budget.get("min") is not None or budget.get("max") is not None):
-        parts.append(f"presupuesto: {budget.get('min', '?')}–{budget.get('max', '?')} {budget.get('currency', 'PEN')}")
+    b_min = budget.get("min") if budget else None
+    b_max = budget.get("max") if budget else None
+    currency = (budget.get("currency") or "PEN") if budget else "PEN"
+    if b_min is not None or b_max is not None:
+        def _fmt_budget(v: float) -> str:
+            return f"S/ {int(v):,}".replace(",", ".") if currency == "PEN" else f"USD {int(v):,}".replace(",", ".")
+        if b_min is not None and b_max is not None:
+            parts.append(f"presupuesto {_fmt_budget(b_min)}–{_fmt_budget(b_max)}")
+        elif b_max is not None:
+            parts.append(f"hasta {_fmt_budget(b_max)}")
+        elif b_min is not None:
+            parts.append(f"desde {_fmt_budget(b_min)}")
 
     return ", ".join(parts) if parts else "sin criterios guardados todavía"
