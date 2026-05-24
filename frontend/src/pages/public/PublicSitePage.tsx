@@ -2,11 +2,14 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Search, ChevronLeft, ChevronRight, Building2, LogIn, LogOut,
   User, X, MapPin, BedDouble, Maximize2, SlidersHorizontal, Filter, Star,
+  LayoutList, Map,
 } from 'lucide-react'
 import ChatWidget from '../../components/chat/ChatWidget'
 import AuthModal from '../../components/auth/AuthModal'
 import { useAuth } from '../../hooks/useAuth'
 import API from '../../services/api'
+import MapView from './MapView'
+import type { CatalogRecord as MapCatalogRecord } from './MapView'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -736,6 +739,12 @@ export default function PublicSitePage() {
   const [loadingCatalog, setLoadingCatalog] = useState(false)
   const catalogRef = useRef<HTMLElement>(null)
 
+  // ── Map view state ──
+  const [viewMode, setViewMode] = useState<'list' | 'map'>('list')
+  const [mapItems, setMapItems] = useState<MapCatalogRecord[]>([])
+  const [loadingMap, setLoadingMap] = useState(false)
+  const [mapDetailRecord, setMapDetailRecord] = useState<CatalogRecord | null>(null)
+
   // Load config + hero on mount
   useEffect(() => {
     API.get('/public/config')
@@ -760,6 +769,20 @@ export default function PublicSitePage() {
       .catch(() => {})
       .finally(() => setLoadingCatalog(false))
   }, [config, search, location, projectId, skip])
+
+  // Fetch all items (no pagination) when switching to map mode
+  useEffect(() => {
+    if (viewMode !== 'map' || !config) return
+    setLoadingMap(true)
+    const params: Record<string, string | number> = { skip: 0, limit: 500 }
+    if (search)    params.search     = search
+    if (location)  params.location   = location
+    if (projectId) params.project_id = projectId
+    API.get('/public/catalog', { params })
+      .then(r => setMapItems(r.data.items))
+      .catch(() => {})
+      .finally(() => setLoadingMap(false))
+  }, [viewMode, config, search, location, projectId])
 
   const saveSearchHistory = useCallback((q: string, loc: string, proj: string) => {
     if (!token) return
@@ -846,31 +869,80 @@ export default function PublicSitePage() {
       )}
 
       {/* ── Catalog ────────────────────────────────────────────────────────── */}
-      <section ref={catalogRef} className="py-12 max-w-7xl mx-auto px-4 sm:px-6">
+      <section ref={catalogRef} className={`py-10 px-4 sm:px-6 ${viewMode === 'list' ? 'max-w-7xl mx-auto' : 'max-w-screen-2xl mx-auto'}`}>
 
         {/* Section header */}
-        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <div>
-            <h2 className="text-2xl font-bold text-slate-800">{config.catalog_title || 'Propiedades disponibles'}</h2>
+            <h2 className="text-2xl font-bold text-slate-800">
+              {viewMode === 'map' ? 'Buscar por mapa' : (config.catalog_title || 'Propiedades disponibles')}
+            </h2>
             <p className="text-sm text-slate-500 mt-1">
-              {loadingCatalog ? 'Cargando...' : `${catalog.total} propiedad${catalog.total !== 1 ? 'es' : ''} encontrada${catalog.total !== 1 ? 's' : ''}`}
-              {hasFilters && ' (con filtros activos)'}
+              {viewMode === 'map'
+                ? 'Explora los proyectos disponibles en el mapa y encuentra tu próximo hogar.'
+                : loadingCatalog
+                  ? 'Cargando...'
+                  : `${catalog.total} propiedad${catalog.total !== 1 ? 'es' : ''} encontrada${catalog.total !== 1 ? 's' : ''}${hasFilters ? ' (con filtros activos)' : ''}`
+              }
             </p>
           </div>
 
-          {/* Filter bar */}
-          <FilterBar
-            locations={catalog.locations}
-            projects={catalog.projects}
-            activeLocation={location}
-            activeProject={projectId}
-            onFilter={handleFilter}
-            primaryColor={config.primary_color}
-          />
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {/* Tab toggle Lista / Mapa */}
+            <div className="flex items-center bg-slate-100 rounded-xl p-1 gap-0.5">
+              <button
+                onClick={() => setViewMode('list')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
+                  viewMode === 'list'
+                    ? 'bg-white shadow text-slate-800'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                <LayoutList className="w-4 h-4" />
+                Lista
+              </button>
+              <button
+                onClick={() => setViewMode('map')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
+                  viewMode === 'map'
+                    ? 'bg-white shadow text-slate-800'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                <Map className="w-4 h-4" />
+                Mapa
+              </button>
+            </div>
+
+            {/* Filter bar (list mode only) */}
+            {viewMode === 'list' && (
+              <FilterBar
+                locations={catalog.locations}
+                projects={catalog.projects}
+                activeLocation={location}
+                activeProject={projectId}
+                onFilter={handleFilter}
+                primaryColor={config.primary_color}
+              />
+            )}
+          </div>
         </div>
 
-        {/* Active filter chips */}
-        {hasFilters && (
+        {/* ── Map view ── */}
+        {viewMode === 'map' && (
+          <MapView
+            items={mapItems}
+            loading={loadingMap}
+            locations={catalog.locations}
+            primaryColor={config.primary_color}
+            activeLocation={location}
+            onLocationFilter={loc => handleFilter(loc, projectId)}
+            onOpenDetail={r => setMapDetailRecord(r as CatalogRecord)}
+          />
+        )}
+
+        {/* Active filter chips (list mode) */}
+        {viewMode === 'list' && hasFilters && (
           <div className="flex flex-wrap gap-2 mb-6">
             {search && (
               <span className="flex items-center gap-1.5 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 px-3 py-1.5 rounded-full">
@@ -893,54 +965,57 @@ export default function PublicSitePage() {
           </div>
         )}
 
-        {/* Grid */}
-        {loadingCatalog ? (
-          <div className="flex flex-col items-center justify-center py-24 gap-3">
-            <div className="w-10 h-10 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: config.primary_color + '40', borderTopColor: 'transparent' }} />
-            <p className="text-sm text-slate-400">Cargando propiedades...</p>
-          </div>
-        ) : catalog.items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-24 text-center">
-            <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4" style={{ backgroundColor: config.primary_color + '15' }}>
-              <Filter className="w-8 h-8" style={{ color: config.primary_color }} />
-            </div>
-            <h3 className="font-semibold text-slate-700 mb-1">Sin resultados</h3>
-            <p className="text-sm text-slate-400 mb-4">
-              {hasFilters ? 'No hay propiedades con los filtros seleccionados.' : 'No hay propiedades disponibles aún.'}
-            </p>
-            {hasFilters && (
-              <button
-                onClick={() => { handleSearch(''); handleFilter('', '') }}
-                className="text-sm font-semibold px-4 py-2 rounded-xl text-white transition-all hover:opacity-90"
-                style={{ backgroundColor: config.primary_color }}
-              >
-                Quitar todos los filtros
-              </button>
+        {/* Grid + Pagination (list mode only) */}
+        {viewMode === 'list' && (
+          <>
+            {loadingCatalog ? (
+              <div className="flex flex-col items-center justify-center py-24 gap-3">
+                <div className="w-10 h-10 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: config.primary_color + '40', borderTopColor: 'transparent' }} />
+                <p className="text-sm text-slate-400">Cargando propiedades...</p>
+              </div>
+            ) : catalog.items.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-24 text-center">
+                <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4" style={{ backgroundColor: config.primary_color + '15' }}>
+                  <Filter className="w-8 h-8" style={{ color: config.primary_color }} />
+                </div>
+                <h3 className="font-semibold text-slate-700 mb-1">Sin resultados</h3>
+                <p className="text-sm text-slate-400 mb-4">
+                  {hasFilters ? 'No hay propiedades con los filtros seleccionados.' : 'No hay propiedades disponibles aún.'}
+                </p>
+                {hasFilters && (
+                  <button
+                    onClick={() => { handleSearch(''); handleFilter('', '') }}
+                    className="text-sm font-semibold px-4 py-2 rounded-xl text-white transition-all hover:opacity-90"
+                    style={{ backgroundColor: config.primary_color }}
+                  >
+                    Quitar todos los filtros
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                {catalog.items.map(r => (
+                  <PropertyCard
+                    key={r.id}
+                    record={r}
+                    primaryColor={config.primary_color}
+                    secondaryColor={config.secondary_color}
+                    token={token}
+                    onLoginRequired={() => { setAuthTab('login'); setShowAuth(true) }}
+                  />
+                ))}
+              </div>
             )}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-            {catalog.items.map(r => (
-              <PropertyCard
-                key={r.id}
-                record={r}
-                primaryColor={config.primary_color}
-                secondaryColor={config.secondary_color}
-                token={token}
-                onLoginRequired={() => { setAuthTab('login'); setShowAuth(true) }}
-              />
-            ))}
-          </div>
-        )}
 
-        {/* Pagination */}
-        <PaginationBar
-          total={catalog.total}
-          limit={LIMIT}
-          skip={skip}
-          onPage={setSkip}
-          primaryColor={config.primary_color}
-        />
+            <PaginationBar
+              total={catalog.total}
+              limit={LIMIT}
+              skip={skip}
+              onPage={setSkip}
+              primaryColor={config.primary_color}
+            />
+          </>
+        )}
       </section>
 
       {/* ── Footer ─────────────────────────────────────────────────────────── */}
@@ -979,6 +1054,18 @@ export default function PublicSitePage() {
           onSuccess={() => { setShowAuth(false); refresh() }}
           primaryColor={config.primary_color}
           initialTab={authTab}
+        />
+      )}
+
+      {/* ── Map detail modal ────────────────────────────────────────────────── */}
+      {mapDetailRecord && (
+        <PropertyDetailModal
+          record={mapDetailRecord}
+          primaryColor={config.primary_color}
+          secondaryColor={config.secondary_color}
+          token={token}
+          onClose={() => setMapDetailRecord(null)}
+          onLoginRequired={() => { setAuthTab('login'); setShowAuth(true) }}
         />
       )}
     </div>
