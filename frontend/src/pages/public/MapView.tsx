@@ -1,5 +1,5 @@
-import { useState, useMemo, useEffect } from 'react'
-import { GoogleMap, useJsApiLoader, OverlayView, InfoWindow } from '@react-google-maps/api'
+import { useState, useMemo, useEffect, useRef } from 'react'
+import { GoogleMap, useJsApiLoader, InfoWindow } from '@react-google-maps/api'
 import { X, MapPin, BedDouble, Maximize2, SlidersHorizontal } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -27,6 +27,8 @@ interface MapViewProps {
 
 const MAPS_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string) || ''
 const LIMA_CENTER = { lat: -12.0464, lng: -77.0428 }
+// Must be defined outside the component — stable reference required by useJsApiLoader
+const GMAPS_LIBRARIES: ('geometry')[] = ['geometry']
 const MEDIA_BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api').replace(/\/api\/?$/, '')
 const IMG_EXT = /\.(jpg|jpeg|png|webp|gif|avif|bmp|svg)(\?.*)?$/i
 const HTTP = /^https?:\/\//
@@ -119,6 +121,9 @@ function getCoords(data: Record<string, unknown>): { lat: number; lng: number } 
   const lat = parseFloat(parts[0].trim())
   const lng = parseFloat(parts[1].trim())
   if (isNaN(lat) || isNaN(lng)) return null
+  // Reject null-island (0,0) and out-of-range values
+  if (Math.abs(lat) < 0.001 && Math.abs(lng) < 0.001) return null
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null
   return { lat, lng }
 }
 
@@ -143,6 +148,33 @@ function statusBadgeColor(s: string): string {
   if (t.includes('inmediata') || t.includes('entrega') || t.includes('disponib')) return '#10b981'
   if (t.includes('construc') || t.includes('preventa') || t.includes('próx')) return '#f59e0b'
   return '#6b7280'
+}
+
+// ─── Imperative marker icon (base64 SVG — reliable across all browsers) ──────
+
+function makeSvgIcon(
+  label: string, color: string, selected: boolean,
+): google.maps.Icon {
+  const w = Math.max(68, label.length * 9 + 28)
+  const h = 36
+  const bh = h - 8  // bubble height
+  const sw = selected ? '2.5' : '1.5'
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
+    `<rect x="1" y="1" width="${w - 2}" height="${bh}" rx="${bh / 2}"`,
+    ` fill="${color}" stroke="white" stroke-width="${sw}"/>`,
+    `<polygon points="${w / 2 - 5},${bh} ${w / 2},${h - 1} ${w / 2 + 5},${bh}"`,
+    ` fill="${color}"/>`,
+    `<text x="${w / 2}" y="${Math.round(bh * 0.67)}" text-anchor="middle"`,
+    ` fill="white" font-size="12" font-weight="bold"`,
+    ` font-family="Arial,sans-serif">${label}</text>`,
+    '</svg>',
+  ].join('')
+  return {
+    url: `data:image/svg+xml;base64,${btoa(svg)}`,
+    scaledSize: new window.google.maps.Size(w, h),
+    anchor: new window.google.maps.Point(w / 2, h),
+  }
 }
 
 // ─── MapPopup ─────────────────────────────────────────────────────────────────
@@ -236,16 +268,26 @@ export default function MapView({
 }: MapViewProps) {
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: MAPS_KEY,
-    libraries: ['geometry'],
+    libraries: GMAPS_LIBRARIES,
   })
 
-  const [showPanel,    setShowPanel]    = useState(true)
-  const [minBedrooms,  setMinBedrooms]  = useState<number | null>(null)
-  const [minPrice,     setMinPrice]     = useState(300_000)
-  const [maxPrice,     setMaxPrice]     = useState(800_000)
-  const [entregaFilter, setEntregaFilter] = useState('')
-  const [selectedId,   setSelectedId]   = useState<string | null>(null)
-  const [mapRef,       setMapRef]       = useState<google.maps.Map | null>(null)
+  const [showPanel,      setShowPanel]      = useState(true)
+  const [developerFilter, setDeveloperFilter] = useState('')
+  const [minBedrooms,    setMinBedrooms]    = useState<number | null>(null)
+  const [minPrice,       setMinPrice]       = useState(300_000)
+  const [maxPrice,       setMaxPrice]       = useState(800_000)
+  const [entregaFilter,  setEntregaFilter]  = useState('')
+  const [selectedId,     setSelectedId]     = useState<string | null>(null)
+  const [mapRef,         setMapRef]         = useState<google.maps.Map | null>(null)
+
+  // Unique developer names derived from project_name
+  const developerOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const r of items) {
+      if (r.project_name) set.add(r.project_name)
+    }
+    return Array.from(set).sort()
+  }, [items])
 
   // Unique delivery statuses from items
   const entregaOptions = useMemo(() => {
@@ -259,6 +301,7 @@ export default function MapView({
 
   // Client-side filter
   const filtered = useMemo(() => items.filter(r => {
+    if (developerFilter && r.project_name !== developerFilter) return false
     const price = parsePriceSoles(r.data)
     if (price !== null) {
       if (price < minPrice) return false
@@ -274,7 +317,7 @@ export default function MapView({
       if (!v.includes(entregaFilter.toLowerCase())) return false
     }
     return true
-  }), [items, minBedrooms, minPrice, maxPrice, entregaFilter])
+  }), [items, developerFilter, minBedrooms, minPrice, maxPrice, entregaFilter])
 
   // Records with coordinates (for map pins)
   const mappable = useMemo(() => filtered.filter(r => getCoords(r.data) !== null), [filtered])
@@ -284,15 +327,62 @@ export default function MapView({
     [selectedId, items],
   )
 
-  const hasFilters = minBedrooms !== null || minPrice !== 300_000 || maxPrice < 800_000 || entregaFilter || activeLocation
+  const hasFilters = developerFilter || minBedrooms !== null || minPrice !== 300_000 || maxPrice < 800_000 || entregaFilter || activeLocation
 
   const clearFilters = () => {
+    setDeveloperFilter('')
     setMinBedrooms(null)
     setMinPrice(300_000)
     setMaxPrice(800_000)
     setEntregaFilter('')
     onLocationFilter('')
   }
+
+  // ── Imperative markers ────────────────────────────────────────────────────
+  const markersRef = useRef<Map<string, google.maps.Marker>>(new Map())
+
+  // Recreate markers when the mappable set changes
+  useEffect(() => {
+    if (!mapRef || !isLoaded) return
+    // Remove all existing markers
+    markersRef.current.forEach(m => m.setMap(null))
+    markersRef.current.clear()
+    // Add one marker per mappable record
+    for (const r of mappable) {
+      const coords = getCoords(r.data)!
+      const price  = parsePriceSoles(r.data)
+      const color  = getPriceColor(price)
+      const label  = price ? formatPriceShort(price) : '?'
+      const marker = new window.google.maps.Marker({
+        position: coords,
+        map: mapRef,
+        icon: makeSvgIcon(label, color, false),
+        zIndex: 1,
+      })
+      marker.addListener('click', () =>
+        setSelectedId(prev => (prev === r.id ? null : r.id)),
+      )
+      markersRef.current.set(r.id, marker)
+    }
+    return () => {
+      markersRef.current.forEach(m => m.setMap(null))
+      markersRef.current.clear()
+    }
+  }, [mapRef, isLoaded, mappable])
+
+  // Update icon of selected/deselected marker without recreating all markers
+  useEffect(() => {
+    markersRef.current.forEach((marker, id) => {
+      const r = mappable.find(x => x.id === id)
+      if (!r) return
+      const price      = parsePriceSoles(r.data)
+      const color      = getPriceColor(price)
+      const label      = price ? formatPriceShort(price) : '?'
+      const isSelected = id === selectedId
+      marker.setIcon(makeSvgIcon(label, color, isSelected))
+      marker.setZIndex(isSelected ? 100 : 1)
+    })
+  }, [selectedId, mappable])
 
   // Auto-fit map bounds when mappable items change
   useEffect(() => {
@@ -307,6 +397,11 @@ export default function MapView({
       mapRef.setZoom(15)
     } else {
       mapRef.fitBounds(bounds, 60)
+      // Prevent zooming out further than city-level after fitBounds
+      const listener = window.google.maps.event.addListenerOnce(mapRef, 'bounds_changed', () => {
+        if ((mapRef.getZoom() ?? 99) < 11) mapRef.setZoom(12)
+      })
+      return () => window.google.maps.event.removeListener(listener)
     }
   }, [mapRef, isLoaded, mappable])
 
@@ -340,6 +435,24 @@ export default function MapView({
 
           {/* Filters body */}
           <div className="px-4 py-4 flex flex-col gap-4 flex-shrink-0 border-b border-slate-100">
+
+            {/* Desarrolladora */}
+            {developerOptions.length > 1 && (
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                  Desarrolladora
+                </label>
+                <select
+                  value={developerFilter}
+                  onChange={e => setDeveloperFilter(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white text-slate-700
+                             focus:outline-none focus:ring-2 focus:ring-blue-400/30 focus:border-blue-400 transition-all"
+                >
+                  <option value="">Todas</option>
+                  {developerOptions.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+            )}
 
             {/* Ubicación */}
             <div>
@@ -377,6 +490,16 @@ export default function MapView({
                 Dormitorios
               </label>
               <div className="flex gap-1.5">
+                <button
+                  onClick={() => setMinBedrooms(null)}
+                  className={`flex-1 py-1.5 text-sm font-semibold rounded-xl border transition-all ${
+                    minBedrooms === null
+                      ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm'
+                      : 'border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  Todos
+                </button>
                 {[1, 2, 3, 4].map(n => (
                   <button
                     key={n}
@@ -583,58 +706,7 @@ export default function MapView({
             onLoad={map => setMapRef(map)}
             onClick={() => setSelectedId(null)}
           >
-            {mappable.map(r => {
-              const coords     = getCoords(r.data)!
-              const price      = parsePriceSoles(r.data)
-              const color      = getPriceColor(price)
-              const label      = price ? formatPriceShort(price) : '?'
-              const isSelected = selectedId === r.id
-
-              return (
-                <OverlayView
-                  key={r.id}
-                  position={coords}
-                  mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-                  getPixelPositionOffset={(w, h) => ({ x: -(w / 2), y: -h })}
-                >
-                  <div
-                    onClick={e => { e.stopPropagation(); setSelectedId(isSelected ? null : r.id) }}
-                    style={{
-                      cursor: 'pointer',
-                      userSelect: 'none',
-                      display: 'inline-block',
-                      transformOrigin: 'center bottom',
-                      transform: `scale(${isSelected ? 1.2 : 1})`,
-                      transition: 'transform 0.15s ease',
-                      filter: isSelected ? 'drop-shadow(0 4px 8px rgba(0,0,0,0.4))' : 'drop-shadow(0 2px 4px rgba(0,0,0,0.25))',
-                    }}
-                  >
-                    {/* Bubble */}
-                    <div style={{
-                      backgroundColor: color,
-                      color: 'white',
-                      fontSize: 11,
-                      fontWeight: 700,
-                      fontFamily: 'system-ui, -apple-system, sans-serif',
-                      padding: '4px 10px',
-                      borderRadius: 99,
-                      border: `${isSelected ? '2.5px' : '1.5px'} solid white`,
-                      whiteSpace: 'nowrap',
-                      lineHeight: '1.4',
-                    }}>
-                      {label}
-                    </div>
-                    {/* Arrow */}
-                    <div style={{
-                      width: 0, height: 0, margin: '0 auto',
-                      borderLeft: '5px solid transparent',
-                      borderRight: '5px solid transparent',
-                      borderTop: `6px solid ${color}`,
-                    }} />
-                  </div>
-                </OverlayView>
-              )
-            })}
+            {/* Markers are created imperatively in useEffect above */}
 
             {selectedRecord && getCoords(selectedRecord.data) && (
               <InfoWindow
