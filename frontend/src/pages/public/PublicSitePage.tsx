@@ -227,7 +227,11 @@ function PropertyDetailModal({ record, primaryColor, secondaryColor, token = nul
   record: CatalogRecord; primaryColor: string; secondaryColor: string
   token?: string | null; onClose: () => void; onLoginRequired?: () => void
 }) {
-  const [cur, setCur] = useState(0)
+  const [tab, setTab]               = useState<'info' | 'propiedades'>('info')
+  const [cur, setCur]               = useState(0)
+  const [units, setUnits]           = useState<CatalogRecord[]>([])
+  const [loadingUnits, setLoadingUnits] = useState(false)
+
   const images = detectImages(record.data)
   const entries = detectTextEntries(record.data, images)
   const priceEntry  = findRole(entries, /precio|price|costo|valor|monto/i)
@@ -245,11 +249,22 @@ function PropertyDetailModal({ record, primaryColor, secondaryColor, token = nul
     window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h)
   }, [onClose])
 
+  // Fetch all units of the same project when "Propiedades" tab is opened
+  useEffect(() => {
+    if (tab !== 'propiedades' || !record.project_id) return
+    setLoadingUnits(true)
+    API.get('/public/catalog', { params: { project_id: record.project_id, skip: 0, limit: 100 } })
+      .then(r => setUnits(r.data.items ?? []))
+      .catch(() => {})
+      .finally(() => setLoadingUnits(false))
+  }, [tab, record.project_id])
+
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+
         {/* Header */}
-        <div className="flex items-start justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
+        <div className="flex items-start justify-between px-6 pt-4 pb-0 flex-shrink-0">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-bold text-slate-800 text-lg leading-snug">{title}</h3>
@@ -265,97 +280,178 @@ function PropertyDetailModal({ record, primaryColor, secondaryColor, token = nul
               </p>
             )}
           </div>
-          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors flex-shrink-0 ml-2">
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors flex-shrink-0 ml-2 mt-0.5">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="overflow-y-auto flex-1">
-          {/* Image carousel */}
-          {images.length > 0 && (
-            <div className="relative h-64 bg-slate-100 flex-shrink-0">
-              <img src={images[cur]} alt="" className="w-full h-full object-cover" />
-              {images.length > 1 && (
-                <>
-                  <div className="absolute top-3 right-3 bg-black/50 text-white text-xs px-2 py-1 rounded-full">{cur + 1}/{images.length}</div>
-                  <button onClick={() => setCur(c => Math.max(0, c - 1))} disabled={cur === 0}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-black/60 disabled:opacity-20 text-white rounded-full p-2 transition-all">
-                    <ChevronLeft className="w-5 h-5" />
-                  </button>
-                  <button onClick={() => setCur(c => Math.min(images.length - 1, c + 1))} disabled={cur === images.length - 1}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-black/60 disabled:opacity-20 text-white rounded-full p-2 transition-all">
-                    <ChevronRight className="w-5 h-5" />
-                  </button>
-                  <div className="absolute bottom-3 left-0 right-0 flex justify-center gap-1.5">
-                    {images.slice(0, 8).map((_, i) => (
-                      <button key={i} onClick={() => setCur(i)}
-                        className={`rounded-full transition-all ${i === cur ? 'w-5 h-2 bg-white' : 'w-2 h-2 bg-white/50 hover:bg-white/80'}`} />
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+        {/* Tab bar */}
+        <div className="flex px-6 mt-3 border-b border-slate-100 flex-shrink-0">
+          {(['info', 'propiedades'] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+                tab === t
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              {t === 'info' ? 'Información' : 'Propiedades'}
+            </button>
+          ))}
+        </div>
 
-          {/* Fields */}
-          <div className="p-6">
-            {priceEntry && (
-              <p className="text-3xl font-extrabold mb-4" style={{ color: secondaryColor }}>{priceEntry.value}</p>
-            )}
-
-            {/* Key chips */}
-            <div className="flex flex-wrap gap-2 mb-5">
-              {extractBedrooms(record.data) && (
-                <span className="flex items-center gap-1 text-xs font-medium bg-slate-100 text-slate-700 px-3 py-1.5 rounded-full">
-                  <BedDouble className="w-3.5 h-3.5" />{extractBedrooms(record.data)} dorms.
-                </span>
-              )}
-              {extractArea(record.data) && (
-                <span className="flex items-center gap-1 text-xs font-medium bg-slate-100 text-slate-700 px-3 py-1.5 rounded-full">
-                  <Maximize2 className="w-3.5 h-3.5" />{extractArea(record.data)}
-                </span>
-              )}
-              {extractModel(record.data) && !extractBedrooms(record.data) && (
-                <span className="text-xs font-medium bg-slate-100 text-slate-700 px-3 py-1.5 rounded-full">
-                  {extractModel(record.data)}
-                </span>
-              )}
-            </div>
-
-            {/* Description */}
-            {descEntry && (
-              <div className="mb-5 pb-5 border-b border-slate-100">
-                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Descripción</p>
-                <p className="text-sm text-slate-600 leading-relaxed">{descEntry.value}</p>
+        {/* ── Tab: Información ── */}
+        {tab === 'info' && (
+          <div className="overflow-y-auto flex-1">
+            {/* Image carousel */}
+            {images.length > 0 && (
+              <div className="relative h-64 bg-slate-100 flex-shrink-0">
+                <img src={images[cur]} alt="" className="w-full h-full object-cover" />
+                {images.length > 1 && (
+                  <>
+                    <div className="absolute top-3 right-3 bg-black/50 text-white text-xs px-2 py-1 rounded-full">{cur + 1}/{images.length}</div>
+                    <button onClick={() => setCur(c => Math.max(0, c - 1))} disabled={cur === 0}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-black/60 disabled:opacity-20 text-white rounded-full p-2 transition-all">
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <button onClick={() => setCur(c => Math.min(images.length - 1, c + 1))} disabled={cur === images.length - 1}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-black/60 disabled:opacity-20 text-white rounded-full p-2 transition-all">
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                    <div className="absolute bottom-3 left-0 right-0 flex justify-center gap-1.5">
+                      {images.slice(0, 8).map((_, i) => (
+                        <button key={i} onClick={() => setCur(i)}
+                          className={`rounded-full transition-all ${i === cur ? 'w-5 h-2 bg-white' : 'w-2 h-2 bg-white/50 hover:bg-white/80'}`} />
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
-            {/* Star rating */}
-            <div className="mb-5 pb-5 border-b border-slate-100">
-              <StarRating recordId={record.id} token={token} onLoginRequired={onLoginRequired} />
+            {/* Fields */}
+            <div className="p-6">
+              {priceEntry && (
+                <p className="text-3xl font-extrabold mb-4" style={{ color: secondaryColor }}>{priceEntry.value}</p>
+              )}
+              <div className="flex flex-wrap gap-2 mb-5">
+                {extractBedrooms(record.data) && (
+                  <span className="flex items-center gap-1 text-xs font-medium bg-slate-100 text-slate-700 px-3 py-1.5 rounded-full">
+                    <BedDouble className="w-3.5 h-3.5" />{extractBedrooms(record.data)} dorms.
+                  </span>
+                )}
+                {extractArea(record.data) && (
+                  <span className="flex items-center gap-1 text-xs font-medium bg-slate-100 text-slate-700 px-3 py-1.5 rounded-full">
+                    <Maximize2 className="w-3.5 h-3.5" />{extractArea(record.data)}
+                  </span>
+                )}
+                {extractModel(record.data) && !extractBedrooms(record.data) && (
+                  <span className="text-xs font-medium bg-slate-100 text-slate-700 px-3 py-1.5 rounded-full">
+                    {extractModel(record.data)}
+                  </span>
+                )}
+              </div>
+              {descEntry && (
+                <div className="mb-5 pb-5 border-b border-slate-100">
+                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Descripción</p>
+                  <p className="text-sm text-slate-600 leading-relaxed">{descEntry.value}</p>
+                </div>
+              )}
+              <div className="mb-5 pb-5 border-b border-slate-100">
+                <StarRating recordId={record.id} token={token} onLoginRequired={onLoginRequired} />
+              </div>
+              {others.length > 0 && (
+                <div className="space-y-2">
+                  {others.map(e => (
+                    <div key={e.key} className="flex gap-3 items-start py-2.5 border-b border-slate-50 last:border-0">
+                      <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide w-32 flex-shrink-0 pt-0.5">{e.label}</span>
+                      <span className="text-sm text-slate-700 flex-1 leading-relaxed break-words">
+                        {e.isArray && e.items ? (
+                          <span className="flex flex-wrap gap-1">
+                            {e.items.map((it, i) => (
+                              <span key={i} className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded-md">{it}</span>
+                            ))}
+                          </span>
+                        ) : e.value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
+          </div>
+        )}
 
-            {/* Other fields */}
-            {others.length > 0 && (
-              <div className="space-y-2">
-                {others.map(e => (
-                  <div key={e.key} className="flex gap-3 items-start py-2.5 border-b border-slate-50 last:border-0">
-                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide w-32 flex-shrink-0 pt-0.5">{e.label}</span>
-                    <span className="text-sm text-slate-700 flex-1 leading-relaxed break-words">
-                      {e.isArray && e.items ? (
-                        <span className="flex flex-wrap gap-1">
-                          {e.items.map((it, i) => (
-                            <span key={i} className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded-md">{it}</span>
-                          ))}
-                        </span>
-                      ) : e.value}
-                    </span>
-                  </div>
-                ))}
+        {/* ── Tab: Propiedades ── */}
+        {tab === 'propiedades' && (
+          <div className="overflow-y-auto flex-1 p-4">
+            {loadingUnits ? (
+              <div className="flex items-center justify-center py-16">
+                <div className="w-7 h-7 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: primaryColor + '40', borderTopColor: 'transparent' }} />
+              </div>
+            ) : units.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-16">No hay propiedades registradas para este proyecto.</p>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-400 mb-1">{units.length} propiedad{units.length !== 1 ? 'es' : ''} disponible{units.length !== 1 ? 's' : ''}</p>
+                {units.map(u => {
+                  const uImages  = detectImages(u.data)
+                  const uEntries = detectTextEntries(u.data, uImages)
+                  const uPrice   = findRole(uEntries, /precio|price|costo|valor|monto/i)
+                  const uStatus  = findRole(uEntries, /^estado/i)
+                  const uBeds    = extractBedrooms(u.data)
+                  const uArea    = extractArea(u.data)
+                  const uModel   = extractModel(u.data)
+                  const uImg     = uImages[0] ?? null
+
+                  return (
+                    <div key={u.id} className="flex gap-3 p-3 rounded-xl border border-slate-100 hover:border-slate-200 hover:bg-slate-50 transition-all">
+                      {/* Thumbnail */}
+                      {uImg ? (
+                        <img src={uImg} alt="" className="w-20 h-20 object-cover rounded-lg flex-shrink-0" />
+                      ) : (
+                        <div className="w-20 h-20 bg-slate-100 rounded-lg flex-shrink-0 flex items-center justify-center">
+                          <Building2 className="w-6 h-6 text-slate-300" />
+                        </div>
+                      )}
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        {uModel && (
+                          <p className="text-sm font-semibold text-slate-800 leading-snug mb-1 line-clamp-1">{uModel}</p>
+                        )}
+                        {uPrice && (
+                          <p className="text-base font-extrabold leading-none mb-1.5" style={{ color: secondaryColor }}>
+                            {uPrice.value}
+                          </p>
+                        )}
+                        <div className="flex flex-wrap gap-1.5">
+                          {uBeds && (
+                            <span className="flex items-center gap-1 text-[11px] font-medium bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                              <BedDouble className="w-3 h-3" />{uBeds} dorms.
+                            </span>
+                          )}
+                          {uArea && (
+                            <span className="flex items-center gap-1 text-[11px] font-medium bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                              <Maximize2 className="w-3 h-3" />{uArea}
+                            </span>
+                          )}
+                          {uStatus && (
+                            <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${statusBadgeClass(uStatus.value)}`}>
+                              {uStatus.value}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>
-        </div>
+        )}
+
       </div>
     </div>
   )

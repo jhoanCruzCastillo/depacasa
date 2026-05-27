@@ -19,7 +19,7 @@ from app.models.user_property_interaction import UserPropertyInteraction
 from app.models.search_history import SearchHistory
 from app.models.propiedad import Propiedad
 from app.models.web_chat_session import WebChatSession
-from app.services.preference_service import build_preferences_v2_from_criteria, default_preferences_v2
+from app.services.preference_service import criteria_from_preference, summarize_preference
 from app.services.lead_scoring_service import compute_score, compute_score_for_user_id
 
 router = APIRouter(prefix="/api/site-users", tags=["site-users"])
@@ -466,20 +466,8 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
             lead_updated_at = s.updated_at or s.created_at
             break
 
-    lead_profile_context = {}
-    if pref and isinstance(pref.context, dict):
-        context_lead = pref.context.get("lead_profile")
-        if isinstance(context_lead, dict):
-            lead_profile_context = context_lead
-
-    lead_document = (
-        _clean_text(lead_data.get("document_number"))
-        or _clean_text(lead_profile_context.get("document"))
-    )
-    financial_doc = (
-        _clean_text(lead_data.get("financial_capacity_doc"))
-        or _clean_text(lead_profile_context.get("financial_capacity_doc"))
-    )
+    lead_document = _clean_text(lead_data.get("document_number"))
+    financial_doc = _clean_text(lead_data.get("financial_capacity_doc"))
     has_docs = bool(lead_document or financial_doc)
     has_financial = bool(financial_doc)
 
@@ -505,26 +493,8 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
             "financial_capacity_doc_url": financial_doc,
             "financial_capacity_doc_kind": _guess_doc_kind(financial_doc),
         },
-        "preferences": (
-            pref.preferences_v2
-            if pref and isinstance(pref.preferences_v2, dict) and pref.preferences_v2
-            else (
-                build_preferences_v2_from_criteria(
-                    {
-                        "location": pref.location if pref else None,
-                        "bedrooms": pref.bedrooms if pref else None,
-                        "features": pref.features if pref else [],
-                        "keywords": pref.keywords if pref else [],
-                        "min_price": pref.min_price if pref else None,
-                        "max_price": pref.max_price if pref else None,
-                    },
-                    None,
-                )
-                if pref
-                else default_preferences_v2()
-            )
-        ),
-        "context": (pref.context if pref and isinstance(pref.context, dict) else {}),
+        "preferences": criteria_from_preference(pref) if pref else {},
+        "preferences_summary": summarize_preference(pref) if pref else "",
         "preferences_updated_at": pref.updated_at.isoformat() if pref and pref.updated_at else None,
         "interactions": [
             {

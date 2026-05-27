@@ -1,31 +1,21 @@
-"""Preference V2 and consolidated context helpers."""
+"""Preference helpers for flat user_preferences schema."""
 
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
-from copy import deepcopy
+if TYPE_CHECKING:
+    from app.models.user_preference import UserPreference
 
-
-ALLOWED_MODES = {"preferencia", "obligatorio"}
-
-
-def normalize_mode(value: str | None, default: str = "preferencia") -> str:
-    raw = str(value or "").strip().lower()
-    return raw if raw in ALLOWED_MODES else default
+PRIORITY_REQUIRED = "REQUIRED"
+PRIORITY_OPTIONAL = "OPTIONAL"
 
 
-def _default_numeric_value() -> dict:
-    return {"tipo": "exacto", "exacto": None, "min": None, "max": None}
+def priority_to_mode(priority: str | None) -> str:
+    return "obligatorio" if priority == PRIORITY_REQUIRED else "preferencia"
 
 
-def default_preferences_v2() -> dict:
-    return {
-        "ubicacion": {"modo": "preferencia", "valor": None},
-        "zonas_cercanas": {"modo": "preferencia", "valor": []},
-        "areas_comunes": {"modo": "preferencia", "valor": []},
-        "habitaciones": {"modo": "preferencia", "valor": _default_numeric_value()},
-        "banos": {"modo": "preferencia", "valor": _default_numeric_value()},
-        "metros_cuadrados": {"modo": "preferencia", "valor": _default_numeric_value()},
-    }
+def mode_to_priority(mode: str | None) -> str:
+    return PRIORITY_REQUIRED if str(mode or "").strip().lower() == "obligatorio" else PRIORITY_OPTIONAL
 
 
 def _clean_terms(values: list | None) -> list[str]:
@@ -43,248 +33,132 @@ def _clean_terms(values: list | None) -> list[str]:
     return out
 
 
-def _numeric_from_criteria(exact: int | float | None, minimum: int | float | None, maximum: int | float | None) -> dict:
-    payload = _default_numeric_value()
-    if exact is not None:
-        try:
-            payload["exacto"] = int(exact)
-            payload["tipo"] = "exacto"
-            return payload
-        except Exception:
-            return payload
-
-    has_min = minimum is not None
-    has_max = maximum is not None
-    if has_min or has_max:
-        payload["tipo"] = "rango"
-        if has_min:
-            try:
-                payload["min"] = int(minimum)  # type: ignore[arg-type]
-            except Exception:
-                payload["min"] = None
-        if has_max:
-            try:
-                payload["max"] = int(maximum)  # type: ignore[arg-type]
-            except Exception:
-                payload["max"] = None
-    return payload
-
-
-def build_preferences_v2_from_criteria(criteria: dict | None, previous: dict | None = None) -> dict:
-    c = criteria or {}
-    pref = deepcopy(previous) if isinstance(previous, dict) else default_preferences_v2()
-
-    location = (c.get("location") or "").strip()
-    nearby = _clean_terms(c.get("nearby_zones") or [])
-    common_areas = _clean_terms(c.get("common_areas") or [])
-
-    pref["ubicacion"] = {
-        "modo": normalize_mode(c.get("location_mode"), pref["ubicacion"].get("modo")),
-        "valor": location or pref["ubicacion"].get("valor"),
-    }
-    pref["zonas_cercanas"] = {
-        "modo": normalize_mode(c.get("nearby_zones_mode"), pref["zonas_cercanas"].get("modo")),
-        "valor": nearby or pref["zonas_cercanas"].get("valor") or [],
-    }
-    pref["areas_comunes"] = {
-        "modo": normalize_mode(c.get("common_areas_mode"), pref["areas_comunes"].get("modo")),
-        "valor": common_areas or pref["areas_comunes"].get("valor") or [],
-    }
-
-    pref["habitaciones"] = {
-        "modo": normalize_mode(c.get("bedrooms_mode"), pref["habitaciones"].get("modo")),
-        "valor": _numeric_from_criteria(c.get("bedrooms"), c.get("bedrooms_min"), c.get("bedrooms_max")),
-    }
-    pref["banos"] = {
-        "modo": normalize_mode(c.get("bathrooms_mode"), pref["banos"].get("modo")),
-        "valor": _numeric_from_criteria(c.get("bathrooms"), c.get("bathrooms_min"), c.get("bathrooms_max")),
-    }
-    pref["metros_cuadrados"] = {
-        "modo": normalize_mode(c.get("area_mode"), pref["metros_cuadrados"].get("modo")),
-        "valor": _numeric_from_criteria(c.get("area_exact"), c.get("area_min"), c.get("area_max")),
-    }
-    return pref
-
-
-def _numeric_to_criteria(value: dict | None, exact_key: str, min_key: str, max_key: str) -> dict:
-    if not isinstance(value, dict):
-        return {}
+def criteria_from_preference(pref: "UserPreference") -> dict:
+    """Build a matchmaking criteria dict from a UserPreference row."""
     out: dict = {}
-    kind = str(value.get("tipo") or "exacto").lower()
-    if kind == "rango":
-        if value.get("min") is not None:
-            out[min_key] = value.get("min")
-        if value.get("max") is not None:
-            out[max_key] = value.get("max")
-    else:
-        if value.get("exacto") is not None:
-            out[exact_key] = value.get("exacto")
-    return out
 
+    if pref.location:
+        out["location"] = pref.location
+        out["location_mode"] = priority_to_mode(pref.location_priority)
 
-def criteria_from_preferences_v2(preferences_v2: dict | None, context: dict | None = None) -> dict:
-    pref = preferences_v2 if isinstance(preferences_v2, dict) else default_preferences_v2()
-    out: dict = {"features": [], "keywords": []}
+    if pref.bedrooms is not None:
+        out["bedrooms"] = pref.bedrooms
+        out["bedrooms_mode"] = priority_to_mode(pref.bedrooms_priority)
 
-    location = (pref.get("ubicacion", {}).get("valor") or "").strip()
-    if location:
-        out["location"] = location
-    out["location_mode"] = normalize_mode(pref.get("ubicacion", {}).get("modo"), "preferencia")
+    if pref.bathrooms is not None:
+        out["bathrooms"] = pref.bathrooms
+        out["bathrooms_mode"] = priority_to_mode(pref.bathrooms_priority)
 
-    nearby = _clean_terms(pref.get("zonas_cercanas", {}).get("valor") or [])
+    if pref.min_price is not None:
+        out["min_price"] = pref.min_price
+    if pref.max_price is not None:
+        out["max_price"] = pref.max_price
+    if pref.min_price is not None or pref.max_price is not None:
+        is_required = (
+            pref.min_price_priority == PRIORITY_REQUIRED
+            or pref.max_price_priority == PRIORITY_REQUIRED
+        )
+        out["budget_mode"] = "obligatorio" if is_required else "preferencia"
+
+    nearby = _clean_terms(pref.nearby_places)
     if nearby:
         out["nearby_zones"] = nearby
+        out["nearby_zones_mode"] = priority_to_mode(pref.nearby_places_priority)
         near_terms = [f"cerca de {term}" for term in nearby]
-        out["features"].extend(near_terms)
-        out["keywords"].extend(near_terms)
-    out["nearby_zones_mode"] = normalize_mode(pref.get("zonas_cercanas", {}).get("modo"), "preferencia")
+        out["features"] = _clean_terms(near_terms)
+        out["keywords"] = _clean_terms(near_terms)
 
-    common = _clean_terms(pref.get("areas_comunes", {}).get("valor") or [])
-    if common:
-        out["common_areas"] = common
-        out["features"].extend(common)
-        out["keywords"].extend(common)
-    out["common_areas_mode"] = normalize_mode(pref.get("areas_comunes", {}).get("modo"), "preferencia")
+    amenities = _clean_terms(pref.features)
+    if amenities:
+        out["common_areas"] = amenities
+        out["common_areas_mode"] = priority_to_mode(pref.features_priority)
+        out["features"] = _clean_terms(list(out.get("features") or []) + amenities)
+        out["keywords"] = _clean_terms(list(out.get("keywords") or []) + amenities)
 
-    room_value = pref.get("habitaciones", {}).get("valor")
-    out.update(_numeric_to_criteria(room_value, "bedrooms", "bedrooms_min", "bedrooms_max"))
-    out["bedrooms_mode"] = normalize_mode(pref.get("habitaciones", {}).get("modo"), "preferencia")
+    if pref.property_type:
+        out["property_type"] = pref.property_type
+        out["property_type_mode"] = priority_to_mode(pref.property_type_priority)
+        out["keywords"] = _clean_terms(list(out.get("keywords") or []) + [pref.property_type])
 
-    bath_value = pref.get("banos", {}).get("valor")
-    out.update(_numeric_to_criteria(bath_value, "bathrooms", "bathrooms_min", "bathrooms_max"))
-    out["bathrooms_mode"] = normalize_mode(pref.get("banos", {}).get("modo"), "preferencia")
-
-    area_value = pref.get("metros_cuadrados", {}).get("valor")
-    out.update(_numeric_to_criteria(area_value, "area_exact", "area_min", "area_max"))
-    out["area_mode"] = normalize_mode(pref.get("metros_cuadrados", {}).get("modo"), "preferencia")
-
-    ctx = context if isinstance(context, dict) else {}
-    budget_ctx = ctx.get("budget_context") or {}
-    if isinstance(budget_ctx, dict):
-        if budget_ctx.get("min") is not None:
-            out["min_price"] = budget_ctx.get("min")
-        if budget_ctx.get("max") is not None:
-            out["max_price"] = budget_ctx.get("max")
-        if budget_ctx.get("strictness"):
-            out["budget_mode"] = normalize_mode(budget_ctx.get("strictness"), "preferencia")
-
-    out["features"] = _clean_terms(out.get("features"))
-    out["keywords"] = _clean_terms(out.get("keywords"))
-    if not out["features"]:
+    if not out.get("features"):
         out.pop("features", None)
-    if not out["keywords"]:
+    if not out.get("keywords"):
         out.pop("keywords", None)
+
     return {k: v for k, v in out.items() if v not in (None, "", [], {})}
 
 
-def merge_consolidated_context(
-    existing_context: dict | None,
-    criteria: dict | None,
-    description: str,
-    extra_context: dict | None = None,
-) -> dict:
-    existing = existing_context if isinstance(existing_context, dict) else {}
-    criteria = criteria or {}
-    extra = extra_context if isinstance(extra_context, dict) else {}
+def update_preference_from_criteria(pref: "UserPreference", criteria: dict) -> None:
+    """Write matchmaking criteria fields into a UserPreference row (in place)."""
+    if criteria.get("location"):
+        pref.location = criteria["location"]
+        pref.location_priority = mode_to_priority(criteria.get("location_mode"))
 
-    budget = dict(existing.get("budget_context") or {})
+    if criteria.get("bedrooms") is not None:
+        pref.bedrooms = int(criteria["bedrooms"])
+        pref.bedrooms_priority = mode_to_priority(criteria.get("bedrooms_mode"))
+
+    if criteria.get("bathrooms") is not None:
+        pref.bathrooms = int(criteria["bathrooms"])
+        pref.bathrooms_priority = mode_to_priority(criteria.get("bathrooms_mode"))
+
     if criteria.get("min_price") is not None:
-        budget["min"] = criteria.get("min_price")
+        pref.min_price = float(criteria["min_price"])
+        pref.min_price_priority = mode_to_priority(criteria.get("budget_mode"))
+
     if criteria.get("max_price") is not None:
-        budget["max"] = criteria.get("max_price")
-    budget["currency"] = budget.get("currency") or "PEN"
-    if budget.get("min") is not None or budget.get("max") is not None:
-        budget["strictness"] = normalize_mode(
-            criteria.get("budget_mode"),
-            budget.get("strictness") or "preferencia",
-        )
+        pref.max_price = float(criteria["max_price"])
+        pref.max_price_priority = mode_to_priority(criteria.get("budget_mode"))
 
-    lead_profile = dict(existing.get("lead_profile") or {})
-    lead_data = criteria.get("_lead")
-    if isinstance(lead_data, dict):
-        lead_profile.update({
-            "full_name": lead_data.get("full_name") or lead_profile.get("full_name"),
-            "country": lead_data.get("country_of_residence") or lead_profile.get("country"),
-            "whatsapp": lead_data.get("whatsapp") or lead_profile.get("whatsapp"),
-            "document": lead_data.get("document_number") or lead_profile.get("document"),
-            "financial_capacity_doc": (
-                lead_data.get("financial_capacity_doc") or lead_profile.get("financial_capacity_doc")
-            ),
-        })
-    lead_profile.update(extra.get("lead_profile") or {})
+    nearby = _clean_terms(criteria.get("nearby_zones") or [])
+    if nearby:
+        pref.nearby_places = nearby
+        pref.nearby_places_priority = mode_to_priority(criteria.get("nearby_zones_mode"))
 
-    behavior = dict(existing.get("behavior_signals") or {})
-    behavior.setdefault("viewed_record_ids", [])
-    behavior.setdefault("rated_record_ids", [])
-    behavior.setdefault("interested_record_ids", [])
-    behavior.setdefault("discarded_record_ids", [])
-    behavior.update(extra.get("behavior_signals") or {})
+    amenities = _clean_terms(criteria.get("common_areas") or [])
+    if amenities:
+        pref.features = amenities
+        pref.features_priority = mode_to_priority(criteria.get("common_areas_mode"))
 
-    memory = dict(existing.get("conversation_memory") or {})
-    memory["last_search_description"] = description or memory.get("last_search_description")
-    memory.update(extra.get("conversation_memory") or {})
-    memory.setdefault("ajustes_aceptados", [])
-    memory.setdefault("ajustes_rechazados", [])
-
-    out = {
-        "budget_context": budget if budget else {},
-        "lead_profile": lead_profile if lead_profile else {},
-        "behavior_signals": behavior,
-        "conversation_memory": memory,
-    }
-    return out
+    if criteria.get("property_type"):
+        pref.property_type = criteria["property_type"]
+        pref.property_type_priority = mode_to_priority(criteria.get("property_type_mode"))
 
 
-def summarize_preferences_v2(preferences_v2: dict | None, context: dict | None = None) -> str:
-    pref = preferences_v2 if isinstance(preferences_v2, dict) else default_preferences_v2()
+def summarize_preference(pref: "UserPreference") -> str:
+    """Return a short human-readable summary of saved preferences."""
     parts: list[str] = []
 
-    loc = (pref.get("ubicacion", {}).get("valor") or "").strip()
-    if loc:
-        parts.append(f"ubicación: {loc}")
+    if pref.location:
+        parts.append(f"ubicación: {pref.location}")
 
-    rooms = pref.get("habitaciones", {}).get("valor") or {}
-    if rooms.get("exacto") is not None:
-        parts.append(f"{rooms['exacto']} dormitorios")
+    if pref.bedrooms is not None:
+        hab = "dormitorio" if pref.bedrooms == 1 else "dormitorios"
+        parts.append(f"{pref.bedrooms} {hab}")
 
-    baths = pref.get("banos", {}).get("valor") or {}
-    if baths.get("exacto") is not None:
-        parts.append(f"{baths['exacto']} baños")
+    if pref.bathrooms is not None:
+        btxt = "baño" if pref.bathrooms == 1 else "baños"
+        parts.append(f"{pref.bathrooms} {btxt}")
 
-    area = pref.get("metros_cuadrados", {}).get("valor") or {}
-    if area.get("exacto") is not None:
-        parts.append(f"{area['exacto']} m2")
-    elif area.get("min") is not None or area.get("max") is not None:
-        a_min = area.get("min")
-        a_max = area.get("max")
-        if a_min is not None and a_max is not None:
-            parts.append(f"área {int(a_min)}–{int(a_max)} m2")
-        elif a_min is not None:
-            parts.append(f"área desde {int(a_min)} m2")
-        else:
-            parts.append(f"área hasta {int(a_max)} m2")
+    def _fmt_price(v: float) -> str:
+        return f"S/ {int(v):,}".replace(",", ".")
 
-    nearby = _clean_terms(pref.get("zonas_cercanas", {}).get("valor") or [])
+    if pref.min_price is not None and pref.max_price is not None:
+        parts.append(f"presupuesto {_fmt_price(pref.min_price)}–{_fmt_price(pref.max_price)}")
+    elif pref.max_price is not None:
+        parts.append(f"hasta {_fmt_price(pref.max_price)}")
+    elif pref.min_price is not None:
+        parts.append(f"desde {_fmt_price(pref.min_price)}")
+
+    nearby = _clean_terms(pref.nearby_places)
     if nearby:
-        parts.append("zonas cercanas: " + ", ".join(nearby[:2]))
+        parts.append("cerca de: " + ", ".join(nearby[:2]))
 
-    common = _clean_terms(pref.get("areas_comunes", {}).get("valor") or [])
-    if common:
-        parts.append("áreas comunes: " + ", ".join(common[:2]))
+    amenities = _clean_terms(pref.features)
+    if amenities:
+        parts.append("amenidades: " + ", ".join(amenities[:2]))
 
-    ctx = context if isinstance(context, dict) else {}
-    budget = ctx.get("budget_context") if isinstance(ctx.get("budget_context"), dict) else {}
-    b_min = budget.get("min") if budget else None
-    b_max = budget.get("max") if budget else None
-    currency = (budget.get("currency") or "PEN") if budget else "PEN"
-    if b_min is not None or b_max is not None:
-        def _fmt_budget(v: float) -> str:
-            return f"S/ {int(v):,}".replace(",", ".") if currency == "PEN" else f"USD {int(v):,}".replace(",", ".")
-        if b_min is not None and b_max is not None:
-            parts.append(f"presupuesto {_fmt_budget(b_min)}–{_fmt_budget(b_max)}")
-        elif b_max is not None:
-            parts.append(f"hasta {_fmt_budget(b_max)}")
-        elif b_min is not None:
-            parts.append(f"desde {_fmt_budget(b_min)}")
+    if pref.property_type:
+        parts.append(f"tipo: {pref.property_type}")
 
     return ", ".join(parts) if parts else "sin criterios guardados todavía"

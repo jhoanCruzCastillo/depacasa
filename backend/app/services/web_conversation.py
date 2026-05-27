@@ -9,13 +9,6 @@ from sqlalchemy.orm import Session
 from app.models.web_chat_session import WebChatSession, WebChatMessage
 from app.services.lead_notification_service import notify_active_advisor_for_lead
 from app.services.matchmaking import find_matches, get_record_data, _extract_bedroom_counts
-from app.services.preference_service import (
-    build_preferences_v2_from_criteria,
-    criteria_from_preferences_v2,
-    default_preferences_v2,
-    merge_consolidated_context,
-    summarize_preferences_v2,
-)
 from app.services.chatbot_intents.context import IntentRuntime
 from app.services.chatbot_intents.engine import candidate_intents_for_state, dispatch_intents
 
@@ -1078,22 +1071,7 @@ def _finalize_lead_request(session: WebChatSession, clean: dict, lead: dict, db:
         _upsert_interaction(session.site_user_id, record_id, db, sent_by_email=True)
     session.extracted_criteria = {**clean, "_lead": lead}
     if session.site_user_id:
-        _save_preferences(
-            session.site_user_id,
-            {**clean, "_lead": lead},
-            session.ideal_description or "",
-            db,
-            extra_context={
-                "lead_profile": {
-                    "full_name": lead.get("full_name"),
-                    "country": lead.get("country_of_residence"),
-                    "whatsapp": lead.get("whatsapp"),
-                    "document": lead.get("document_number"),
-                    "financial_capacity_doc": lead.get("financial_capacity_doc"),
-                },
-                "conversation_memory": {"last_intent": "capturar_datos_contacto"},
-            },
-        )
+        _save_preferences(session.site_user_id, clean, db)
 
     confirm_msg = (
         "Listo, ya registré tu interés en esta propiedad. "
@@ -1536,16 +1514,11 @@ def _save_search_history(site_user_id, description: str, criteria: dict, db: Ses
         logger.warning(f"[history] could not save search history: {e}")
 
 
-def _save_preferences(
-    site_user_id,
-    criteria: dict,
-    description: str,
-    db: Session,
-    extra_context: dict | None = None,
-) -> None:
+def _save_preferences(site_user_id, criteria: dict, db: Session) -> None:
     """Upsert user preferences from extracted criteria."""
     try:
         from app.models.user_preference import UserPreference
+        from app.services.preference_service import update_preference_from_criteria
         uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
         sp = db.begin_nested()
         try:
@@ -1553,21 +1526,7 @@ def _save_preferences(
             if not pref:
                 pref = UserPreference(site_user_id=uid)
                 db.add(pref)
-            if criteria.get("location"):
-                pref.location = criteria.get("location")
-            if criteria.get("bedrooms") is not None:
-                pref.bedrooms = criteria.get("bedrooms")
-            if criteria.get("min_price") is not None:
-                pref.min_price = criteria.get("min_price")
-            if criteria.get("max_price") is not None:
-                pref.max_price = criteria.get("max_price")
-            if criteria.get("features"):
-                pref.features = criteria.get("features")
-            if criteria.get("keywords"):
-                pref.keywords = criteria.get("keywords")
-            pref.raw_description = description
-            pref.preferences_v2 = build_preferences_v2_from_criteria(criteria, pref.preferences_v2)
-            pref.context = merge_consolidated_context(pref.context, criteria, description, extra_context)
+            update_preference_from_criteria(pref, criteria)
             db.flush()
             sp.commit()
         except Exception:
@@ -1578,71 +1537,25 @@ def _save_preferences(
 
 
 def _track_behavior_signal(site_user_id, signal_key: str, record_id: str | None, db: Session) -> None:
-    if not record_id:
-        return
+    # Behavior signals are tracked via UserPropertyInteraction; no-op here.
+    pass
+
+
+def _load_saved_preferences(site_user_id, db: Session) -> tuple[dict, str]:
     try:
         from app.models.user_preference import UserPreference
+        from app.services.preference_service import criteria_from_preference, summarize_preference
         uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
         pref = db.query(UserPreference).filter_by(site_user_id=uid).first()
         if not pref:
-            return
-
-        current_context = pref.context if isinstance(pref.context, dict) else {}
-        behavior = dict(current_context.get("behavior_signals") or {})
-        bucket = list(behavior.get(signal_key) or [])
-        if record_id not in bucket:
-            bucket.append(record_id)
-        behavior[signal_key] = bucket[-100:]
-        pref.context = merge_consolidated_context(
-            current_context,
-            {},
-            pref.raw_description or "",
-            extra_context={"behavior_signals": behavior},
-        )
-        db.flush()
-    except Exception as e:
-        logger.warning(f"[prefs] could not track behavior signal {signal_key}: {e}")
-
-
-def _load_saved_preferences(site_user_id, db: Session) -> tuple[dict, str, dict, str]:
-    try:
-        from app.models.user_preference import UserPreference
-        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
-        pref = db.query(UserPreference).filter_by(site_user_id=uid).first()
-        if not pref:
-            return {}, "", default_preferences_v2(), ""
-
-        context = pref.context if isinstance(pref.context, dict) else {}
-        if isinstance(pref.preferences_v2, dict) and pref.preferences_v2:
-            criteria = criteria_from_preferences_v2(pref.preferences_v2, context)
-            summary = summarize_preferences_v2(pref.preferences_v2, context)
-            description = (
-                (context.get("conversation_memory") or {}).get("last_search_description")
-                if isinstance(context.get("conversation_memory"), dict)
-                else None
-            ) or pref.raw_description or ""
-            clean = {k: v for k, v in criteria.items() if v not in (None, "", []) and v != {}}
-            return clean, description, pref.preferences_v2, summary
-
-        # Backward compatibility path for legacy rows.
-        legacy_criteria = {
-            "location": pref.location,
-            "bedrooms": pref.bedrooms,
-            "min_price": pref.min_price,
-            "max_price": pref.max_price,
-            "features": pref.features or [],
-            "keywords": pref.keywords or [],
-        }
-        legacy_clean = {
-            k: v for k, v in legacy_criteria.items()
-            if v not in (None, "", []) and v != {}
-        }
-        pref_v2 = build_preferences_v2_from_criteria(legacy_clean, None)
-        summary = summarize_preferences_v2(pref_v2, context)
-        return legacy_clean, pref.raw_description or "", pref_v2, summary
+            return {}, ""
+        criteria = criteria_from_preference(pref)
+        clean = {k: v for k, v in criteria.items() if v not in (None, "", []) and v != {}}
+        summary = summarize_preference(pref)
+        return clean, summary
     except Exception as e:
         logger.warning(f"[prefs] could not load preferences: {e}")
-        return {}, "", default_preferences_v2(), ""
+        return {}, ""
 
 
 async def _attach_quick_replies(
@@ -1698,18 +1611,17 @@ async def create_session(db: Session, site_user=None) -> tuple[WebChatSession, d
     greeting = _GREETING
 
     if site_user:
-        saved_criteria, saved_desc, pref_v2, summary = _load_saved_preferences(site_user.id, db)
+        saved_criteria, summary = _load_saved_preferences(site_user.id, db)
         if _has_actionable_criteria(saved_criteria):
             session.extracted_criteria = saved_criteria
-            session.ideal_description = saved_desc or session.ideal_description
             session.info_step = 8
             rehydrated = True
             context_summary = summary
             user_name = site_user.name or "de nuevo"
             from app.services.claude_service import generate_returning_user_greeting
             greeting = await generate_returning_user_greeting(user_name, summary)
-        elif isinstance(pref_v2, dict):
-            context_summary = summarize_preferences_v2(pref_v2, {})
+        else:
+            context_summary = summary
 
     db.add(session)
     db.flush()
@@ -1880,7 +1792,7 @@ async def _process_rating_feedback(session: WebChatSession, text: str, db: Sessi
     has_meaningful = any(adjustments.get(k) for k in _MEANINGFUL_ADJ_KEYS)
     confirmation_parts: list[str] = []
     if has_meaningful and session.site_user_id:
-        _save_preferences(session.site_user_id, adjustments, "", db)
+        _save_preferences(session.site_user_id, adjustments, db)
         if adjustments.get("max_price"):
             confirmation_parts.append(f"presupuesto máximo {int(adjustments['max_price']):,}")
         if adjustments.get("min_price"):
@@ -2561,13 +2473,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
 
     # Save preferences + search history for registered users
     if session.site_user_id:
-        _save_preferences(
-            session.site_user_id,
-            merged,
-            full_desc,
-            db,
-            extra_context={"conversation_memory": {"last_intent": "inicio_busqueda"}},
-        )
+        _save_preferences(session.site_user_id, merged, db)
         _save_search_history(session.site_user_id, description, merged, db)
 
     from app.models.chat_config import ChatConfig, DEFAULT_CONFIG_ID

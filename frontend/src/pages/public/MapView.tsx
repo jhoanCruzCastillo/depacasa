@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
-import { GoogleMap, useJsApiLoader, InfoWindow } from '@react-google-maps/api'
+import { GoogleMap, useJsApiLoader } from '@react-google-maps/api'
 import { X, MapPin, BedDouble, Maximize2, SlidersHorizontal } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -143,12 +143,6 @@ function resolveProjectName(record: CatalogRecord): string {
   return '—'
 }
 
-function statusBadgeColor(s: string): string {
-  const t = s.toLowerCase()
-  if (t.includes('inmediata') || t.includes('entrega') || t.includes('disponib')) return '#10b981'
-  if (t.includes('construc') || t.includes('preventa') || t.includes('próx')) return '#f59e0b'
-  return '#6b7280'
-}
 
 // ─── Imperative marker icon (base64 SVG — reliable across all browsers) ──────
 
@@ -177,78 +171,6 @@ function makeSvgIcon(
   }
 }
 
-// ─── MapPopup ─────────────────────────────────────────────────────────────────
-
-function MapPopup({ record, onOpenDetail }: { record: CatalogRecord; onOpenDetail: (r: CatalogRecord) => void }) {
-  const img       = firstImage(record.data)
-  const name      = resolveProjectName(record)
-  const loc       = String(record.data['ubicacion'] ?? '').split('\n')[0].trim()
-  const price     = parsePriceSoles(record.data)
-  const priceStr  = String(record.data['precio_desde'] ?? record.data['precio'] ?? '')
-  const beds      = extractBedrooms(record.data)
-  const area      = extractArea(record.data)
-  const estado    = String(record.data['estado_del_proyecto'] ?? '')
-
-  return (
-    <div style={{ fontFamily: 'system-ui,sans-serif', width: 220, overflow: 'hidden' }}>
-      {img && (
-        <div style={{ margin: '-12px -12px 10px', height: 120, overflow: 'hidden', position: 'relative', borderRadius: '8px 8px 0 0' }}>
-          <img src={img} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          {estado && (
-            <span style={{
-              position: 'absolute', top: 8, left: 8, fontSize: 10, fontWeight: 700,
-              color: 'white', background: statusBadgeColor(estado),
-              padding: '2px 8px', borderRadius: 99,
-            }}>
-              {estado}
-            </span>
-          )}
-        </div>
-      )}
-
-      <p style={{ fontWeight: 700, fontSize: 13, color: '#1e293b', margin: '0 0 2px', lineHeight: 1.3 }}>
-        {name}
-      </p>
-      {loc && (
-        <p style={{ fontSize: 11, color: '#64748b', margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: 3 }}>
-          📍 {loc}
-        </p>
-      )}
-      {priceStr && (
-        <p style={{ fontSize: 16, fontWeight: 800, color: getPriceColor(price), margin: '0 0 4px' }}>
-          {priceStr}
-        </p>
-      )}
-      <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#64748b', marginBottom: 10 }}>
-        {beds && <span>🛏 {beds} dorms</span>}
-        {area && <span>📐 {area}</span>}
-      </div>
-      <div style={{ display: 'flex', gap: 6 }}>
-        <button
-          onClick={() => onOpenDetail(record)}
-          style={{
-            flex: 1, padding: '7px 0', fontSize: 11, fontWeight: 600,
-            border: '1.5px solid #e2e8f0', borderRadius: 8, background: 'white',
-            color: '#374151', cursor: 'pointer',
-          }}
-        >
-          Ver proyecto
-        </button>
-        <button
-          onClick={() => onOpenDetail(record)}
-          style={{
-            flex: 1, padding: '7px 0', fontSize: 11, fontWeight: 600,
-            border: 'none', borderRadius: 8, background: '#2563eb',
-            color: 'white', cursor: 'pointer',
-          }}
-        >
-          Agendar visita
-        </button>
-      </div>
-    </div>
-  )
-}
-
 // ─── MapView ──────────────────────────────────────────────────────────────────
 
 const MAP_OPTIONS: google.maps.MapOptions = {
@@ -256,10 +178,7 @@ const MAP_OPTIONS: google.maps.MapOptions = {
   streetViewControl: false,
   fullscreenControl: false,
   zoomControlOptions: { position: 7 as google.maps.ControlPosition },
-  styles: [
-    { featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] },
-    { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] },
-  ],
+  // No custom styles — keeps all Google Maps POI, transit, and business labels visible
 }
 
 export default function MapView({
@@ -271,14 +190,17 @@ export default function MapView({
     libraries: GMAPS_LIBRARIES,
   })
 
-  const [showPanel,      setShowPanel]      = useState(true)
+  const [showPanel,       setShowPanel]       = useState(true)
   const [developerFilter, setDeveloperFilter] = useState('')
-  const [minBedrooms,    setMinBedrooms]    = useState<number | null>(null)
-  const [minPrice,       setMinPrice]       = useState(300_000)
-  const [maxPrice,       setMaxPrice]       = useState(800_000)
-  const [entregaFilter,  setEntregaFilter]  = useState('')
-  const [selectedId,     setSelectedId]     = useState<string | null>(null)
-  const [mapRef,         setMapRef]         = useState<google.maps.Map | null>(null)
+  const [minBedrooms,     setMinBedrooms]     = useState<number | null>(null)
+  const [minPrice,        setMinPrice]        = useState(300_000)
+  const [maxPrice,        setMaxPrice]        = useState(800_000)
+  const [entregaFilter,   setEntregaFilter]   = useState('')
+  const [mapRef,          setMapRef]          = useState<google.maps.Map | null>(null)
+
+  // Stable ref so marker click handler always sees the latest onOpenDetail prop
+  const onOpenDetailRef = useRef(onOpenDetail)
+  useEffect(() => { onOpenDetailRef.current = onOpenDetail }, [onOpenDetail])
 
   // Unique developer names derived from project_name
   const developerOptions = useMemo(() => {
@@ -322,11 +244,6 @@ export default function MapView({
   // Records with coordinates (for map pins)
   const mappable = useMemo(() => filtered.filter(r => getCoords(r.data) !== null), [filtered])
 
-  const selectedRecord = useMemo(
-    () => (selectedId ? items.find(r => r.id === selectedId) ?? null : null),
-    [selectedId, items],
-  )
-
   const hasFilters = developerFilter || minBedrooms !== null || minPrice !== 300_000 || maxPrice < 800_000 || entregaFilter || activeLocation
 
   const clearFilters = () => {
@@ -344,10 +261,8 @@ export default function MapView({
   // Recreate markers when the mappable set changes
   useEffect(() => {
     if (!mapRef || !isLoaded) return
-    // Remove all existing markers
     markersRef.current.forEach(m => m.setMap(null))
     markersRef.current.clear()
-    // Add one marker per mappable record
     for (const r of mappable) {
       const coords = getCoords(r.data)!
       const price  = parsePriceSoles(r.data)
@@ -358,10 +273,10 @@ export default function MapView({
         map: mapRef,
         icon: makeSvgIcon(label, color, false),
         zIndex: 1,
+        cursor: 'pointer',
       })
-      marker.addListener('click', () =>
-        setSelectedId(prev => (prev === r.id ? null : r.id)),
-      )
+      // Click opens the detail modal directly — no intermediate popup
+      marker.addListener('click', () => onOpenDetailRef.current(r))
       markersRef.current.set(r.id, marker)
     }
     return () => {
@@ -369,20 +284,6 @@ export default function MapView({
       markersRef.current.clear()
     }
   }, [mapRef, isLoaded, mappable])
-
-  // Update icon of selected/deselected marker without recreating all markers
-  useEffect(() => {
-    markersRef.current.forEach((marker, id) => {
-      const r = mappable.find(x => x.id === id)
-      if (!r) return
-      const price      = parsePriceSoles(r.data)
-      const color      = getPriceColor(price)
-      const label      = price ? formatPriceShort(price) : '?'
-      const isSelected = id === selectedId
-      marker.setIcon(makeSvgIcon(label, color, isSelected))
-      marker.setZIndex(isSelected ? 100 : 1)
-    })
-  }, [selectedId, mappable])
 
   // Auto-fit map bounds when mappable items change
   useEffect(() => {
@@ -561,7 +462,7 @@ export default function MapView({
               <button
                 className="w-full py-2.5 text-sm font-bold text-white rounded-xl transition-all hover:opacity-90 active:scale-[.98]"
                 style={{ backgroundColor: primaryColor }}
-                onClick={() => setSelectedId(null)}
+                onClick={() => {}}
               >
                 Ver resultados
               </button>
@@ -596,12 +497,8 @@ export default function MapView({
                     return (
                       <button
                         key={r.id}
-                        onClick={() => { setSelectedId(r.id === selectedId ? null : r.id) }}
-                        className={`w-full flex gap-3 px-3 py-3 text-left transition-colors ${
-                          selectedId === r.id
-                            ? 'bg-blue-50 border-l-2 border-blue-500'
-                            : 'hover:bg-slate-50 border-l-2 border-transparent'
-                        }`}
+                        onClick={() => onOpenDetail(r)}
+                        className="w-full flex gap-3 px-3 py-3 text-left transition-colors hover:bg-slate-50 border-l-2 border-transparent hover:border-slate-300"
                       >
                         {img ? (
                           <img src={img} alt="" className="w-16 h-16 object-cover rounded-xl flex-shrink-0" />
@@ -704,22 +601,8 @@ export default function MapView({
             zoom={13}
             options={MAP_OPTIONS}
             onLoad={map => setMapRef(map)}
-            onClick={() => setSelectedId(null)}
           >
-            {/* Markers are created imperatively in useEffect above */}
-
-            {selectedRecord && getCoords(selectedRecord.data) && (
-              <InfoWindow
-                position={getCoords(selectedRecord.data)!}
-                onCloseClick={() => setSelectedId(null)}
-                options={{
-                  pixelOffset: new window.google.maps.Size(0, -38),
-                  maxWidth: 240,
-                }}
-              >
-                <MapPopup record={selectedRecord} onOpenDetail={r => { onOpenDetail(r); setSelectedId(null) }} />
-              </InfoWindow>
-            )}
+            {/* Markers created imperatively — click opens detail modal directly */}
           </GoogleMap>
         )}
       </div>

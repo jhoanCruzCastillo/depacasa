@@ -381,6 +381,33 @@ def run_migrations():
         "ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS lugares_cercanos JSONB",
         # ── Schema refactor: propiedades — add new column ────────────────────────
         "ALTER TABLE propiedades ADD COLUMN IF NOT EXISTS modelo_imagen TEXT",
+        # ── user_property_interactions: add comment column ───────────────────────
+        "ALTER TABLE user_property_interactions ADD COLUMN IF NOT EXISTS comment TEXT",
+        # ── user_preferences: flat schema with priority columns ──────────────────
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS location_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS bedrooms_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS bathrooms INTEGER",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS bathrooms_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS min_price_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS max_price_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS nearby_places JSONB",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS nearby_places_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS features_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS property_type VARCHAR(100)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS property_type_priority VARCHAR(20)",
+        # ── user_documents table ─────────────────────────────────────────────────
+        """CREATE TABLE IF NOT EXISTS user_documents (
+            id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            site_user_id     UUID REFERENCES site_users(id) ON DELETE CASCADE,
+            session_id       UUID REFERENCES web_chat_sessions(id) ON DELETE SET NULL,
+            document_url     TEXT NOT NULL,
+            document_kind    VARCHAR(50),
+            original_filename TEXT,
+            mime_type        VARCHAR(120),
+            uploaded_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_user_documents_site_user ON user_documents (site_user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_user_documents_session ON user_documents (session_id)",
     ]
     # Migrations that must run after data has been added (order matters)
     post_add_migrations = [
@@ -409,6 +436,25 @@ def run_migrations():
         "ALTER TABLE propiedades DROP COLUMN IF EXISTS descripcion",
         "ALTER TABLE propiedades DROP COLUMN IF EXISTS precio_desde",
         "ALTER TABLE propiedades DROP COLUMN IF EXISTS imagen",
+        # ── user_preferences: drop legacy columns and migrate PK to site_user_id ─
+        "ALTER TABLE user_preferences DROP COLUMN IF EXISTS keywords",
+        "ALTER TABLE user_preferences DROP COLUMN IF EXISTS raw_description",
+        "ALTER TABLE user_preferences DROP COLUMN IF EXISTS preferences_v2",
+        "ALTER TABLE user_preferences DROP COLUMN IF EXISTS context",
+        """DO $$ BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='user_preferences' AND column_name='id'
+            ) THEN
+                ALTER TABLE user_preferences DROP CONSTRAINT IF EXISTS user_preferences_pkey;
+                ALTER TABLE user_preferences DROP CONSTRAINT IF EXISTS user_preferences_site_user_id_key;
+                ALTER TABLE user_preferences DROP COLUMN IF EXISTS id;
+                BEGIN
+                    ALTER TABLE user_preferences ADD PRIMARY KEY (site_user_id);
+                EXCEPTION WHEN others THEN NULL;
+                END;
+            END IF;
+        END $$""",
     ]
     with engine.connect() as conn:
         has_fields = conn.execute(text(

@@ -57,10 +57,6 @@ def _extract_lead_from_sessions(sessions: list[WebChatSession]) -> dict:
 
 
 def _extract_lead_from_context(pref: Optional[UserPreference]) -> dict:
-    if pref and isinstance(pref.context, dict):
-        lp = pref.context.get("lead_profile")
-        if isinstance(lp, dict):
-            return lp
     return {}
 
 
@@ -113,20 +109,6 @@ def _score_presupuesto(pref: Optional[UserPreference]) -> dict:
     min_price = pref.min_price if pref else None
     max_price = pref.max_price if pref else None
 
-    # Also check preferences_v2 for budget
-    if pref and isinstance(pref.preferences_v2, dict):
-        v2 = pref.preferences_v2
-        presupuesto = v2.get("presupuesto") or {}
-        if isinstance(presupuesto, dict) and presupuesto.get("valor") is not None:
-            valor = presupuesto["valor"]
-            if isinstance(valor, dict):
-                if valor.get("min") is not None:
-                    min_price = min_price or valor["min"]
-                if valor.get("max") is not None:
-                    max_price = max_price or valor["max"]
-            elif isinstance(valor, (int, float)):
-                max_price = max_price or valor
-
     if min_price is not None:
         pts += 5
         detail.append("Precio mínimo definido (+5)")
@@ -146,19 +128,15 @@ def _score_preferencias(pref: Optional[UserPreference]) -> dict:
         pts += 5
         detail.append("Ubicación definida (+5)")
 
-    if pref and isinstance(pref.preferences_v2, dict):
-        v2 = pref.preferences_v2
-        skip_keys = {"presupuesto"}
-        defined = [
-            k for k, v in v2.items()
-            if k not in skip_keys
-            and isinstance(v, dict)
-            and v.get("valor") is not None
+    if pref:
+        extras = [
+            pref.bedrooms, pref.bathrooms, pref.nearby_places,
+            pref.features, pref.property_type,
         ]
-        bonus = min(len(defined), 5)
+        bonus = min(sum(1 for x in extras if x is not None), 5)
         if bonus > 0:
             pts += bonus
-            detail.append(f"{len(defined)} preferencias adicionales definidas (+{bonus})")
+            detail.append(f"{bonus} preferencias adicionales definidas (+{bonus})")
 
     return {"pts": min(pts, 10), "max": 10, "detail": detail}
 

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.routers.auth import get_optional_user
 from database import get_db
-from app.services.preference_service import build_preferences_v2_from_criteria, default_preferences_v2
+from app.services.preference_service import criteria_from_preference, summarize_preference
 
 router = APIRouter()
 
@@ -116,27 +116,29 @@ def get_my_profile(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
+    preferences = {
+        "location": pref.location if pref else None,
+        "location_priority": pref.location_priority if pref else None,
+        "bedrooms": pref.bedrooms if pref else None,
+        "bedrooms_priority": pref.bedrooms_priority if pref else None,
+        "bathrooms": pref.bathrooms if pref else None,
+        "bathrooms_priority": pref.bathrooms_priority if pref else None,
+        "min_price": pref.min_price if pref else None,
+        "min_price_priority": pref.min_price_priority if pref else None,
+        "max_price": pref.max_price if pref else None,
+        "max_price_priority": pref.max_price_priority if pref else None,
+        "nearby_places": pref.nearby_places if pref else None,
+        "nearby_places_priority": pref.nearby_places_priority if pref else None,
+        "features": pref.features if pref else None,
+        "features_priority": pref.features_priority if pref else None,
+        "property_type": pref.property_type if pref else None,
+        "property_type_priority": pref.property_type_priority if pref else None,
+    }
+    summary = summarize_preference(pref) if pref else ""
+
     return {
-        "preferences": (
-            pref.preferences_v2
-            if pref and isinstance(pref.preferences_v2, dict) and pref.preferences_v2
-            else (
-                build_preferences_v2_from_criteria(
-                    {
-                        "location": pref.location if pref else None,
-                        "bedrooms": pref.bedrooms if pref else None,
-                        "features": pref.features if pref else [],
-                        "keywords": pref.keywords if pref else [],
-                        "min_price": pref.min_price if pref else None,
-                        "max_price": pref.max_price if pref else None,
-                    },
-                    None,
-                )
-                if pref
-                else default_preferences_v2()
-            )
-        ),
-        "context": (pref.context if pref and isinstance(pref.context, dict) else {}),
+        "preferences": preferences,
+        "summary": summary,
         "preferences_updated_at": pref.updated_at.isoformat() if pref and pref.updated_at else None,
         "interactions": [
             {

@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, Boolean, Integer, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Boolean, Integer, Text, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from database import Base
@@ -19,6 +19,8 @@ class UserPropertyInteraction(Base):
     rating = Column(Integer, nullable=True)      # 1-5 stars, null = not rated
     interested = Column(Boolean, default=False)  # clicked "Lo quiero"
     sent_by_email = Column(Boolean, default=False)
+
+    comment = Column(Text, nullable=True)
 
     seen_at = Column(DateTime(timezone=True), nullable=True)
     rated_at = Column(DateTime(timezone=True), nullable=True)

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from database import get_db
 from app.models.web_chat_session import WebChatSession
+from app.models.user_document import UserDocument
 from app.services.web_conversation import create_session, handle_message
 from app.routers.auth import get_optional_user
 
@@ -158,12 +159,25 @@ async def upload_attachment(
     out_path.write_bytes(data)
 
     relative_url = f"/media/chat_uploads/{date_key}/{session.id}/{stored_name}"
+    kind = _attachment_kind(content_type, ext)
+
+    doc = UserDocument(
+        site_user_id=session.site_user_id or None,
+        session_id=session.id,
+        document_url=relative_url,
+        document_kind=kind,
+        original_filename=safe_name,
+        mime_type=content_type,
+    )
+    db.add(doc)
+    db.commit()
+
     return {
         "attachment_url": relative_url,
         "file_name": safe_name,
         "mime_type": content_type,
         "size": len(data),
-        "kind": _attachment_kind(content_type, ext),
+        "kind": kind,
     }
 
 
