@@ -379,8 +379,9 @@ def run_migrations():
         "ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS areas_comunes JSONB",
         "ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS areas_comunes_imagenes JSONB",
         "ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS lugares_cercanos JSONB",
-        # ── Schema refactor: propiedades — add new column ────────────────────────
+        # ── Schema refactor: propiedades — add new columns ───────────────────────
         "ALTER TABLE propiedades ADD COLUMN IF NOT EXISTS modelo_imagen TEXT",
+        "ALTER TABLE propiedades ADD COLUMN IF NOT EXISTS baños TEXT",
         # ── user_property_interactions: add comment column ───────────────────────
         "ALTER TABLE user_property_interactions ADD COLUMN IF NOT EXISTS comment TEXT",
         # ── user_preferences: flat schema with priority columns ──────────────────
@@ -408,6 +409,22 @@ def run_migrations():
         )""",
         "CREATE INDEX IF NOT EXISTS idx_user_documents_site_user ON user_documents (site_user_id)",
         "CREATE INDEX IF NOT EXISTS idx_user_documents_session ON user_documents (session_id)",
+        # ── site_users: role column ──────────────────────────────────────────────
+        "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'USER'",
+        # ── admin_notifications table ────────────────────────────────────────────
+        """CREATE TABLE IF NOT EXISTS admin_notifications (
+            id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            type           VARCHAR(50) NOT NULL,
+            title          TEXT NOT NULL,
+            body           TEXT,
+            reference_id   UUID,
+            reference_type VARCHAR(50),
+            is_read        BOOLEAN NOT NULL DEFAULT FALSE,
+            read_at        TIMESTAMPTZ,
+            created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_admin_notifications_type ON admin_notifications (type)",
+        "CREATE INDEX IF NOT EXISTS idx_admin_notifications_is_read ON admin_notifications (is_read)",
     ]
     # Migrations that must run after data has been added (order matters)
     post_add_migrations = [

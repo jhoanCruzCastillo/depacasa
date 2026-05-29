@@ -10,6 +10,7 @@ from database import get_db
 from app.models.site_user import SiteUser
 from app.services.auth_service import hash_password, verify_password, create_token, decode_token
 from app.services.email_service import send_welcome
+from app.services.notification_service import create_notification
 
 router = APIRouter()
 
@@ -67,6 +68,13 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
     send_welcome(user.email, user.name or "")
+    create_notification(
+        db,
+        type="user_registered",
+        title=f"Nuevo usuario registrado: {user.name or user.email}",
+        reference_id=user.id,
+        reference_type="site_user",
+    )
     return {"token": create_token(str(user.id)), "user": _user_out(user)}
 
 

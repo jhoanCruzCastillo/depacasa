@@ -29,6 +29,13 @@ export const updateDeveloper = (id: string, data: Partial<Developer>) =>
   API.patch<Developer>(`/developers/${id}`, data)
 export const deleteDeveloper = (id: string) => API.delete(`/developers/${id}`)
 
+export const extractPropertyFields = (developerId: string, onlyMissing = true) =>
+  API.post<{ processed: number; updated: number; ai_calls: number }>(
+    `/developers/${developerId}/extract-fields`,
+    null,
+    { params: { only_missing: onlyMissing }, timeout: 120_000 }
+  )
+
 // Developer URL nodes (summary list)
 export const getDeveloperUrlNodes = (developerId: string) =>
   API.get(`/developers/${developerId}/url-nodes`)
@@ -196,6 +203,17 @@ export const authLogin = (email: string, password: string) =>
   API.post('/auth/login', { email, password })
 export const authMe = (token: string) =>
   API.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+
+// ── Admin Notifications ───────────────────────────────────────────────────────
+
+export const getAdminNotifications = (limit = 50) =>
+  API.get('/admin/notifications', { params: { limit } })
+export const getNotificationUnreadCount = () =>
+  API.get('/admin/notifications/unread-count')
+export const markNotificationRead = (id: string) =>
+  API.patch(`/admin/notifications/${id}/read`)
+export const markAllNotificationsRead = () =>
+  API.post('/admin/notifications/mark-all-read')
 
 // ── Site Builder (admin) ──────────────────────────────────────────────────────
 

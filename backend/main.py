@@ -19,6 +19,7 @@ from app.routers import (
     site_router,
     auth_router,
     site_users_router,
+    admin_notifications_router,
 )
 # Import models so Base.metadata includes them for create_all
 import app.models.chat_user  # noqa: F401
@@ -33,6 +34,8 @@ import app.models.web_chat_session  # noqa: F401
 import app.models.user_preference  # noqa: F401
 import app.models.user_property_interaction  # noqa: F401
 import app.models.search_history  # noqa: F401
+import app.models.user_document  # noqa: F401
+import app.models.admin_notification  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +74,7 @@ app.include_router(chat_router)
 app.include_router(site_router)
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(site_users_router)
+app.include_router(admin_notifications_router)
 
 
 @app.get("/health")

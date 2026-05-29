@@ -7,6 +7,23 @@ export interface Developer {
   proyectos_url: string | null
   source: 'tavily' | 'manual'
   created_at: string
+  // Stats enriched by API
+  proyectos_count?: number
+  propiedades_count?: number
+  last_sync_at?: string | null
+  last_sync_status?: 'pending' | 'running' | 'completed' | 'failed' | null
+}
+
+export interface AdminNotification {
+  id: string
+  type: string
+  title: string
+  body: string | null
+  reference_id: string | null
+  reference_type: string | null
+  is_read: boolean
+  read_at: string | null
+  created_at: string
 }
 
 export interface UrlNode {

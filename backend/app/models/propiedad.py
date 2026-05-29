@@ -18,6 +18,7 @@ class Propiedad(Base):
 
     imagen_modelo = Column(Text, nullable=True)
     dormitorios   = Column(Text, nullable=True)
+    baños         = Column(Text, nullable=True)
     m2            = Column(Text, nullable=True)
     modelo        = Column(Text, nullable=True)
     modelo_imagen = Column(Text, nullable=True)
@@ -27,7 +28,7 @@ class Propiedad(Base):
 
     def to_data(self) -> dict:
         d = {}
-        for col in ("imagen_modelo", "dormitorios", "m2", "modelo", "modelo_imagen"):
+        for col in ("imagen_modelo", "dormitorios", "baños", "m2", "modelo", "modelo_imagen"):
             val = getattr(self, col)
             if val is not None:
                 d[col] = val

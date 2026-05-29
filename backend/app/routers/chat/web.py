@@ -13,6 +13,7 @@ from database import get_db
 from app.models.web_chat_session import WebChatSession
 from app.models.user_document import UserDocument
 from app.services.web_conversation import create_session, handle_message
+from app.services.notification_service import create_notification
 from app.routers.auth import get_optional_user
 
 router = APIRouter()
@@ -171,6 +172,15 @@ async def upload_attachment(
     )
     db.add(doc)
     db.commit()
+
+    create_notification(
+        db,
+        type="document_uploaded",
+        title=f"Documento subido: {safe_name}",
+        body=f"Tipo: {kind}",
+        reference_id=doc.id,
+        reference_type="user_document",
+    )
 
     return {
         "attachment_url": relative_url,

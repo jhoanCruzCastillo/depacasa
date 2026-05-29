@@ -15,6 +15,7 @@ class SiteUser(Base):
     country = Column(String, nullable=True)
     phone = Column(String, nullable=True)
     wants_newsletter = Column(Boolean, default=False)
+    role = Column(String(20), nullable=False, server_default="USER")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     # Manual document validation: pending | approved | rejected
     financial_doc_status = Column(String(20), nullable=True, default=None)

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import Optional, List
@@ -7,11 +7,14 @@ from pydantic import BaseModel
 import uuid as _uuid
 from datetime import datetime
 
+from sqlalchemy import func, desc as _desc
+
 from database import get_db
 from app.models import Developer, ExtractionTemplate, ScrapedRecord
 from app.models.developer import DeveloperSource
 from app.models.proyecto import Proyecto
 from app.models.propiedad import Propiedad
+from app.models.scrape_job import ScrapeJob
 from app.schemas import DeveloperCreate, DeveloperUpdate, DeveloperResponse
 
 router = APIRouter(prefix="/api/developers", tags=["developers"])
@@ -101,7 +104,7 @@ async def bulk_create_developers(
     return created
 
 
-@router.get("", response_model=list[DeveloperResponse])
+@router.get("")
 async def list_developers(
     skip: int = 0,
     limit: int = 100,
@@ -112,7 +115,66 @@ async def list_developers(
     if search:
         q = q.filter(Developer.name.ilike(f"%{search}%"))
     developers = q.order_by(Developer.created_at.desc()).offset(skip).limit(limit).all()
-    return developers
+    if not developers:
+        return []
+
+    dev_ids = [dev.id for dev in developers]
+
+    # Batch: proyectos count per developer
+    proy_counts = dict(
+        db.query(Proyecto.developer_id, func.count(Proyecto.id))
+        .filter(Proyecto.developer_id.in_(dev_ids))
+        .group_by(Proyecto.developer_id)
+        .all()
+    )
+
+    # Batch: propiedades count per developer (via proyectos join)
+    prop_counts = dict(
+        db.query(Proyecto.developer_id, func.count(Propiedad.id))
+        .join(Propiedad, Propiedad.proyecto_id == Proyecto.id)
+        .filter(Proyecto.developer_id.in_(dev_ids))
+        .group_by(Proyecto.developer_id)
+        .all()
+    )
+
+    # Batch: most recent scrape job per developer
+    last_jobs: dict = {}
+    for job in (
+        db.query(ScrapeJob)
+        .filter(ScrapeJob.developer_id.in_(dev_ids))
+        .order_by(ScrapeJob.developer_id, _desc(ScrapeJob.created_at))
+        .all()
+    ):
+        if job.developer_id not in last_jobs:
+            last_jobs[job.developer_id] = job
+
+    def _status(job):
+        if job is None:
+            return None
+        return job.status.value if hasattr(job.status, "value") else str(job.status)
+
+    def _sync_at(job):
+        if job is None or job.finished_at is None:
+            return None
+        return job.finished_at.isoformat()
+
+    return [
+        {
+            "id": str(dev.id),
+            "name": dev.name,
+            "description": dev.description,
+            "base_url": dev.base_url,
+            "logo_url": dev.logo_url,
+            "proyectos_url": dev.proyectos_url,
+            "source": dev.source.value if hasattr(dev.source, "value") else dev.source,
+            "created_at": dev.created_at.isoformat() if dev.created_at else None,
+            "proyectos_count": proy_counts.get(dev.id, 0),
+            "propiedades_count": prop_counts.get(dev.id, 0),
+            "last_sync_at": _sync_at(last_jobs.get(dev.id)),
+            "last_sync_status": _status(last_jobs.get(dev.id)),
+        }
+        for dev in developers
+    ]
 
 
 @router.get("/{developer_id}", response_model=DeveloperResponse)
@@ -216,6 +278,62 @@ async def delete_developer_records(
     # propiedades cascade via proyectos (ON DELETE CASCADE), so deleting proyectos is enough
     db.query(Proyecto).filter(Proyecto.developer_id == developer_id).delete(synchronize_session=False)
     db.commit()
+
+
+@router.post("/{developer_id}/extract-fields")
+async def extract_property_fields(
+    developer_id: UUID,
+    db: Session = Depends(get_db),
+    only_missing: bool = Query(True, description="Solo procesar propiedades con campos vacíos"),
+):
+    """
+    Extrae dormitorios, m2 y baños del texto 'modelo' de cada propiedad del desarrollador.
+    Usa regex primero y Claude Haiku como fallback para casos ambiguos.
+    """
+    from app.services.field_extraction_service import extract_fields as _extract
+
+    developer = db.query(Developer).filter(Developer.id == developer_id).first()
+    if not developer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Developer not found")
+
+    proyectos = db.query(Proyecto).filter(Proyecto.developer_id == developer_id).all()
+    proyecto_ids = [p.id for p in proyectos]
+    if not proyecto_ids:
+        return {"processed": 0, "updated": 0, "ai_calls": 0}
+
+    query = db.query(Propiedad).filter(Propiedad.proyecto_id.in_(proyecto_ids))
+    if only_missing:
+        from sqlalchemy import or_
+        query = query.filter(
+            Propiedad.modelo.isnot(None),
+            or_(
+                Propiedad.dormitorios.is_(None),
+                Propiedad.m2.is_(None),
+                getattr(Propiedad, 'baños').is_(None),
+            )
+        )
+    propiedades = query.all()
+
+    processed = updated = ai_calls = 0
+    for prop in propiedades:
+        if not prop.modelo:
+            continue
+        processed += 1
+        fields, source = _extract(prop.modelo)
+        if not fields:
+            continue
+        changed = False
+        for field, value in fields.items():
+            if getattr(prop, field, None) is None or not only_missing:
+                setattr(prop, field, value)
+                changed = True
+        if changed:
+            updated += 1
+        if source == 'ai':
+            ai_calls += 1
+
+    db.commit()
+    return {"processed": processed, "updated": updated, "ai_calls": ai_calls}
 
 
 def _is_uuid(s: str) -> bool:

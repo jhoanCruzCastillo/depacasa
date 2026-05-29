@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -6,15 +7,14 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   faPencil, faCheck, faXmark, faChevronRight, faArrowUpRightFromSquare,
   faMagnifyingGlass, faSpinner, faTrash, faTriangleExclamation, faBuilding,
-  faScrewdriverWrench,
+  faScrewdriverWrench, faRobot,
 } from '@fortawesome/free-solid-svg-icons'
 import {
   getDeveloper, updateDeveloper,
-  getDeveloperRecords, deleteRecords,
+  getDeveloperRecords, deleteRecords, extractPropertyFields,
 } from '../services/api'
 import { ScrapedRecord } from '../types'
 import toast from 'react-hot-toast'
-import { slidePanel } from './developers/animations'
 import { extractTitle, extractLocation } from './developers/helpers/extractors'
 import ProjectCard         from './developers/components/ProjectCard'
 import PropertyModal       from './developers/components/PropertyModal'
@@ -27,6 +27,7 @@ export default function DeveloperDetailPage() {
   const [editName, setEditName]           = useState(false)
   const [nameVal, setNameVal]             = useState('')
   const [clearing, setClearing]           = useState(false)
+  const [extracting, setExtracting]       = useState(false)
   const [projectSearch, setProjectSearch] = useState('')
   const [selectedId, setSelectedId]       = useState<string | null>(null)
   const [modalRecord, setModalRecord]     = useState<ScrapedRecord | null>(null)
@@ -44,7 +45,6 @@ export default function DeveloperDetailPage() {
     enabled: !!id,
   })
 
-  // Separate records by type using the new schema
   const proyectos = useMemo(() =>
     (records as ScrapedRecord[]).filter(r => r.type === 'proyecto'),
     [records]
@@ -56,9 +56,7 @@ export default function DeveloperDetailPage() {
       .filter(r => {
         if (r.type !== 'propiedad' || !r.proyecto_id) return false
         const d = r.data || {}
-        // Exclude records with no property-specific data (mis-scraped project cards)
         if (!d.modelo && !d.dormitorios && !d.m2 && !d.imagen_modelo && !d.modelo_imagen) return false
-        // Exclude records where modelo is a placeholder (e.g. "null / m2 / dorms / 0 baños")
         if (typeof d.modelo === 'string' && d.modelo.split('/')[0].trim().toLowerCase() === 'null') return false
         return true
       })
@@ -94,6 +92,19 @@ export default function DeveloperDetailPage() {
     finally { setClearing(false) }
   }
 
+  const handleExtract = async () => {
+    setExtracting(true)
+    try {
+      const { data } = await extractPropertyFields(id!)
+      queryClient.invalidateQueries({ queryKey: ['records', id] })
+      toast.success(
+        `Extracción completada: ${data.updated} propiedades actualizadas` +
+        (data.ai_calls > 0 ? ` (${data.ai_calls} con IA)` : '')
+      )
+    } catch { toast.error('Error al extraer campos') }
+    finally { setExtracting(false) }
+  }
+
   const filteredProjects = useMemo(() => {
     if (!projectSearch.trim()) return proyectos
     const q = projectSearch.toLowerCase()
@@ -115,7 +126,6 @@ export default function DeveloperDetailPage() {
   }, [proyectos, propiedadesByProyectoId])
 
   const selectedRecord = selectedId ? proyectos.find(r => r.id === selectedId) ?? null : null
-  const panelOpen      = !!selectedRecord
 
   if (loadingDev) {
     return (
@@ -196,91 +206,113 @@ export default function DeveloperDetailPage() {
         </div>
       </div>
 
-      {/* Main: grid + detail panel */}
-      <div className="flex gap-0 min-h-0 relative">
-        {/* Left: projects grid */}
-        <motion.div layout className="flex-1 min-w-0 flex flex-col gap-4" transition={{ duration: 0.18, type: 'tween' }}>
-          {/* Toolbar */}
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1 max-w-xs">
-              <FontAwesomeIcon icon={faMagnifyingGlass} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs pointer-events-none" />
-              <input type="text" placeholder="Buscar proyecto..."
-                value={projectSearch} onChange={e => setProjectSearch(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
-            </div>
-            <span className="text-sm text-gray-400">{filteredProjects.length} proyectos</span>
-            <div className="flex-1" />
-            {(records as ScrapedRecord[]).length > 0 && (
-              <button onClick={handleClear} disabled={clearing}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 transition">
-                {clearing
-                  ? <FontAwesomeIcon icon={faSpinner} className="w-3 h-3 animate-spin" />
-                  : <FontAwesomeIcon icon={faTrash} className="w-3 h-3" />
-                }
-                Limpiar registros
-              </button>
-            )}
+      {/* Projects grid */}
+      <div className="flex flex-col gap-4">
+        {/* Toolbar */}
+        <div className="flex items-center gap-3">
+          <div className="relative flex-1 max-w-xs">
+            <FontAwesomeIcon icon={faMagnifyingGlass} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs pointer-events-none" />
+            <input type="text" placeholder="Buscar proyecto..."
+              value={projectSearch} onChange={e => setProjectSearch(e.target.value)}
+              className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
           </div>
-
-          {/* Cards */}
-          {loadingRecords ? (
-            <div className={`grid gap-4 ${panelOpen ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3'}`}>
-              {[...Array(6)].map((_, i) => (
-                <div key={i} className="rounded-xl border border-gray-200 overflow-hidden animate-pulse bg-white">
-                  <div className="h-44 bg-gray-100" />
-                  <div className="p-4 space-y-2">
-                    <div className="h-3 bg-gray-100 rounded w-1/3" />
-                    <div className="h-4 bg-gray-100 rounded w-3/4" />
-                    <div className="h-3 bg-gray-100 rounded w-1/2" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : filteredProjects.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 bg-white rounded-2xl border border-gray-200 text-center">
-              <FontAwesomeIcon icon={faBuilding} className="w-10 h-10 text-gray-300 mb-3" />
-              <p className="font-semibold text-gray-700 mb-1">
-                {projectSearch ? `Sin resultados para "${projectSearch}"` : 'No hay proyectos extraídos'}
-              </p>
-              <p className="text-sm text-gray-400">
-                {projectSearch ? 'Intenta con otro término.' : 'Ejecuta el scraping para obtener proyectos.'}
-              </p>
-            </div>
-          ) : (
-            <motion.div layout
-              className={`grid gap-4 ${panelOpen ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3'}`}
-              transition={{ duration: 0.18, type: 'tween' }}>
-              {filteredProjects.map(record => (
-                <ProjectCard
-                  key={record.id}
-                  record={record}
-                  selected={record.id === selectedId}
-                  childCount={childCountByProjectId[record.id] ?? 0}
-                  onClick={() => setSelectedId(record.id === selectedId ? null : record.id)}
-                />
-              ))}
-            </motion.div>
+          <span className="text-sm text-gray-400">{filteredProjects.length} proyectos</span>
+          <div className="flex-1" />
+          {proyectos.length > 0 && (
+            <button onClick={handleExtract} disabled={extracting}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-violet-600 border border-violet-200 rounded-lg hover:bg-violet-50 disabled:opacity-50 transition">
+              {extracting
+                ? <FontAwesomeIcon icon={faSpinner} className="w-3 h-3 animate-spin" />
+                : <FontAwesomeIcon icon={faRobot} className="w-3 h-3" />
+              }
+              Extraer campos IA
+            </button>
           )}
-        </motion.div>
+          {(records as ScrapedRecord[]).length > 0 && (
+            <button onClick={handleClear} disabled={clearing}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 transition">
+              {clearing
+                ? <FontAwesomeIcon icon={faSpinner} className="w-3 h-3 animate-spin" />
+                : <FontAwesomeIcon icon={faTrash} className="w-3 h-3" />
+              }
+              Limpiar registros
+            </button>
+          )}
+        </div>
 
-        {/* Right: sliding detail panel */}
+        {/* Cards */}
+        {loadingRecords ? (
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className="rounded-xl border border-gray-200 overflow-hidden animate-pulse bg-white">
+                <div className="h-44 bg-gray-100" />
+                <div className="p-4 space-y-2">
+                  <div className="h-3 bg-gray-100 rounded w-1/3" />
+                  <div className="h-4 bg-gray-100 rounded w-3/4" />
+                  <div className="h-3 bg-gray-100 rounded w-1/2" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : filteredProjects.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 bg-white rounded-2xl border border-gray-200 text-center">
+            <FontAwesomeIcon icon={faBuilding} className="w-10 h-10 text-gray-300 mb-3" />
+            <p className="font-semibold text-gray-700 mb-1">
+              {projectSearch ? `Sin resultados para "${projectSearch}"` : 'No hay proyectos extraídos'}
+            </p>
+            <p className="text-sm text-gray-400">
+              {projectSearch ? 'Intenta con otro término.' : 'Ejecuta el scraping para obtener proyectos.'}
+            </p>
+          </div>
+        ) : (
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
+            {filteredProjects.map(record => (
+              <ProjectCard
+                key={record.id}
+                record={record}
+                selected={record.id === selectedId}
+                childCount={childCountByProjectId[record.id] ?? 0}
+                onClick={() => setSelectedId(record.id === selectedId ? null : record.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Project detail modal */}
+      {createPortal(
         <AnimatePresence>
           {selectedRecord && (
             <motion.div
-              variants={slidePanel} initial="hidden" animate="visible" exit="exit"
-              className="w-[480px] flex-shrink-0 ml-4 bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-lg flex flex-col"
-              style={{ maxHeight: 'calc(100vh - 160px)', position: 'sticky', top: '80px' }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4"
+              style={{ backgroundColor: 'rgba(0,0,0,0.45)' }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              onClick={() => setSelectedId(null)}
             >
-              <ProjectDetailPanel
-                record={selectedRecord}
-                childRecords={childRecordsForSelected}
-                onClose={() => setSelectedId(null)}
-                onOpenProperty={r => { setModalRecord(r); setModalOpen(true) }}
-              />
+              <motion.div
+                className="w-full max-w-5xl bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col min-h-0"
+                style={{ maxHeight: '90vh', height: '90vh', willChange: 'transform' }}
+                initial={{ opacity: 0, y: 24 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 16 }}
+                transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                onClick={e => e.stopPropagation()}
+              >
+                <ProjectDetailPanel
+                  record={selectedRecord}
+                  childRecords={childRecordsForSelected}
+                  onClose={() => setSelectedId(null)}
+                  onOpenProperty={r => { setModalRecord(r); setModalOpen(true) }}
+                />
+              </motion.div>
             </motion.div>
           )}
-        </AnimatePresence>
-      </div>
+        </AnimatePresence>,
+        document.body
+      )}
 
       {/* Property detail modal */}
       <PropertyModal record={modalRecord} open={modalOpen} onClose={() => setModalOpen(false)} />
