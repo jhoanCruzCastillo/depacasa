@@ -1,9 +1,10 @@
-"""Sales advisors CRUD + advisor auth."""
+"""Sales advisors CRUD + advisor auth + marketplace."""
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
 from uuid import UUID
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, timezone
 from pydantic import BaseModel
 
@@ -12,8 +13,13 @@ from app.models.sales_advisor import SalesAdvisor
 from app.models.web_chat_session import WebChatSession
 from app.models.site_user import SiteUser
 from app.models.propiedad import Propiedad
+from app.models.proyecto import Proyecto
+from app.models.user_property_interaction import UserPropertyInteraction
+from app.models.advisor_lead_purchase import AdvisorLeadPurchase
+from app.models.developer import Developer
 from app.services.auth_service import hash_password, verify_password, create_token, decode_token
 from app.services.email_service import send_email
+from app.services.lead_scoring_service import compute_score_for_user_id, load_scoring_config
 
 router = APIRouter()
 
@@ -24,6 +30,7 @@ class AdvisorIn(BaseModel):
     email: Optional[str] = None
     whatsapp_number: Optional[str] = None
     is_active: bool = True
+    developer_id: Optional[str] = None
 
 
 class AdvisorLoginIn(BaseModel):
@@ -56,7 +63,11 @@ def _get_current_advisor(authorization: Optional[str] = Header(None), db: Sessio
     return advisor
 
 
-def _serialize(a: SalesAdvisor) -> dict:
+def _serialize(a: SalesAdvisor, db: Session = None) -> dict:
+    developer_name = None
+    if db and a.developer_id:
+        dev = db.query(Developer).filter(Developer.id == a.developer_id).first()
+        developer_name = dev.name if dev else None
     return {
         "id": str(a.id),
         "name": a.name,
@@ -64,6 +75,10 @@ def _serialize(a: SalesAdvisor) -> dict:
         "email": a.email,
         "whatsapp_number": a.whatsapp_number,
         "is_active": a.is_active,
+        "developer_id": str(a.developer_id) if a.developer_id else None,
+        "developer_name": developer_name,
+        "bio": a.bio,
+        "specialty": a.specialty,
         "created_at": a.created_at.isoformat(),
         "updated_at": a.updated_at.isoformat() if a.updated_at else None,
     }
@@ -184,19 +199,15 @@ async def list_advisors(db: Session = Depends(get_db)):
 
 @router.post("/advisors", status_code=status.HTTP_201_CREATED)
 async def create_advisor(body: AdvisorIn, db: Session = Depends(get_db)):
-    a = SalesAdvisor(**body.dict())
+    a = SalesAdvisor(
+        name=body.name, phone=body.phone, email=body.email,
+        whatsapp_number=body.whatsapp_number, is_active=body.is_active,
+        developer_id=UUID(body.developer_id) if body.developer_id else None,
+    )
     db.add(a)
     db.commit()
     db.refresh(a)
-    return _serialize(a)
-
-
-@router.get("/advisors/{advisor_id}")
-async def get_advisor(advisor_id: UUID, db: Session = Depends(get_db)):
-    a = db.query(SalesAdvisor).filter(SalesAdvisor.id == advisor_id).first()
-    if not a:
-        raise HTTPException(status_code=404, detail="Advisor not found")
-    return _serialize(a)
+    return _serialize(a, db)
 
 
 @router.get("/advisors/{advisor_id}/clients")
@@ -273,11 +284,15 @@ async def update_advisor(advisor_id: UUID, body: AdvisorIn, db: Session = Depend
     a = db.query(SalesAdvisor).filter(SalesAdvisor.id == advisor_id).first()
     if not a:
         raise HTTPException(status_code=404, detail="Advisor not found")
-    for k, v in body.dict().items():
-        setattr(a, k, v)
+    a.name = body.name
+    a.phone = body.phone
+    a.email = body.email
+    a.whatsapp_number = body.whatsapp_number
+    a.is_active = body.is_active
+    a.developer_id = UUID(body.developer_id) if body.developer_id else None
     db.commit()
     db.refresh(a)
-    return _serialize(a)
+    return _serialize(a, db)
 
 
 @router.delete("/advisors/{advisor_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -362,3 +377,264 @@ def send_advisor_email(advisor_id: UUID, body: AdvisorEmailIn, db: Session = Dep
     if not ok:
         raise HTTPException(status_code=503, detail="No se pudo enviar el correo. Verifica la configuración de Resend.")
     return {"sent": True, "to": a.email}
+
+
+# ── Advisor self-profile update ────────────────────────────────────────────────
+
+class AdvisorProfileIn(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    whatsapp_number: Optional[str] = None
+    developer_id: Optional[str] = None
+    bio: Optional[str] = None
+    specialty: Optional[str] = None
+
+
+@router.patch("/advisors/me/profile")
+def update_my_profile(body: AdvisorProfileIn, current: SalesAdvisor = Depends(_get_current_advisor), db: Session = Depends(get_db)):
+    current.name = body.name.strip() or current.name
+    current.phone = body.phone
+    current.whatsapp_number = body.whatsapp_number
+    current.developer_id = UUID(body.developer_id) if body.developer_id else None
+    current.bio = body.bio
+    current.specialty = body.specialty
+    db.commit()
+    db.refresh(current)
+    advisor_dict = _serialize(current)
+    advisor_dict["developer_id"] = str(current.developer_id) if current.developer_id else None
+    advisor_dict["bio"] = current.bio
+    advisor_dict["specialty"] = current.specialty
+    # attach developer name
+    if current.developer_id:
+        dev = db.query(Developer).filter(Developer.id == current.developer_id).first()
+        advisor_dict["developer_name"] = dev.name if dev else None
+    else:
+        advisor_dict["developer_name"] = None
+    return advisor_dict
+
+
+@router.get("/advisors/me/full")
+def get_my_full_profile(current: SalesAdvisor = Depends(_get_current_advisor), db: Session = Depends(get_db)):
+    advisor_dict = _serialize(current)
+    advisor_dict["developer_id"] = str(current.developer_id) if current.developer_id else None
+    advisor_dict["bio"] = current.bio
+    advisor_dict["specialty"] = current.specialty
+    if current.developer_id:
+        dev = db.query(Developer).filter(Developer.id == current.developer_id).first()
+        advisor_dict["developer_name"] = dev.name if dev else None
+    else:
+        advisor_dict["developer_name"] = None
+    return advisor_dict
+
+
+# ── Marketplace ────────────────────────────────────────────────────────────────
+
+def _mask_name(name: Optional[str], email: Optional[str]) -> str:
+    if name:
+        parts = name.strip().split()
+        return parts[0] if parts else "Lead"
+    if email:
+        local = email.split("@")[0]
+        return local[0].upper() + "***" if local else "Lead"
+    return "Lead anónimo"
+
+
+def _mask_email(email: Optional[str]) -> Optional[str]:
+    if not email:
+        return None
+    local, domain = email.split("@") if "@" in email else (email, "")
+    return local[0] + "***@" + domain if domain else local[0] + "***"
+
+
+@router.get("/advisors/marketplace")
+def get_marketplace(current: SalesAdvisor = Depends(_get_current_advisor), db: Session = Depends(get_db)):
+    if not current.developer_id:
+        return {"leads": [], "message": "Asocia tu cuenta a una desarrolladora para ver leads."}
+
+    # Get all properties for this developer (through proyectos)
+    proyecto_ids = [
+        r[0] for r in db.query(Proyecto.id)
+        .filter(Proyecto.developer_id == current.developer_id)
+        .all()
+    ]
+    if not proyecto_ids:
+        return {"leads": []}
+
+    prop_ids = [
+        r[0] for r in db.query(Propiedad.id)
+        .filter(Propiedad.proyecto_id.in_(proyecto_ids))
+        .all()
+    ]
+    if not prop_ids:
+        return {"leads": []}
+
+    # Only users who rated (≥1 estrella), commented, or marcaron "Lo quiero"
+    interactions = (
+        db.query(UserPropertyInteraction)
+        .filter(
+            UserPropertyInteraction.record_id.in_(prop_ids),
+            UserPropertyInteraction.site_user_id.isnot(None),
+            or_(
+                UserPropertyInteraction.rating.isnot(None),
+                and_(
+                    UserPropertyInteraction.comment.isnot(None),
+                    UserPropertyInteraction.comment != "",
+                ),
+                UserPropertyInteraction.interested == True,
+            ),
+        )
+        .all()
+    )
+
+    # Group by user
+    from collections import defaultdict
+    user_props: dict = defaultdict(list)
+    for i in interactions:
+        user_props[i.site_user_id].append(i)
+
+    if not user_props:
+        return {"leads": []}
+
+    # Load users
+    users = {u.id: u for u in db.query(SiteUser).filter(SiteUser.id.in_(list(user_props.keys()))).all()}
+
+    # Load property titles
+    props_map = {p.id: p for p in db.query(Propiedad).filter(Propiedad.id.in_(prop_ids)).all()}
+
+    # Load purchases for this advisor
+    purchases = {
+        str(p.site_user_id)
+        for p in db.query(AdvisorLeadPurchase)
+        .filter(AdvisorLeadPurchase.advisor_id == current.id)
+        .all()
+    }
+
+    # Load scoring config for pricing
+    cfg = load_scoring_config(db)
+    tier_prices = {
+        "muy_caliente": float(cfg.get("price_muy_caliente") or 0),
+        "caliente":     float(cfg.get("price_caliente") or 0),
+        "tibio":        float(cfg.get("price_tibio") or 0),
+        "frio":         float(cfg.get("price_frio") or 0),
+    }
+    currency = cfg.get("price_currency", "PEN")
+
+    leads = []
+    for user_id, user_interactions in user_props.items():
+        user = users.get(user_id)
+        if not user:
+            continue
+
+        score_data = compute_score_for_user_id(user_id, db)
+        tier_key = score_data["tier"]["key"] if score_data else "frio"
+        score_total = score_data["total"] if score_data else 0
+        tier_label = score_data["tier"]["label"] if score_data else "Frío"
+        price = tier_prices.get(tier_key, 0)
+
+        is_unlocked = str(user_id) in purchases
+
+        # Build property list
+        prop_list = []
+        seen_prop_ids = set()
+        for inter in user_interactions:
+            if inter.record_id in seen_prop_ids:
+                continue
+            seen_prop_ids.add(inter.record_id)
+            prop = props_map.get(inter.record_id)
+            prop_data = prop.extra_data if prop and isinstance(prop.extra_data, dict) else {}
+            title = (
+                prop_data.get("titulo") or prop_data.get("title") or
+                prop_data.get("nombre") or prop_data.get("modelo") or
+                (prop.modelo if prop else None) or
+                f"Propiedad {str(inter.record_id)[:8]}"
+            )
+            prop_list.append({
+                "id": str(inter.record_id),
+                "title": title,
+                "interested": inter.interested,
+                "rating": inter.rating,
+            })
+
+        leads.append({
+            "user_id": str(user_id),
+            "display_name": _mask_name(user.name, user.email) if not is_unlocked else (user.name or user.email or "Sin nombre"),
+            "masked_email": _mask_email(user.email) if not is_unlocked else user.email,
+            "is_unlocked": is_unlocked,
+            "score": score_total,
+            "tier_key": tier_key,
+            "tier_label": tier_label,
+            "price": price,
+            "currency": currency,
+            "properties": prop_list,
+            # Full info only if unlocked
+            "full_name": user.name if is_unlocked else None,
+            "email": user.email if is_unlocked else None,
+            "phone": user.phone if is_unlocked else None,
+            "whatsapp": user.whatsapp if is_unlocked else None,
+            "country": user.country if is_unlocked else None,
+        })
+
+    # Sort by score desc
+    leads.sort(key=lambda x: x["score"], reverse=True)
+    return {"leads": leads, "currency": currency}
+
+
+@router.post("/advisors/marketplace/{user_id}/unlock")
+def unlock_lead(user_id: UUID, current: SalesAdvisor = Depends(_get_current_advisor), db: Session = Depends(get_db)):
+    user = db.query(SiteUser).filter(SiteUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Lead no encontrado")
+
+    existing = db.query(AdvisorLeadPurchase).filter(
+        AdvisorLeadPurchase.advisor_id == current.id,
+        AdvisorLeadPurchase.site_user_id == user_id,
+    ).first()
+    if existing:
+        return {"already_unlocked": True, "email": user.email, "phone": user.phone, "whatsapp": user.whatsapp}
+
+    cfg = load_scoring_config(db)
+    score_data = compute_score_for_user_id(user_id, db)
+    tier_key = score_data["tier"]["key"] if score_data else "frio"
+    tier_prices = {
+        "muy_caliente": float(cfg.get("price_muy_caliente") or 0),
+        "caliente":     float(cfg.get("price_caliente") or 0),
+        "tibio":        float(cfg.get("price_tibio") or 0),
+        "frio":         float(cfg.get("price_frio") or 0),
+    }
+    price = tier_prices.get(tier_key, 0)
+    currency = cfg.get("price_currency", "PEN")
+
+    purchase = AdvisorLeadPurchase(
+        advisor_id=current.id,
+        site_user_id=user_id,
+        price_paid=price,
+        currency=currency,
+    )
+    db.add(purchase)
+    db.commit()
+
+    return {
+        "unlocked": True,
+        "price_paid": price,
+        "currency": currency,
+        "full_name": user.name,
+        "email": user.email,
+        "phone": user.phone,
+        "whatsapp": user.whatsapp,
+        "country": user.country,
+    }
+
+
+@router.get("/advisors/developers-list")
+def list_developers_for_advisors(db: Session = Depends(get_db)):
+    devs = db.query(Developer.id, Developer.name).order_by(Developer.name).all()
+    return [{"id": str(d.id), "name": d.name} for d in devs]
+
+
+# ── Must be LAST: catches any /advisors/{uuid} not matched above ───────────────
+@router.get("/advisors/{advisor_id}")
+async def get_advisor(advisor_id: UUID, db: Session = Depends(get_db)):
+    a = db.query(SalesAdvisor).filter(SalesAdvisor.id == advisor_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Advisor not found")
+    return _serialize(a, db)

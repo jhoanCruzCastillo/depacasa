@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Text
+from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -16,5 +16,11 @@ class SalesAdvisor(Base):
     whatsapp_number = Column(String(50), nullable=True)
     is_active = Column(Boolean, default=True)
     password_hash = Column(Text, nullable=True)
+
+    # Profile fields
+    developer_id = Column(UUID(as_uuid=True), ForeignKey("developers.id", ondelete="SET NULL"), nullable=True)
+    bio = Column(Text, nullable=True)
+    specialty = Column(String(200), nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

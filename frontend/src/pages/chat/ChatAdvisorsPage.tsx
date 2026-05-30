@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, Pencil, Trash2, Users, Eye, KeyRound, X, Mail, Send } from 'lucide-react'
+import { Plus, Pencil, Trash2, Users, Eye, KeyRound, X, Mail, Send, Building2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import API from '../../services/api'
 import {
@@ -8,7 +8,10 @@ import {
   createChatAdvisor,
   updateChatAdvisor,
   deleteChatAdvisor,
+  getDevelopers,
 } from '../../services/api'
+
+interface Developer { id: string; name: string }
 
 interface Advisor {
   id: string
@@ -17,6 +20,8 @@ interface Advisor {
   email: string | null
   whatsapp_number: string | null
   is_active: boolean
+  developer_id: string | null
+  developer_name: string | null
   created_at: string
   assigned_clients_count?: number
 }
@@ -42,11 +47,12 @@ interface AdvisorClient {
   }
 }
 
-const EMPTY = { name: '', phone: '', email: '', whatsapp_number: '', is_active: true }
+const EMPTY = { name: '', phone: '', email: '', whatsapp_number: '', is_active: true, developer_id: '' }
 
 export default function ChatAdvisorsPage() {
   const [advisors, setAdvisors] = useState<Advisor[]>([])
   const [loading, setLoading] = useState(true)
+  const [developers, setDevelopers] = useState<Developer[]>([])
   const [modal, setModal] = useState<{ open: boolean; editing: Advisor | null }>({ open: false, editing: null })
   const [form, setForm] = useState({ ...EMPTY })
   const [saving, setSaving] = useState(false)
@@ -73,7 +79,10 @@ export default function ChatAdvisorsPage() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    getDevelopers().then(r => setDevelopers(r.data ?? [])).catch(() => {})
+  }, [])
 
   const openCreate = () => { setForm({ ...EMPTY }); setModal({ open: true, editing: null }) }
   const openEdit = (a: Advisor) => {
@@ -83,6 +92,7 @@ export default function ChatAdvisorsPage() {
       email: a.email || '',
       whatsapp_number: a.whatsapp_number || '',
       is_active: a.is_active,
+      developer_id: a.developer_id || '',
     })
     setModal({ open: true, editing: a })
   }
@@ -113,6 +123,7 @@ export default function ChatAdvisorsPage() {
       email: form.email || undefined,
       whatsapp_number: form.whatsapp_number || undefined,
       is_active: form.is_active,
+      developer_id: form.developer_id || null,
     }
     try {
       if (modal.editing) await updateChatAdvisor(modal.editing.id, payload)
@@ -278,6 +289,24 @@ export default function ChatAdvisorsPage() {
                 />
               </div>
             ))}
+            {/* Developer select */}
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Desarrolladora</label>
+              <div className="relative">
+                <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                <select
+                  value={form.developer_id}
+                  onChange={e => setForm(f => ({ ...f, developer_id: e.target.value }))}
+                  className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white appearance-none"
+                >
+                  <option value="">— Sin desarrolladora —</option>
+                  {developers.map(d => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"

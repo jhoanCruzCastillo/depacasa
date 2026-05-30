@@ -23,6 +23,8 @@ import {
   ExternalLink,
   Image as ImageIcon,
   Pencil,
+  DollarSign,
+  Tag,
 } from 'lucide-react'
 import API from '../../services/api'
 import toast from 'react-hot-toast'
@@ -90,6 +92,11 @@ interface ScoringConfig {
   tier_muy_caliente_min: number
   tier_caliente_min: number
   tier_tibio_min: number
+  price_muy_caliente: number
+  price_caliente: number
+  price_tibio: number
+  price_frio: number
+  price_currency: string
 }
 
 const DEFAULT_CONFIG: ScoringConfig = {
@@ -103,6 +110,11 @@ const DEFAULT_CONFIG: ScoringConfig = {
   tier_muy_caliente_min: 76,
   tier_caliente_min: 56,
   tier_tibio_min: 31,
+  price_muy_caliente: 0,
+  price_caliente: 0,
+  price_tibio: 0,
+  price_frio: 0,
+  price_currency: 'PEN',
 }
 
 const PAGE_SIZE = 20
@@ -207,6 +219,124 @@ const BREAKDOWN_LABELS: Record<string, { label: string; color: string }> = {
   documento_validado: { label: 'Doc. validado', color: 'bg-green-600' },
 }
 
+// ── Pricing tab component ──────────────────────────────────────────────────────
+
+const CURRENCIES = ['PEN', 'USD', 'EUR']
+
+const TIER_PRICING_ROWS: Array<{
+  key: keyof ScoringConfig
+  label: string
+  color: string
+  bg: string
+  border: string
+  Icon: typeof Flame
+  desc: string
+}> = [
+  { key: 'price_muy_caliente', label: 'Muy caliente', color: 'text-red-600',    bg: 'bg-red-50',    border: 'border-red-200',    Icon: Flame,        desc: 'Lead con score máximo, muy listo para comprar' },
+  { key: 'price_caliente',     label: 'Caliente',     color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200', Icon: Thermometer,  desc: 'Lead activo con presupuesto y preferencias definidas' },
+  { key: 'price_tibio',        label: 'Tibio',        color: 'text-amber-600',  bg: 'bg-amber-50',  border: 'border-amber-200',  Icon: Thermometer,  desc: 'Lead con actividad moderada, en proceso de decisión' },
+  { key: 'price_frio',         label: 'Frío',         color: 'text-slate-500',  bg: 'bg-slate-50',  border: 'border-slate-200',  Icon: Snowflake,    desc: 'Lead reciente o con poca información' },
+]
+
+function PricingTab({ config, onSaved }: { config: ScoringConfig; onSaved: (c: ScoringConfig) => void }) {
+  const [form, setForm] = useState<ScoringConfig>({ ...config })
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => { setForm({ ...config }) }, [config])
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const res = await API.put('/chat/scoring-config', form)
+      onSaved(res.data)
+      toast.success('Precios actualizados')
+    } catch {
+      toast.error('Error al guardar los precios')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const totalMax = form.perfil_max + form.presupuesto_max + form.preferencias_max +
+    form.actividad_max + form.interes_max + form.doc_subido_max + form.doc_validado_max
+
+  return (
+    <div className="space-y-6">
+      {/* Info banner */}
+      <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-start gap-3">
+        <Tag className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+        <p className="text-sm text-amber-800">
+          Define el precio que los asesores pagarán por acceder a cada lead según su tier de calificación.
+          Los tiers se calculan según los umbrales configurados en "Editar criterios".
+        </p>
+      </div>
+
+      {/* Tier thresholds reminder */}
+      <div className="bg-white rounded-xl border border-slate-200 px-5 py-4">
+        <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Rangos de tier actuales</p>
+        <div className="flex flex-wrap gap-3 text-xs">
+          <span className="bg-slate-100 text-slate-500 px-3 py-1.5 rounded-full font-medium">Frío: 0 – {form.tier_tibio_min - 1} pts</span>
+          <span className="bg-amber-100 text-amber-700 px-3 py-1.5 rounded-full font-medium">Tibio: {form.tier_tibio_min} – {form.tier_caliente_min - 1} pts</span>
+          <span className="bg-orange-100 text-orange-700 px-3 py-1.5 rounded-full font-medium">Caliente: {form.tier_caliente_min} – {form.tier_muy_caliente_min - 1} pts</span>
+          <span className="bg-red-100 text-red-700 px-3 py-1.5 rounded-full font-medium">Muy caliente: {form.tier_muy_caliente_min} – {totalMax} pts</span>
+        </div>
+      </div>
+
+      {/* Currency selector */}
+      <div className="flex items-center gap-3">
+        <label className="text-sm font-semibold text-slate-600">Moneda:</label>
+        <div className="flex gap-2">
+          {CURRENCIES.map(c => (
+            <button
+              key={c}
+              onClick={() => setForm(f => ({ ...f, price_currency: c }))}
+              className={`px-3 py-1.5 text-sm font-semibold rounded-lg border transition-colors ${form.price_currency === c ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Price cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {TIER_PRICING_ROWS.map(({ key, label, color, bg, border, Icon, desc }) => (
+          <div key={key} className={`rounded-xl border-2 ${border} ${bg} p-5 space-y-3`}>
+            <div className="flex items-center gap-2">
+              <Icon className={`w-5 h-5 ${color}`} />
+              <span className={`font-bold text-base ${color}`}>{label}</span>
+            </div>
+            <p className="text-xs text-slate-500">{desc}</p>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-slate-500">{form.price_currency}</span>
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                value={form[key] as number}
+                onChange={e => setForm(f => ({ ...f, [key]: parseFloat(e.target.value) || 0 }))}
+                className="flex-1 border border-white/80 bg-white rounded-lg px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                placeholder="0.00"
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-2 px-5 py-2.5 bg-amber-500 text-white text-sm font-semibold rounded-lg hover:bg-amber-600 disabled:opacity-50 transition-colors"
+        >
+          <DollarSign className="w-4 h-4" />
+          {saving ? 'Guardando...' : 'Guardar precios'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function LeadScoringPage() {
   const [users, setUsers] = useState<SiteUser[]>([])
   const [total, setTotal] = useState(0)
@@ -223,6 +353,7 @@ export default function LeadScoringPage() {
   const [scoreLoading, setScoreLoading] = useState(false)
 
 
+  const [pageTab, setPageTab] = useState<'leads' | 'pricing'>('leads')
   const [scoringConfig, setScoringConfig] = useState<ScoringConfig>(DEFAULT_CONFIG)
   const [configModalOpen, setConfigModalOpen] = useState(false)
   const [configForm, setConfigForm] = useState<ScoringConfig>(DEFAULT_CONFIG)
@@ -374,7 +505,7 @@ export default function LeadScoringPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
             <Award className="w-6 h-6 text-amber-500" />
-            Calificación de leads
+            Ajuste de precios
           </h1>
           <p className="text-sm text-slate-500 mt-0.5">
             {total} usuario{total !== 1 ? 's' : ''} · ordenados por puntuación
@@ -408,6 +539,32 @@ export default function LeadScoringPage() {
           )}
         </form>
       </div>
+
+      {/* Page tabs */}
+      <div className="flex gap-1 border-b border-slate-200">
+        <button
+          onClick={() => setPageTab('leads')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${pageTab === 'leads' ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+        >
+          <Award className="w-4 h-4" />
+          Calificación de leads
+        </button>
+        <button
+          onClick={() => setPageTab('pricing')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${pageTab === 'pricing' ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+        >
+          <DollarSign className="w-4 h-4" />
+          Precios por calificación
+        </button>
+      </div>
+
+      {/* ── PRICING TAB ── */}
+      {pageTab === 'pricing' && (
+        <PricingTab config={scoringConfig} onSaved={cfg => { setScoringConfig(cfg); setConfigForm(cfg) }} />
+      )}
+
+      {/* ── LEADS TAB wrapper ── */}
+      {pageTab === 'leads' && (<>
 
       {/* Tier summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -937,6 +1094,8 @@ export default function LeadScoringPage() {
           ))}
         </div>
       </div>
+
+      </>)}
 
       {/* Config edit modal */}
       {configModalOpen && createPortal(

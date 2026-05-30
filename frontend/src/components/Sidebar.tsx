@@ -21,7 +21,7 @@ const siteLinks = [
 
 const chatLinks = [
   { to: '/chat/users', label: 'Usuarios', icon: Users },
-  { to: '/chat/scoring', label: 'Calificación', icon: Award },
+  { to: '/chat/scoring', label: 'Ajuste de precios', icon: Award },
   { to: '/chat/advisors', label: 'Asesores', icon: UserCheck },
   { to: '/chat/config', label: 'Configuración', icon: Settings },
 ]

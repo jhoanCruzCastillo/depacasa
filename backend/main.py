@@ -38,6 +38,7 @@ import app.models.search_history  # noqa: F401
 import app.models.user_document  # noqa: F401
 import app.models.admin_notification  # noqa: F401
 import app.models.scoring_config  # noqa: F401
+import app.models.advisor_lead_purchase  # noqa: F401
 
 logger = logging.getLogger(__name__)
 

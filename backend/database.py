@@ -425,8 +425,29 @@ def run_migrations():
         # ── site_users: role column ──────────────────────────────────────────────
         "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'USER'",
         "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS whatsapp VARCHAR(50)",
-        # ── sales_advisors: advisor login ────────────────────────────────────────
+        # ── sales_advisors: advisor login + profile ──────────────────────────────
         "ALTER TABLE sales_advisors ADD COLUMN IF NOT EXISTS password_hash TEXT",
+        "ALTER TABLE sales_advisors ADD COLUMN IF NOT EXISTS developer_id UUID REFERENCES developers(id) ON DELETE SET NULL",
+        "ALTER TABLE sales_advisors ADD COLUMN IF NOT EXISTS bio TEXT",
+        "ALTER TABLE sales_advisors ADD COLUMN IF NOT EXISTS specialty VARCHAR(200)",
+        # ── advisor_lead_purchases ────────────────────────────────────────────────
+        """CREATE TABLE IF NOT EXISTS advisor_lead_purchases (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            advisor_id      UUID NOT NULL REFERENCES sales_advisors(id) ON DELETE CASCADE,
+            site_user_id    UUID NOT NULL REFERENCES site_users(id) ON DELETE CASCADE,
+            price_paid      NUMERIC(10,2) NOT NULL DEFAULT 0,
+            currency        VARCHAR(10) NOT NULL DEFAULT 'PEN',
+            purchased_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (advisor_id, site_user_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_alp_advisor ON advisor_lead_purchases (advisor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_alp_user ON advisor_lead_purchases (site_user_id)",
+        # ── scoring_config: lead pricing per tier ────────────────────────────────
+        "ALTER TABLE scoring_config ADD COLUMN IF NOT EXISTS price_muy_caliente NUMERIC(10,2) DEFAULT 0",
+        "ALTER TABLE scoring_config ADD COLUMN IF NOT EXISTS price_caliente NUMERIC(10,2) DEFAULT 0",
+        "ALTER TABLE scoring_config ADD COLUMN IF NOT EXISTS price_tibio NUMERIC(10,2) DEFAULT 0",
+        "ALTER TABLE scoring_config ADD COLUMN IF NOT EXISTS price_frio NUMERIC(10,2) DEFAULT 0",
+        "ALTER TABLE scoring_config ADD COLUMN IF NOT EXISTS price_currency VARCHAR(10) NOT NULL DEFAULT 'PEN'",
         # ── admin_notifications table ────────────────────────────────────────────
         """CREATE TABLE IF NOT EXISTS admin_notifications (
             id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
