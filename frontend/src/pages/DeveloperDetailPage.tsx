@@ -18,6 +18,7 @@ import toast from 'react-hot-toast'
 import { extractTitle, extractLocation } from './developers/helpers/extractors'
 import ProjectCard         from './developers/components/ProjectCard'
 import PropertyModal       from './developers/components/PropertyModal'
+import PropertyEditModal   from './developers/components/PropertyEditModal'
 import ProjectDetailPanel  from './developers/components/ProjectDetailPanel'
 
 export default function DeveloperDetailPage() {
@@ -32,6 +33,8 @@ export default function DeveloperDetailPage() {
   const [selectedId, setSelectedId]       = useState<string | null>(null)
   const [modalRecord, setModalRecord]     = useState<ScrapedRecord | null>(null)
   const [modalOpen, setModalOpen]         = useState(false)
+  const [editRecord, setEditRecord]       = useState<ScrapedRecord | null>(null)
+  const [editOpen, setEditOpen]           = useState(false)
 
   const { data: developer, isLoading: loadingDev } = useQuery({
     queryKey: ['developer', id],
@@ -304,8 +307,10 @@ export default function DeveloperDetailPage() {
                 <ProjectDetailPanel
                   record={selectedRecord}
                   childRecords={childRecordsForSelected}
+                  developerId={id!}
                   onClose={() => setSelectedId(null)}
                   onOpenProperty={r => { setModalRecord(r); setModalOpen(true) }}
+                  onEditProperty={r => { setEditRecord(r); setEditOpen(true) }}
                 />
               </motion.div>
             </motion.div>
@@ -316,6 +321,14 @@ export default function DeveloperDetailPage() {
 
       {/* Property detail modal */}
       <PropertyModal record={modalRecord} open={modalOpen} onClose={() => setModalOpen(false)} />
+
+      {/* Property edit modal */}
+      <PropertyEditModal
+        record={editRecord}
+        open={editOpen}
+        developerId={id!}
+        onClose={() => setEditOpen(false)}
+      />
     </div>
   )
 }

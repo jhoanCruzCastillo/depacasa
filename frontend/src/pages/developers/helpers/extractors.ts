@@ -135,5 +135,16 @@ export function statusClass(s: string) {
 }
 
 export function recordStatusLabel(s: string) {
-  return s === 'success' ? 'Completo' : s === 'partial' ? 'Parcial' : 'Error'
+  if (s === 'public')         return 'Público'
+  if (s === 'pending_review') return 'Pendiente'
+  if (s === 'success')        return 'Pendiente'
+  if (s === 'partial')        return 'Parcial'
+  return 'Error'
+}
+
+export function propiedadStatusClass(s: string) {
+  if (s === 'public')         return 'bg-blue-100 text-blue-700'
+  if (s === 'pending_review' || s === 'success') return 'bg-amber-100 text-amber-700'
+  if (s === 'partial')        return 'bg-orange-100 text-orange-700'
+  return 'bg-gray-100 text-gray-500'
 }

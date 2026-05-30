@@ -431,7 +431,7 @@ async def _scrape_node(
                         continue
                     record = Propiedad(
                         proyecto_id=proyecto_id,
-                        status=RecordStatus.SUCCESS,
+                        status=RecordStatus.PENDING_REVIEW,
                         extra_data=extra,
                         **col_kwargs,
                     )

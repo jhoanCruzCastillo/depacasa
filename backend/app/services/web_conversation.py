@@ -1527,6 +1527,18 @@ def _save_preferences(site_user_id, criteria: dict, db: Session) -> None:
                 pref = UserPreference(site_user_id=uid)
                 db.add(pref)
             update_preference_from_criteria(pref, criteria)
+            # Normalize nearby_places and common_areas with AI to remove semantic duplicates
+            from app.services.claude_service import normalize_nearby_places_sync
+            if pref.nearby_places and len(pref.nearby_places) > 1:
+                pref.nearby_places = normalize_nearby_places_sync(pref.nearby_places)
+            if pref.common_areas and len(pref.common_areas) > 1:
+                pref.common_areas = normalize_nearby_places_sync(pref.common_areas)
+            # Fill pais from lead profile if criteria didn't supply it
+            if not pref.pais:
+                lead = criteria.get("_lead") or {}
+                country = (lead.get("country_of_residence") or "").strip()
+                if country:
+                    pref.pais = country
             db.flush()
             sp.commit()
         except Exception:
@@ -2476,6 +2488,21 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         _save_preferences(session.site_user_id, merged, db)
         _save_search_history(session.site_user_id, description, merged, db)
 
+    # ── Build search_criteria from user_preferences table (single source of truth) ──
+    # For logged-in users we use only what's persisted in the table.
+    # For guests we fall back to the merged session criteria.
+    search_criteria: dict = merged
+    if session.site_user_id:
+        try:
+            from app.models.user_preference import UserPreference
+            from app.services.preference_service import criteria_from_preference
+            uid = session.site_user_id if isinstance(session.site_user_id, UUID) else UUID(str(session.site_user_id))
+            pref_row = db.query(UserPreference).filter_by(site_user_id=uid).first()
+            if pref_row:
+                search_criteria = criteria_from_preference(pref_row)
+        except Exception as _e:
+            logger.warning(f"[search] could not load prefs from table: {_e}")
+
     from app.models.chat_config import ChatConfig, DEFAULT_CONFIG_ID
     config = db.query(ChatConfig).filter(ChatConfig.id == DEFAULT_CONFIG_ID).first()
     top_n = config.top_n_properties if config else 3
@@ -2493,17 +2520,17 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
             excluded = excluded.union(viewed_ids_set)
             seen_proyecto_ids = _get_viewed_proyecto_ids(session.site_user_id, db)
 
-    matches = await find_matches(db, merged, top_n, excluded_ids=excluded, raw_description=full_desc)
+    matches = await find_matches(db, search_criteria, top_n, excluded_ids=excluded, raw_description=full_desc)
     if existing_mode == "new_unseen" and seen_proyecto_ids:
         matches = _exclude_seen_sources(db, matches, seen_proyecto_ids)
 
     # Build deferred alternatives (same location, different bedroom counts) to offer later.
     alt_ids: list[str] = []
     alt_bed_values: list[int] = []
-    if matches and merged.get("location") and merged.get("bedrooms"):
+    if matches and search_criteria.get("location") and search_criteria.get("bedrooms"):
         alt_ids, alt_bed_values = await _build_alternative_bedroom_pool(
             db,
-            merged,
+            search_criteria,
             top_n,
             excluded,
             full_desc,
@@ -2517,8 +2544,8 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
             "_result_mode": existing_mode,
             "_deferred_alt_ids": alt_ids,
             "_deferred_alt_count": len(alt_ids),
-            "_deferred_alt_beds": merged.get("bedrooms"),
-            "_deferred_alt_loc": merged.get("location"),
+            "_deferred_alt_beds": search_criteria.get("bedrooms"),
+            "_deferred_alt_loc": search_criteria.get("location"),
             "_deferred_alt_values": alt_bed_values,
         }
     else:
@@ -2529,14 +2556,14 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
     session.state = "presenting"
 
     if not matches:
-        loc = merged.get("location") or ""
-        beds = merged.get("bedrooms")
+        loc = search_criteria.get("location") or ""
+        beds = search_criteria.get("bedrooms")
         name_part = f", {session.name}" if session.name else ""
 
         if existing_mode == "new_unseen" and session.site_user_id:
             all_for_criteria = await find_matches(
                 db,
-                merged,
+                search_criteria,
                 max(top_n * 8, 20),
                 excluded_ids=disliked_excluded,
                 raw_description=full_desc,
@@ -2552,7 +2579,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
                     "_result_mode": existing_mode,
                     "_exhausted_unseen_ids": revisit_ids,
                 }
-                criteria_summary = _summarize_preferences(merged)
+                criteria_summary = _summarize_preferences(search_criteria)
                 exhausted_detail = (
                     f" ({criteria_summary})" if criteria_summary and criteria_summary != "sin criterios guardados todavia" else ""
                 )
@@ -2569,7 +2596,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         if beds and loc:
             hab = "dormitorio" if beds == 1 else "dormitorios"
             # 1st try: same location, remove bedroom filter
-            _c1 = {k: v for k, v in merged.items() if k != "bedrooms"}
+            _c1 = {k: v for k, v in search_criteria.items() if k not in ("bedrooms", "bedrooms_mode")}
             relaxed_matches = await find_matches(db, _c1, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
             if existing_mode == "new_unseen" and seen_proyecto_ids:
                 relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
@@ -2583,7 +2610,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
                 )
             else:
                 # 2nd try: same bedrooms, remove location filter
-                _c2 = {k: v for k, v in merged.items() if k != "location"}
+                _c2 = {k: v for k, v in search_criteria.items() if k not in ("location", "location_mode")}
                 relaxed_matches = await find_matches(db, _c2, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
                 if existing_mode == "new_unseen" and seen_proyecto_ids:
                     relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
@@ -2596,7 +2623,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
                     )
         elif beds:
             hab = "dormitorio" if beds == 1 else "dormitorios"
-            _c = {k: v for k, v in merged.items() if k != "bedrooms"}
+            _c = {k: v for k, v in search_criteria.items() if k not in ("bedrooms", "bedrooms_mode")}
             relaxed_matches = await find_matches(db, _c, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
             if existing_mode == "new_unseen" and seen_proyecto_ids:
                 relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
@@ -2608,7 +2635,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
                     f"¿Te gustaría verlas{name_part}? 😊"
                 )
         elif loc:
-            _c = {k: v for k, v in merged.items() if k != "location"}
+            _c = {k: v for k, v in search_criteria.items() if k not in ("location", "location_mode")}
             relaxed_matches = await find_matches(db, _c, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
             if existing_mode == "new_unseen" and seen_proyecto_ids:
                 relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
@@ -2638,7 +2665,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         # â”€â”€ Truly nothing found â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         session.state = "collecting_info"
         session.info_step = 4
-        criteria_summary = _summarize_preferences(merged)
+        criteria_summary = _summarize_preferences(search_criteria)
         has_summary = criteria_summary and criteria_summary != "sin criterios guardados todavia"
         if has_summary:
             msg = "\n".join([
@@ -2960,7 +2987,21 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
     elif list_mode == "by_id":
         msg = "Aqui esta la propiedad que buscaste:"
     else:
-        msg = _compose_property_message(session, idx, total, data=data)
+        if idx == 1:
+            from app.services.claude_service import generate_search_intro
+            criteria = dict(session.extracted_criteria or {})
+            relax_type = str(criteria.get("_relax_type") or "").strip()
+            if relax_type:
+                # Relaxed search: use existing template (already handles this case well)
+                msg = _compose_property_message(session, idx, total, data=data)
+            else:
+                msg = await generate_search_intro(
+                    criteria=criteria,
+                    total=total,
+                    user_name=session.name or "",
+                )
+        else:
+            msg = _compose_property_message(session, idx, total, data=data)
         status_warning = _build_project_status_warning(data)
         if status_warning:
             msg = f"{msg}\n\n{status_warning}"

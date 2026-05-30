@@ -18,6 +18,24 @@ def mode_to_priority(mode: str | None) -> str:
     return PRIORITY_REQUIRED if str(mode or "").strip().lower() == "obligatorio" else PRIORITY_OPTIONAL
 
 
+def _parse_nearby(raw: list | None) -> list[dict]:
+    """Normalize nearby_places regardless of old (list[str]) or new (list[dict]) format."""
+    result: list[dict] = []
+    seen: set[str] = set()
+    for item in raw or []:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            priority = item.get("priority") or PRIORITY_OPTIONAL
+        else:
+            name = str(item or "").strip()
+            priority = PRIORITY_OPTIONAL
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        result.append({"name": name, "priority": priority})
+    return result
+
+
 def _clean_terms(values: list | None) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -37,9 +55,13 @@ def criteria_from_preference(pref: "UserPreference") -> dict:
     """Build a matchmaking criteria dict from a UserPreference row."""
     out: dict = {}
 
-    if pref.location:
-        out["location"] = pref.location
-        out["location_mode"] = priority_to_mode(pref.location_priority)
+    if pref.ubicacion:
+        out["location"] = pref.ubicacion
+        out["location_mode"] = priority_to_mode(pref.ubicacion_priority)
+
+    if pref.m2 is not None:
+        out["area_exact"] = pref.m2
+        out["area_mode"] = priority_to_mode(pref.m2_priority)
 
     if pref.bedrooms is not None:
         out["bedrooms"] = pref.bedrooms
@@ -60,20 +82,24 @@ def criteria_from_preference(pref: "UserPreference") -> dict:
         )
         out["budget_mode"] = "obligatorio" if is_required else "preferencia"
 
-    nearby = _clean_terms(pref.nearby_places)
-    if nearby:
+    nearby_items = _parse_nearby(pref.nearby_places)
+    if nearby_items:
+        nearby = [item["name"] for item in nearby_items]
+        has_required = any(item["priority"] == PRIORITY_REQUIRED for item in nearby_items)
         out["nearby_zones"] = nearby
-        out["nearby_zones_mode"] = priority_to_mode(pref.nearby_places_priority)
+        out["nearby_zones_mode"] = "obligatorio" if has_required else "preferencia"
         near_terms = [f"cerca de {term}" for term in nearby]
         out["features"] = _clean_terms(near_terms)
         out["keywords"] = _clean_terms(near_terms)
 
-    amenities = _clean_terms(pref.features)
-    if amenities:
-        out["common_areas"] = amenities
-        out["common_areas_mode"] = priority_to_mode(pref.features_priority)
-        out["features"] = _clean_terms(list(out.get("features") or []) + amenities)
-        out["keywords"] = _clean_terms(list(out.get("keywords") or []) + amenities)
+    common_items = _parse_nearby(pref.common_areas)
+    if common_items:
+        ca_names = [item["name"] for item in common_items]
+        has_required_ca = any(item["priority"] == PRIORITY_REQUIRED for item in common_items)
+        out["common_areas"] = ca_names
+        out["common_areas_mode"] = "obligatorio" if has_required_ca else "preferencia"
+        out["keywords"] = _clean_terms(list(out.get("keywords") or []) + ca_names)
+        out["features"] = _clean_terms(list(out.get("features") or []) + ca_names)
 
     if pref.property_type:
         out["property_type"] = pref.property_type
@@ -91,8 +117,21 @@ def criteria_from_preference(pref: "UserPreference") -> dict:
 def update_preference_from_criteria(pref: "UserPreference", criteria: dict) -> None:
     """Write matchmaking criteria fields into a UserPreference row (in place)."""
     if criteria.get("location"):
-        pref.location = criteria["location"]
-        pref.location_priority = mode_to_priority(criteria.get("location_mode"))
+        pref.ubicacion = criteria["location"]
+        pref.ubicacion_priority = mode_to_priority(criteria.get("location_mode"))
+
+    if criteria.get("pais"):
+        pref.pais = str(criteria["pais"]).strip()
+
+    # area_exact takes precedence; fall back to area_min then area_max.
+    # Use next() with truthiness check so 0 is treated as "not set".
+    area = next(
+        (v for v in [criteria.get("area_exact"), criteria.get("area_min"), criteria.get("area_max")] if v),
+        None,
+    )
+    if area:
+        pref.m2 = float(area)
+        pref.m2_priority = mode_to_priority(criteria.get("area_mode"))
 
     if criteria.get("bedrooms") is not None:
         pref.bedrooms = int(criteria["bedrooms"])
@@ -112,13 +151,13 @@ def update_preference_from_criteria(pref: "UserPreference", criteria: dict) -> N
 
     nearby = _clean_terms(criteria.get("nearby_zones") or [])
     if nearby:
-        pref.nearby_places = nearby
-        pref.nearby_places_priority = mode_to_priority(criteria.get("nearby_zones_mode"))
+        priority = mode_to_priority(criteria.get("nearby_zones_mode"))
+        pref.nearby_places = [{"name": n, "priority": priority} for n in nearby]
 
-    amenities = _clean_terms(criteria.get("common_areas") or [])
-    if amenities:
-        pref.features = amenities
-        pref.features_priority = mode_to_priority(criteria.get("common_areas_mode"))
+    common_areas_raw = _clean_terms(criteria.get("common_areas") or [])
+    if common_areas_raw:
+        priority_ca = mode_to_priority(criteria.get("common_areas_mode"))
+        pref.common_areas = [{"name": n, "priority": priority_ca} for n in common_areas_raw]
 
     if criteria.get("property_type"):
         pref.property_type = criteria["property_type"]
@@ -129,8 +168,15 @@ def summarize_preference(pref: "UserPreference") -> str:
     """Return a short human-readable summary of saved preferences."""
     parts: list[str] = []
 
-    if pref.location:
-        parts.append(f"ubicación: {pref.location}")
+    if pref.direccion:
+        parts.append(f"dirección: {pref.direccion}")
+    if pref.ubicacion:
+        parts.append(f"ubicación: {pref.ubicacion}")
+    if pref.pais:
+        parts.append(f"país: {pref.pais}")
+
+    if pref.m2 is not None:
+        parts.append(f"{int(pref.m2)} m²")
 
     if pref.bedrooms is not None:
         hab = "dormitorio" if pref.bedrooms == 1 else "dormitorios"
@@ -150,13 +196,13 @@ def summarize_preference(pref: "UserPreference") -> str:
     elif pref.min_price is not None:
         parts.append(f"desde {_fmt_price(pref.min_price)}")
 
-    nearby = _clean_terms(pref.nearby_places)
-    if nearby:
-        parts.append("cerca de: " + ", ".join(nearby[:2]))
-
-    amenities = _clean_terms(pref.features)
-    if amenities:
-        parts.append("amenidades: " + ", ".join(amenities[:2]))
+    nearby_items = _parse_nearby(pref.nearby_places)
+    if nearby_items:
+        labels = [
+            f"{item['name']}{'*' if item['priority'] == PRIORITY_REQUIRED else ''}"
+            for item in nearby_items[:2]
+        ]
+        parts.append("cerca de: " + ", ".join(labels))
 
     if pref.property_type:
         parts.append(f"tipo: {pref.property_type}")

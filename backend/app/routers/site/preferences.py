@@ -30,6 +30,28 @@ class SearchHistoryIn(BaseModel):
     source: str = "portal"   # 'portal' | 'chatbot'
 
 
+class PreferencesIn(BaseModel):
+    direccion: Optional[str] = None
+    direccion_priority: Optional[str] = None
+    ubicacion: Optional[str] = None
+    ubicacion_priority: Optional[str] = None
+    pais: Optional[str] = None
+    pais_priority: Optional[str] = None
+    bedrooms: Optional[int] = None
+    bedrooms_priority: Optional[str] = None
+    bathrooms: Optional[int] = None
+    bathrooms_priority: Optional[str] = None
+    m2: Optional[float] = None
+    m2_priority: Optional[str] = None
+    min_price: Optional[float] = None
+    min_price_priority: Optional[str] = None
+    max_price: Optional[float] = None
+    max_price_priority: Optional[str] = None
+    nearby_places: Optional[list[dict]] = None   # [{"name": str, "priority": "REQUIRED"|"OPTIONAL"}]
+    property_type: Optional[str] = None
+    property_type_priority: Optional[str] = None
+
+
 # ── Rate a property ───────────────────────────────────────────────────────────
 
 @router.post("/rate")
@@ -117,8 +139,14 @@ def get_my_profile(request: Request, db: Session = Depends(get_db)):
     )
 
     preferences = {
-        "location": pref.location if pref else None,
-        "location_priority": pref.location_priority if pref else None,
+        "direccion": pref.direccion if pref else None,
+        "direccion_priority": pref.direccion_priority if pref else None,
+        "ubicacion": pref.ubicacion if pref else None,
+        "ubicacion_priority": pref.ubicacion_priority if pref else None,
+        "pais": pref.pais if pref else None,
+        "pais_priority": pref.pais_priority if pref else None,
+        "m2": pref.m2 if pref else None,
+        "m2_priority": pref.m2_priority if pref else None,
         "bedrooms": pref.bedrooms if pref else None,
         "bedrooms_priority": pref.bedrooms_priority if pref else None,
         "bathrooms": pref.bathrooms if pref else None,
@@ -128,9 +156,6 @@ def get_my_profile(request: Request, db: Session = Depends(get_db)):
         "max_price": pref.max_price if pref else None,
         "max_price_priority": pref.max_price_priority if pref else None,
         "nearby_places": pref.nearby_places if pref else None,
-        "nearby_places_priority": pref.nearby_places_priority if pref else None,
-        "features": pref.features if pref else None,
-        "features_priority": pref.features_priority if pref else None,
         "property_type": pref.property_type if pref else None,
         "property_type_priority": pref.property_type_priority if pref else None,
     }
@@ -162,6 +187,38 @@ def get_my_profile(request: Request, db: Session = Depends(get_db)):
             for h in history
         ],
     }
+
+
+# ── Update my preferences ─────────────────────────────────────────────────────
+
+@router.put("/me")
+def update_my_preferences(body: PreferencesIn, request: Request, db: Session = Depends(get_db)):
+    from app.models.user_preference import UserPreference
+    from datetime import datetime, timezone
+
+    user = get_optional_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Autenticación requerida.")
+
+    pref = db.query(UserPreference).filter_by(site_user_id=user.id).first()
+    if not pref:
+        pref = UserPreference(site_user_id=user.id)
+        db.add(pref)
+
+    fields = [
+        "direccion", "direccion_priority", "ubicacion", "ubicacion_priority",
+        "pais", "pais_priority", "bedrooms", "bedrooms_priority",
+        "bathrooms", "bathrooms_priority", "m2", "m2_priority",
+        "min_price", "min_price_priority", "max_price", "max_price_priority",
+        "nearby_places", "property_type", "property_type_priority",
+    ]
+    for field in fields:
+        setattr(pref, field, getattr(body, field))
+
+    pref.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(pref)
+    return {"ok": True}
 
 
 # ── My ratings (quick lookup) ─────────────────────────────────────────────────

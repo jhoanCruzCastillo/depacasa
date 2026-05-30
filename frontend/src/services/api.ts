@@ -29,6 +29,13 @@ export const updateDeveloper = (id: string, data: Partial<Developer>) =>
   API.patch<Developer>(`/developers/${id}`, data)
 export const deleteDeveloper = (id: string) => API.delete(`/developers/${id}`)
 
+// Propiedades
+export const getPropiedad = (id: string) => API.get(`/propiedades/${id}`)
+export const updatePropiedad = (
+  id: string,
+  data: { dormitorios?: string; baños?: string; m2?: string; modelo?: string; status?: string }
+) => API.patch(`/propiedades/${id}`, data)
+
 export const extractPropertyFields = (developerId: string, onlyMissing = true) =>
   API.post<{ processed: number; updated: number; ai_calls: number }>(
     `/developers/${developerId}/extract-fields`,
@@ -182,9 +189,12 @@ export const sendWebChatMessage = (
         attachment_urls?: string[]
         financial_document_url?: string
       },
+  token?: string | null,
 ) => {
   const body = typeof payload === 'string' ? { content: payload } : payload
-  return API.post(`/chat/web/sessions/${sessionId}/message`, body)
+  return API.post(`/chat/web/sessions/${sessionId}/message`, body, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
 }
 
 export const uploadWebChatAttachment = (sessionId: string, file: File) => {

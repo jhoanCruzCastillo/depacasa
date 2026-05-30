@@ -35,8 +35,17 @@ def _user_out(user: SiteUser) -> dict:
         "name": user.name,
         "country": user.country,
         "phone": user.phone,
+        "whatsapp": user.whatsapp,
         "wants_newsletter": user.wants_newsletter,
     }
+
+
+class UpdateMeIn(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    whatsapp: Optional[str] = None
+    country: Optional[str] = None
+    wants_newsletter: Optional[bool] = None
 
 
 def get_optional_user(request: Request, db: Session) -> SiteUser | None:
@@ -91,4 +100,18 @@ def me(request: Request, db: Session = Depends(get_db)):
     user = get_optional_user(request, db)
     if not user:
         raise HTTPException(status_code=401, detail="No autenticado.")
+    return _user_out(user)
+
+
+@router.put("/me")
+def update_me(body: UpdateMeIn, request: Request, db: Session = Depends(get_db)):
+    user = get_optional_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="No autenticado.")
+    for field in ("name", "phone", "whatsapp", "country", "wants_newsletter"):
+        val = getattr(body, field)
+        if val is not None:
+            setattr(user, field, val)
+    db.commit()
+    db.refresh(user)
     return _user_out(user)

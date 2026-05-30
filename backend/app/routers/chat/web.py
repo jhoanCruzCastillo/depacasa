@@ -82,12 +82,23 @@ async def new_session(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/web/sessions/{session_id}/message")
-async def send_message(session_id: str, body: MessageIn, db: Session = Depends(get_db)):
+async def send_message(request: Request, session_id: str, body: MessageIn, db: Session = Depends(get_db)):
     try:
         sid = UUID(session_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid session_id")
     try:
+        # Link session to user if logged in but session was created anonymously
+        site_user = get_optional_user(request, db)
+        if site_user:
+            session_obj = db.query(WebChatSession).filter(WebChatSession.id == sid).first()
+            if session_obj and not session_obj.site_user_id:
+                session_obj.site_user_id = site_user.id
+                session_obj.email = site_user.email
+                session_obj.name = site_user.name or session_obj.name
+                session_obj.country = site_user.country or session_obj.country
+                session_obj.phone = site_user.phone or session_obj.phone
+
         content = (body.content or "").strip()
         extra_lines: list[str] = []
         for raw_url in body.attachment_urls or []:

@@ -7,6 +7,7 @@ export interface SiteUser {
   name: string | null
   country: string | null
   phone: string | null
+  whatsapp: string | null
   wants_newsletter: boolean
 }
 
@@ -67,5 +68,10 @@ export function useAuth() {
     setUser(null)
   }
 
-  return { user, token, loading, login, register, logout, refresh }
+  const updateUser = (u: SiteUser) => {
+    localStorage.setItem(USER_KEY, JSON.stringify(u))
+    setUser(u)
+  }
+
+  return { user, token, loading, login, register, logout, refresh, updateUser }
 }

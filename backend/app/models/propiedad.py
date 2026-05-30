@@ -13,7 +13,7 @@ class Propiedad(Base):
 
     id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     proyecto_id = Column(UUID(as_uuid=True), ForeignKey("proyectos.id", ondelete="CASCADE"), nullable=True, index=True)
-    status      = Column(SQLEnum(RecordStatus, create_type=False), default=RecordStatus.SUCCESS)
+    status      = Column(SQLEnum(RecordStatus, create_type=False), default=RecordStatus.PENDING_REVIEW)
     scraped_at  = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     imagen_modelo = Column(Text, nullable=True)

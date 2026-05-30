@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
@@ -42,10 +43,10 @@ export default function PropertyModal({ record, open, onClose }: Props) {
   const nearby      = extractTags(d, ['lugares cercanos', 'lugares_cercanos', 'nearby', 'near', 'puntos_interes'])
   const projStatus  = pick(d, ['estado_proyecto', 'entrega', 'fecha_entrega', 'delivery'])
 
-  return (
+  return createPortal(
     <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
           <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
@@ -235,6 +236,7 @@ export default function PropertyModal({ record, open, onClose }: Props) {
           </motion.div>
         </div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   )
 }

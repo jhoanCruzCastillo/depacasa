@@ -20,6 +20,7 @@ from app.routers import (
     auth_router,
     site_users_router,
     admin_notifications_router,
+    propiedades_router,
 )
 # Import models so Base.metadata includes them for create_all
 import app.models.chat_user  # noqa: F401
@@ -75,6 +76,7 @@ app.include_router(site_router)
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(site_users_router)
 app.include_router(admin_notifications_router)
+app.include_router(propiedades_router)
 
 
 @app.get("/health")

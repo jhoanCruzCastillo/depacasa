@@ -9,9 +9,11 @@ from database import Base
 
 
 class RecordStatus(str, Enum):
-    SUCCESS = "success"
-    PARTIAL = "partial"
-    FAILED  = "failed"
+    SUCCESS        = "success"
+    PARTIAL        = "partial"
+    FAILED         = "failed"
+    PENDING_REVIEW = "pending_review"  # scraped, not yet reviewed by admin
+    PUBLIC         = "public"          # approved and visible on the portal
 
 
 class ScrapedRecord(Base):

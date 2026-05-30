@@ -382,6 +382,7 @@ def run_migrations():
         # ── Schema refactor: propiedades — add new columns ───────────────────────
         "ALTER TABLE propiedades ADD COLUMN IF NOT EXISTS modelo_imagen TEXT",
         "ALTER TABLE propiedades ADD COLUMN IF NOT EXISTS baños TEXT",
+        # NOTE: ALTER TYPE … ADD VALUE is handled separately with AUTOCOMMIT (see run_migrations)
         # ── user_property_interactions: add comment column ───────────────────────
         "ALTER TABLE user_property_interactions ADD COLUMN IF NOT EXISTS comment TEXT",
         # ── user_preferences: flat schema with priority columns ──────────────────
@@ -392,8 +393,20 @@ def run_migrations():
         "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS min_price_priority VARCHAR(20)",
         "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS max_price_priority VARCHAR(20)",
         "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS nearby_places JSONB",
-        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS nearby_places_priority VARCHAR(20)",
-        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS features_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences DROP COLUMN IF EXISTS nearby_places_priority",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS common_areas JSONB",
+        "ALTER TABLE user_preferences DROP COLUMN IF EXISTS features",
+        "ALTER TABLE user_preferences DROP COLUMN IF EXISTS features_priority",
+        "ALTER TABLE user_preferences DROP COLUMN IF EXISTS location",
+        "ALTER TABLE user_preferences DROP COLUMN IF EXISTS location_priority",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS direccion VARCHAR(255)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS direccion_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS ubicacion VARCHAR(255)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS ubicacion_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS pais VARCHAR(100)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS pais_priority VARCHAR(20)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS m2 FLOAT",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS m2_priority VARCHAR(20)",
         "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS property_type VARCHAR(100)",
         "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS property_type_priority VARCHAR(20)",
         # ── user_documents table ─────────────────────────────────────────────────
@@ -411,6 +424,7 @@ def run_migrations():
         "CREATE INDEX IF NOT EXISTS idx_user_documents_session ON user_documents (session_id)",
         # ── site_users: role column ──────────────────────────────────────────────
         "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'USER'",
+        "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS whatsapp VARCHAR(50)",
         # ── admin_notifications table ────────────────────────────────────────────
         """CREATE TABLE IF NOT EXISTS admin_notifications (
             id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -473,22 +487,55 @@ def run_migrations():
             END IF;
         END $$""",
     ]
+    # ── ALTER TYPE must run outside any transaction (PostgreSQL limitation) ──────
+    _ENUM_MIGRATIONS = [
+        "ALTER TYPE recordstatus ADD VALUE IF NOT EXISTS 'pending_review'",
+        "ALTER TYPE recordstatus ADD VALUE IF NOT EXISTS 'public'",
+    ]
+    try:
+        raw = engine.raw_connection()
+        raw.set_isolation_level(0)          # AUTOCOMMIT
+        cur = raw.cursor()
+        for stmt in _ENUM_MIGRATIONS:
+            try:
+                cur.execute(stmt)
+            except Exception:
+                pass
+        cur.close()
+        raw.close()
+    except Exception:
+        pass
+
+    # ── Regular migrations — each committed individually so one failure ─────────
+    # ── doesn't roll back the others. ─────────────────────────────────────────
     with engine.connect() as conn:
         has_fields = conn.execute(text(
             "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='fields')"
         )).scalar()
         if has_fields:
             for sql in legacy_migrations:
-                conn.execute(text(sql))
+                try:
+                    conn.execute(text(sql))
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
         for sql in migrations:
-            conn.execute(text(sql))
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception:
+                conn.rollback()
         _migrate_templates_to_json(conn)
         _create_standard_tables(conn)
         conn.commit()
         _migrate_scraped_records_to_tables(conn)
         conn.commit()
         for sql in post_add_migrations:
-            conn.execute(text(sql))
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception:
+                conn.rollback()
         _backup_extraction_templates(conn)
         conn.commit()
 

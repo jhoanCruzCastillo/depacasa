@@ -526,8 +526,10 @@ del usuario y responde SOLO con JSON valido, sin markdown ni texto extra.
 
 Formato exacto (incluye siempre todas las claves):
 {"location": "string o null", "location_mode": "obligatorio|preferencia",
+ "pais": "string o null",
  "bedrooms": number o null, "bedrooms_mode": "obligatorio|preferencia",
  "bathrooms": number o null, "bathrooms_mode": "obligatorio|preferencia",
+ "area_min": number o null, "area_max": number o null, "area_mode": "obligatorio|preferencia",
  "min_price": number o null, "max_price": number o null, "budget_mode": "obligatorio|preferencia",
  "common_areas": ["amenidades dentro del edificio"], "common_areas_mode": "obligatorio|preferencia",
  "nearby_zones": ["tipos de lugares cercanos requeridos"], "nearby_zones_mode": "obligatorio|preferencia",
@@ -535,8 +537,13 @@ Formato exacto (incluye siempre todas las claves):
 
 Reglas de extraccion:
 - "location": nombre oficial del distrito/ciudad/zona. Ej: "Jesus Maria", "Miraflores", "Santiago de Surco".
+- "pais": pais donde el usuario quiere comprar/buscar. Solo cuando se menciona explicitamente. \
+  Ej: "en Peru" -> "Peru", "en Colombia" -> "Colombia". null si no se menciona.
 - "bedrooms": entero de dormitorios. "una habitacion"->1, "dos cuartos"->2. NUNCA confundas banos con dormitorios.
 - "bathrooms": entero de banos si se menciona. null si no.
+- "area_min"/"area_max": metros cuadrados sin unidad. Ej: "80m2" -> area_min=80; \
+  "entre 60 y 90 metros" -> area_min=60, area_max=90; "minimo 70m2" -> area_min=70. \
+  Si el usuario da un solo valor de area, usar area_min. null si no se menciona.
 - "min_price"/"max_price": numeros sin simbolo de moneda.
 - "common_areas": amenidades dentro del edificio/complejo mencionadas. Ej: \
   "quiero gimnasio" -> ["gimnasio"]; "tiene piscina" -> ["piscina"]; \
@@ -548,6 +555,13 @@ Reglas de modo (obligatorio vs preferencia):
 - Usa "obligatorio" cuando el usuario dice: "necesito", "debe tener", "tiene que ser", \
   "es imprescindible", "exactamente", "no puedo pasar de", "solo en", "unicamente".
 - Usa "preferencia" en todos los demas casos (es el valor por defecto).
+
+Normalizacion de terminos (OBLIGATORIO):
+- Todos los strings que extraigas deben estar en espanol estandar, bien escritos y en minusculas.
+- Corrige errores de tipeo del usuario: "bANCOS" -> "banco", "Gimanasio" -> "gimnasio", \
+  "ejersicios" -> "ejercicio".
+- Usa el singular cuando sea mas natural: "bancos" -> "banco", "gimnasios" -> "gimnasio".
+- No copies literalmente lo que escribio el usuario si tiene errores; escribe la version correcta.
 """
 
 
@@ -799,6 +813,23 @@ def _fallback_criteria(description: str) -> dict:
         raw = bed_m.group(1).lower()
         bedrooms = _WORD_NUMS.get(raw) or (int(raw) if raw.isdigit() else None)
 
+    # Area (m²)
+    area_min: int | None = None
+    area_max: int | None = None
+    area_m = re.search(
+        r'(\d{2,4})\s*(?:a|[-–])\s*(\d{2,4})\s*(?:m2|m²|metros?\s*cuadrados?|mt2)',
+        desc_norm, re.IGNORECASE,
+    )
+    if area_m:
+        area_min, area_max = int(area_m.group(1)), int(area_m.group(2))
+    else:
+        single_m = re.search(
+            r'(\d{2,4})\s*(?:m2|m²|metros?\s*cuadrados?|mt2)',
+            desc_norm, re.IGNORECASE,
+        )
+        if single_m:
+            area_min = int(single_m.group(1))
+
     keywords = [
         w for w in re.findall(r'\b[a-z]{4,}\b', desc_norm)
         if w not in _STOPWORDS
@@ -807,10 +838,14 @@ def _fallback_criteria(description: str) -> dict:
     return {
         "location": location,
         "location_mode": "preferencia",
+        "pais": None,
         "bedrooms": bedrooms,
         "bedrooms_mode": "preferencia",
         "bathrooms": None,
         "bathrooms_mode": "preferencia",
+        "area_min": area_min,
+        "area_max": area_max,
+        "area_mode": "preferencia",
         "min_price": None,
         "max_price": None,
         "budget_mode": "preferencia",
@@ -1104,3 +1139,107 @@ async def generate_returning_user_greeting(user_name: str, summary: str) -> str:
             greeting += f" Recuerdo que estabas buscando: {summary}."
         greeting += " ¿Seguimos con esa búsqueda o prefieres ajustar algo?"
         return greeting
+
+
+_NORMALIZE_NEARBY_SYSTEM = """\
+Eres un normalizador de datos. Recibirás una lista JSON de zonas/lugares cercanos con formato \
+[{"name": "...", "priority": "REQUIRED"|"OPTIONAL"}].
+
+Tu tarea:
+1. Elimina duplicados semánticos (ej: "gimnasio" y "gimnasios" → solo "gimnasio").
+2. Normaliza cada nombre: singular, minúsculas, español estándar, sin errores tipográficos.
+3. Si dos items son equivalentes pero tienen distinta prioridad, conserva el de prioridad "REQUIRED".
+4. Devuelve SOLO JSON válido: lista de objetos con "name" y "priority". Sin markdown ni texto extra.
+"""
+
+
+def normalize_nearby_places_sync(items: list[dict]) -> list[dict]:
+    """Deduplicate and normalize nearby_places using Claude (sync call)."""
+    if len(items) <= 1:
+        return items
+    try:
+        response = _get_client().messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=400,
+            system=_NORMALIZE_NEARBY_SYSTEM,
+            messages=[{"role": "user", "content": json.dumps(items, ensure_ascii=False)}],
+        )
+        raw = response.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\n?", "", raw).rstrip("`").strip()
+        result = json.loads(raw)
+        if isinstance(result, list) and result:
+            return [
+                {
+                    "name": str(item.get("name", "")).strip(),
+                    "priority": "REQUIRED" if item.get("priority") == "REQUIRED" else "OPTIONAL",
+                }
+                for item in result
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ]
+    except Exception as e:
+        logger.warning(f"[normalize_nearby] error: {e}")
+    return items
+
+
+_SEARCH_INTRO_SYSTEM = """\
+Eres un asesor inmobiliario. Escribe UN mensaje corto (máximo 2 oraciones) confirmando que \
+encontraste resultados para una búsqueda. Reglas estrictas:
+- Tono entusiasta pero conciso y natural, como si hablaras con una persona.
+- Menciona la ubicación si existe.
+- Describe las características relevantes de forma fluida y natural, NO como lista de palabras. \
+  Ej: "cerca de bancos y con gimnasio" (no "cerca de bANCOS, Lima y ejercicio").
+- Corrige cualquier error tipográfico implícito en los datos: "bANCOS"→"banco", escribe todo bien.
+- Si hay nombre del usuario, inclúyelo de manera natural.
+- Termina con "🏠" al final.
+- Responde SOLO el mensaje, sin comillas, sin JSON, sin explicaciones.
+"""
+
+
+async def generate_search_intro(
+    criteria: dict,
+    total: int,
+    user_name: str = "",
+) -> str:
+    """Use Claude to generate a natural, well-written first-property intro message."""
+    loc = (criteria.get("location") or "").strip()
+    beds = criteria.get("bedrooms")
+    nearby = criteria.get("nearby_zones") or []
+    amenities = criteria.get("common_areas") or []
+    m2 = criteria.get("area_exact") or criteria.get("area_min")
+
+    parts: list[str] = []
+    if loc:
+        parts.append(f"Ubicación: {loc}")
+    if beds:
+        parts.append(f"Dormitorios: {beds}")
+    if m2:
+        parts.append(f"Área mínima: {int(m2)} m²")
+    if nearby:
+        parts.append(f"Lugares cercanos deseados: {', '.join(nearby)}")
+    if amenities:
+        parts.append(f"Amenidades: {', '.join(amenities)}")
+
+    prompt = (
+        f"Resultados encontrados: {total}\n"
+        + ("\n".join(parts) or "Sin criterios específicos")
+        + (f"\nNombre del usuario: {user_name}" if user_name else "")
+    )
+
+    fallback_loc = f" en {loc}" if loc else ""
+    plural = "propiedades" if total > 1 else "propiedad"
+    name_part = f", {user_name}" if user_name else ""
+    fallback = f"¡Encontré {total} {plural}{fallback_loc}{name_part}! 🏠"
+
+    try:
+        response = _get_client().messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=120,
+            system=_SEARCH_INTRO_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        result = response.content[0].text.strip()
+        return result if result else fallback
+    except Exception as e:
+        logger.warning(f"generate_search_intro error: {e}")
+        return fallback

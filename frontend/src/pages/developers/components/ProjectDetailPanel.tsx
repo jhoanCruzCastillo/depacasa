@@ -1,20 +1,24 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useQueryClient } from '@tanstack/react-query'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   faBuilding, faXmark, faCircleCheck, faLocationDot, faGlobe,
   faArrowUpRightFromSquare, faHome, faCalendarDays,
-  faMagnifyingGlass, faFilter, faChevronRight,
+  faMagnifyingGlass, faChevronRight,
   faAngleLeft, faAngleRight, faExpand, faMapLocationDot, faTag,
+  faPencil, faChevronDown, faSpinner, faCheckSquare,
 } from '@fortawesome/free-solid-svg-icons'
-import { ScrapedRecord } from '../../../types'
+import toast from 'react-hot-toast'
+import { ScrapedRecord, PropiedadStatus } from '../../../types'
+import { updatePropiedad } from '../../../services/api'
 import { allImages, looksLikeImage } from '../helpers/media'
 import { isUrlValue as _isUrlValue } from '../helpers/childUrls'
 import {
   extractTitle, extractLocation, extractPrice, extractStatus, extractDesc,
   extractPropId, extractPropType, extractBedrooms, extractBathrooms, extractArea,
-  recordStatusLabel, statusClass, pick,
+  recordStatusLabel, propiedadStatusClass, statusClass, pick,
 } from '../helpers/extractors'
 import { fadeUp } from '../animations'
 
@@ -103,20 +107,39 @@ function InfoTab({ d }: { d: Record<string, unknown> }) {
   )
 }
 
+const STATUS_OPTIONS: { value: PropiedadStatus; label: string }[] = [
+  { value: 'pending_review', label: 'Pendiente' },
+  { value: 'public',         label: 'Público'   },
+  { value: 'partial',        label: 'Parcial'   },
+  { value: 'failed',         label: 'Error'     },
+]
+
 interface Props {
   record: ScrapedRecord
   childRecords: ScrapedRecord[]
+  developerId: string
   onClose: () => void
   onOpenProperty: (r: ScrapedRecord) => void
+  onEditProperty: (r: ScrapedRecord) => void
 }
 
-export default function ProjectDetailPanel({ record, childRecords, onClose, onOpenProperty }: Props) {
+export default function ProjectDetailPanel({ record, childRecords, developerId, onClose, onOpenProperty, onEditProperty }: Props) {
+  const queryClient = useQueryClient()
+
   const [tab, setTab]               = useState<'props' | 'info' | 'gallery'>('props')
   const [page, setPage]             = useState(0)
   const [galleryPage, setGalleryPage] = useState(0)
   const [search, setSearch]         = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [selected, setSelected]     = useState<Set<string>>(new Set())
+  const [bulkStatus, setBulkStatus] = useState<string>('')
+  const [pendingChange, setPendingChange] = useState<{ ids: string[]; newStatus: string } | null>(null)
+  const [applying, setApplying]     = useState(false)
   const [imgIdx, setImgIdx]         = useState(0)
   const [lightboxOpen, setLightbox] = useState(false)
+
+  // local status overrides so UI updates instantly before refetch
+  const [localStatuses, setLocalStatuses] = useState<Record<string, PropiedadStatus>>({})
 
   const thumbRefsStrip = useRef<(HTMLButtonElement | null)[]>([])
   const thumbRefsBox   = useRef<(HTMLButtonElement | null)[]>([])
@@ -132,6 +155,7 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
 
   useEffect(() => {
     setImgIdx(0); setLightbox(false); setTab('props'); setSearch(''); setPage(0); setGalleryPage(0)
+    setSelected(new Set()); setStatusFilter('all'); setBulkStatus(''); setLocalStatuses({})
   }, [record.id])
 
   useEffect(() => {
@@ -154,18 +178,60 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
   }, [lightboxOpen, prevImg, nextImg])
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return childRecords
-    const q = search.toLowerCase()
-    return childRecords.filter(r => {
-      const rd = r.data || {}
-      return extractTitle(rd).toLowerCase().includes(q)
-        || extractPropId(rd, r.id).toLowerCase().includes(q)
-        || extractPropType(rd).toLowerCase().includes(q)
-    })
-  }, [childRecords, search])
+    let rows = childRecords
+    if (statusFilter !== 'all') {
+      rows = rows.filter(r => {
+        const eff = (localStatuses[r.id] ?? r.status) as string
+        if (statusFilter === 'pending') return eff === 'pending_review' || eff === 'success'
+        return eff === statusFilter
+      })
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      rows = rows.filter(r => {
+        const rd = r.data || {}
+        return extractTitle(rd).toLowerCase().includes(q)
+          || extractPropId(rd, r.id).toLowerCase().includes(q)
+          || extractPropType(rd).toLowerCase().includes(q)
+      })
+    }
+    return rows
+  }, [childRecords, search, statusFilter, localStatuses])
 
   const totalPages    = Math.ceil(filtered.length / PER_PAGE)
   const pageItems     = filtered.slice(page * PER_PAGE, (page + 1) * PER_PAGE)
+
+  // helpers
+  const effectiveStatus = (r: ScrapedRecord) =>
+    (localStatuses[r.id] ?? r.status) as PropiedadStatus
+
+  const allSelected   = pageItems.length > 0 && pageItems.every(r => selected.has(r.id))
+  const someSelected  = pageItems.some(r => selected.has(r.id)) && !allSelected
+
+  const toggleRow = (id: string) =>
+    setSelected(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })
+
+  const toggleAll = () => {
+    if (allSelected) setSelected(prev => { const s = new Set(prev); pageItems.forEach(r => s.delete(r.id)); return s })
+    else              setSelected(prev => { const s = new Set(prev); pageItems.forEach(r => s.add(r.id)); return s })
+  }
+
+  const applyStatusChange = async (ids: string[], newStatus: string) => {
+    setApplying(true)
+    try {
+      await Promise.all(ids.map(id => updatePropiedad(id, { status: newStatus })))
+      setLocalStatuses(prev => {
+        const next = { ...prev }
+        ids.forEach(id => { next[id] = newStatus as PropiedadStatus })
+        return next
+      })
+      setSelected(new Set())
+      setBulkStatus('')
+      queryClient.invalidateQueries({ queryKey: ['records', developerId] })
+      toast.success(ids.length === 1 ? 'Estado actualizado' : `${ids.length} propiedades actualizadas`)
+    } catch { toast.error('Error al cambiar estado') }
+    finally { setApplying(false); setPendingChange(null) }
+  }
 
   const galleryTotal = Math.ceil(allImgs.length / GALLERY_PER_PAGE)
   const galleryItems = allImgs.slice(galleryPage * GALLERY_PER_PAGE, (galleryPage + 1) * GALLERY_PER_PAGE)
@@ -366,6 +432,35 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
 
           {tab === 'props' && (
             <motion.div key="props" variants={fadeUp} initial="hidden" animate="visible" exit="exit" className="p-5">
+
+              {/* Bulk action bar — visible only when rows are selected */}
+              {selected.size > 0 && (
+                <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-blue-50 border border-blue-200 rounded-xl flex-wrap">
+                  <FontAwesomeIcon icon={faCheckSquare} className="text-blue-500 text-sm flex-shrink-0" />
+                  <span className="text-xs font-bold text-blue-700">{selected.size} seleccionada{selected.size !== 1 ? 's' : ''}</span>
+                  <button onClick={() => setSelected(new Set())}
+                    className="text-xs text-blue-600 hover:underline">Deseleccionar</button>
+                  <span className="text-blue-300 mx-1">|</span>
+                  <span className="text-xs text-gray-600">Cambiar estado a</span>
+                  <div className="relative">
+                    <select value={bulkStatus} onChange={e => setBulkStatus(e.target.value)}
+                      className="text-xs border border-gray-200 rounded-lg px-2 py-1 pr-6 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white cursor-pointer">
+                      <option value="">Seleccionar estado</option>
+                      {STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                    <FontAwesomeIcon icon={faChevronDown} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 text-[9px] pointer-events-none" />
+                  </div>
+                  <button
+                    disabled={!bulkStatus || applying}
+                    onClick={() => bulkStatus && setPendingChange({ ids: [...selected], newStatus: bulkStatus })}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-40 transition ml-auto">
+                    {applying ? <FontAwesomeIcon icon={faSpinner} className="animate-spin" /> : <FontAwesomeIcon icon={faChevronRight} className="text-[9px]" />}
+                    Aplicar
+                  </button>
+                </div>
+              )}
+
+              {/* Search + status filter */}
               <div className="flex gap-2 mb-3">
                 <div className="relative flex-1">
                   <FontAwesomeIcon icon={faMagnifyingGlass} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-[11px]" />
@@ -373,9 +468,17 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
                     onChange={e => { setSearch(e.target.value); setPage(0) }}
                     className="w-full pl-7 pr-3 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
-                <button className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg text-gray-500 hover:bg-gray-50 transition">
-                  <FontAwesomeIcon icon={faFilter} className="text-[10px]" /> Filtros
-                </button>
+                <div className="relative flex-shrink-0">
+                  <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(0) }}
+                    className="text-xs border border-gray-200 rounded-lg pl-2.5 pr-7 py-1.5 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white cursor-pointer font-medium text-gray-600">
+                    <option value="all">Estado: Todos</option>
+                    <option value="pending">Pendiente</option>
+                    <option value="public">Público</option>
+                    <option value="partial">Parcial</option>
+                    <option value="failed">Error</option>
+                  </select>
+                  <FontAwesomeIcon icon={faChevronDown} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 text-[9px] pointer-events-none" />
+                </div>
               </div>
 
               {filtered.length === 0 ? (
@@ -386,8 +489,13 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
                     <table className="w-full text-xs border-collapse">
                       <thead>
                         <tr className="bg-gray-50 text-gray-400 font-semibold uppercase tracking-wide text-[10px]">
+                          <th className="py-2 pl-3 pr-1 w-8">
+                            <input type="checkbox" checked={allSelected} ref={el => { if (el) el.indeterminate = someSelected }}
+                              onChange={toggleAll}
+                              className="w-3.5 h-3.5 rounded border-gray-300 accent-blue-600 cursor-pointer" />
+                          </th>
                           {['Propiedad', 'Tipo', 'Dorms', 'Baños', 'Área (m²)', 'Estado', 'Acción'].map(h => (
-                            <th key={h} className="py-2 px-3 text-left first:pl-4 last:pr-4 whitespace-nowrap">{h}</th>
+                            <th key={h} className="py-2 px-3 text-left last:pr-4 whitespace-nowrap">{h}</th>
                           ))}
                         </tr>
                       </thead>
@@ -398,11 +506,16 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
                           const pImg   = pImgs[0] ?? null
                           const pTitle = extractTitle(rd)
                           const pId    = extractPropId(rd, r.id)
-                          const pStat  = extractStatus(rd) || recordStatusLabel(r.status)
+                          const pSt    = effectiveStatus(r)
 
                           return (
-                            <tr key={r.id} className="border-t border-gray-50 hover:bg-gray-50 transition-colors">
-                              <td className="py-2.5 px-3 pl-4">
+                            <tr key={r.id}
+                              className={`border-t border-gray-50 transition-colors ${selected.has(r.id) ? 'bg-blue-50/60' : 'hover:bg-gray-50'}`}>
+                              <td className="py-2.5 pl-3 pr-1">
+                                <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)}
+                                  className="w-3.5 h-3.5 rounded border-gray-300 accent-blue-600 cursor-pointer" />
+                              </td>
+                              <td className="py-2.5 px-3">
                                 <div className="flex items-center gap-2">
                                   <div className="w-8 h-8 rounded-lg overflow-hidden bg-gray-100 flex-shrink-0">
                                     {pImg
@@ -422,16 +535,33 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
                               <td className="py-2.5 px-3 text-center text-gray-700 font-medium">{extractBedrooms(rd) || '—'}</td>
                               <td className="py-2.5 px-3 text-center text-gray-700 font-medium">{extractBathrooms(rd) || '—'}</td>
                               <td className="py-2.5 px-3 text-center text-gray-600">{extractArea(rd) || '—'}</td>
-                              <td className="py-2.5 px-3 text-center">
-                                <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full whitespace-nowrap ${statusClass(pStat)}`}>
-                                  ✓ {pStat}
-                                </span>
+                              <td className="py-2.5 px-3">
+                                {/* Inline status dropdown */}
+                                <div className={`relative inline-flex items-center rounded-full ${propiedadStatusClass(pSt)}`}>
+                                  <select
+                                    value={pSt}
+                                    onChange={e => setPendingChange({ ids: [r.id], newStatus: e.target.value })}
+                                    className="appearance-none bg-transparent text-[10px] font-bold pl-2.5 pr-6 py-0.5 cursor-pointer border-0 focus:outline-none"
+                                    style={{ color: 'inherit' }}
+                                  >
+                                    {STATUS_OPTIONS.map(o => (
+                                      <option key={o.value} value={o.value}>{o.label}</option>
+                                    ))}
+                                  </select>
+                                  <FontAwesomeIcon icon={faChevronDown} className="absolute right-1.5 text-[8px] pointer-events-none opacity-60" />
+                                </div>
                               </td>
-                              <td className="py-2.5 px-3 pr-4 text-center">
-                                <button onClick={() => onOpenProperty(r)}
-                                  className="text-[10px] font-semibold text-blue-600 hover:text-blue-800 border border-blue-200 hover:bg-blue-50 px-2 py-1 rounded-lg transition whitespace-nowrap">
-                                  Ver detalles <FontAwesomeIcon icon={faChevronRight} className="text-[8px] ml-0.5" />
-                                </button>
+                              <td className="py-2.5 px-3 pr-4">
+                                <div className="flex items-center gap-1.5 justify-center">
+                                  <button onClick={() => onEditProperty(r)}
+                                    className="flex items-center gap-1 text-[10px] font-semibold text-gray-600 hover:text-gray-800 border border-gray-200 hover:bg-gray-50 px-2 py-1 rounded-lg transition whitespace-nowrap">
+                                    <FontAwesomeIcon icon={faPencil} className="text-[8px]" /> Editar
+                                  </button>
+                                  <button onClick={() => onOpenProperty(r)}
+                                    className="flex items-center gap-1 text-[10px] font-semibold text-blue-600 hover:text-blue-800 border border-blue-200 hover:bg-blue-50 px-2 py-1 rounded-lg transition whitespace-nowrap">
+                                    Ver <FontAwesomeIcon icon={faChevronRight} className="text-[8px]" />
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           )
@@ -542,6 +672,56 @@ export default function ProjectDetailPanel({ record, childRecords, onClose, onOp
           <span className="text-xs text-gray-400">Sin URL de proyecto</span>
         )}
       </div>
+
+      {/* ── Confirmation dialog ───────────────────────────── */}
+      {createPortal(
+        <AnimatePresence>
+          {pendingChange && (
+            <motion.div
+              className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+              style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              onClick={() => setPendingChange(null)}
+            >
+              <motion.div
+                className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm"
+                initial={{ opacity: 0, scale: 0.95, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                onClick={e => e.stopPropagation()}
+              >
+                <h3 className="font-bold text-gray-900 text-base mb-1">¿Confirmar cambio de estado?</h3>
+                <p className="text-sm text-gray-500 mb-5">
+                  {pendingChange.ids.length === 1
+                    ? 'Se actualizará el estado de esta propiedad a '
+                    : `Se actualizarán ${pendingChange.ids.length} propiedades al estado `
+                  }
+                  <span className={`inline-flex items-center font-bold px-2 py-0.5 rounded-full text-xs ${propiedadStatusClass(pendingChange.newStatus as PropiedadStatus)}`}>
+                    {STATUS_OPTIONS.find(o => o.value === pendingChange.newStatus)?.label ?? pendingChange.newStatus}
+                  </span>
+                  .
+                </p>
+                <div className="flex gap-3">
+                  <button onClick={() => setPendingChange(null)}
+                    className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition">
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={() => applyStatusChange(pendingChange.ids, pendingChange.newStatus)}
+                    disabled={applying}
+                    className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition">
+                    {applying && <FontAwesomeIcon icon={faSpinner} className="animate-spin text-xs" />}
+                    Confirmar
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
 
       {/* ── Lightbox ──────────────────────────────────────── */}
       {createPortal(

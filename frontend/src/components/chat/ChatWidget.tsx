@@ -595,7 +595,7 @@ export default function ChatWidget({
     if (!sessionId || loading || uploading) return
     setLoading(true)
     try {
-      const res = await sendWebChatMessage(sessionId, payload)
+      const res = await sendWebChatMessage(sessionId, payload, token)
       setMessages(m => {
         const preludes: Message[] = (res.data.prelude_messages || []).map((content: string) => ({
           role: 'assistant' as const,

@@ -13,11 +13,8 @@ import {
   Phone,
   User,
   Eye,
-  MapPin,
   Tag,
   Clock,
-  Star,
-  MessageSquare,
   FileText,
   ExternalLink,
   Image as ImageIcon,
@@ -50,7 +47,9 @@ interface SiteUser {
   name: string | null
   country: string | null
   phone: string | null
+  whatsapp: string | null
   wants_newsletter: boolean
+  role: string | null
   created_at: string | null
   has_uploaded_documents?: boolean
   has_financial_document?: boolean
@@ -142,7 +141,7 @@ interface UserProfile {
   search_history: SearchEntry[]
 }
 
-type DetailTabId = 'profile' | 'document' | 'preferences' | 'activity'
+type DetailTabId = 'profile' | 'document' | 'preferences'
 
 const TIER_CONFIG: Record<string, { color: string; bg: string; border: string; Icon: typeof Flame }> = {
   muy_caliente: { color: 'text-red-600', bg: 'bg-red-100', border: 'border-red-200', Icon: Flame },
@@ -198,64 +197,32 @@ const formatDate = (value?: string | null, withTime = false): string => {
   return withTime ? parsed.toLocaleString('es-PE') : parsed.toLocaleDateString('es-PE')
 }
 
-const describeNumericPreference = (value: unknown): string | null => {
-  if (!value || typeof value !== 'object') return null
-  const input = value as Record<string, unknown>
-  const type = input.tipo
-  if (type === 'exacto' && typeof input.exacto === 'number') {
-    return `Exacto: ${input.exacto}`
-  }
-  if (type === 'rango') {
-    const min = typeof input.min === 'number' ? input.min : null
-    const max = typeof input.max === 'number' ? input.max : null
-    if (min !== null && max !== null) return `${min} - ${max}`
-    if (min !== null) return `Desde ${min}`
-    if (max !== null) return `Hasta ${max}`
-  }
-  return null
-}
+const PREF_FIELD_DEFS: Array<{ key: string; label: string; priorityKey: string; isNearby?: boolean }> = [
+  { key: 'direccion',      label: 'Dirección',         priorityKey: 'direccion_priority' },
+  { key: 'ubicacion',      label: 'Ubicación',         priorityKey: 'ubicacion_priority' },
+  { key: 'pais',           label: 'País',              priorityKey: 'pais_priority' },
+  { key: 'bedrooms',       label: 'Habitaciones',      priorityKey: 'bedrooms_priority' },
+  { key: 'bathrooms',      label: 'Baños',             priorityKey: 'bathrooms_priority' },
+  { key: 'm2',             label: 'M²',                priorityKey: 'm2_priority' },
+  { key: 'min_price',      label: 'Precio mínimo',     priorityKey: 'min_price_priority' },
+  { key: 'max_price',      label: 'Precio máximo',     priorityKey: 'max_price_priority' },
+  { key: 'nearby_places',  label: 'Zonas cercanas',    priorityKey: '',                  isNearby: true },
+  { key: 'property_type',  label: 'Tipo de propiedad', priorityKey: 'property_type_priority' },
+]
 
-const getPreferenceDisplay = (
-  preferences: Record<string, unknown> | null,
-): Array<{ label: string; mode: string; value: string }> => {
-  if (!preferences) return []
-  const defs: Array<{ key: string; label: string }> = [
-    { key: 'ubicacion', label: 'Ubicacion' },
-    { key: 'zonas_cercanas', label: 'Zonas cercanas' },
-    { key: 'areas_comunes', label: 'Areas comunes' },
-    { key: 'habitaciones', label: 'Habitaciones' },
-    { key: 'banos', label: 'Banos' },
-    { key: 'metros_cuadrados', label: 'Metros cuadrados' },
-  ]
-
-  const rows: Array<{ label: string; mode: string; value: string }> = []
-  for (const def of defs) {
-    const raw = preferences[def.key]
-    if (!raw || typeof raw !== 'object') continue
-    const item = raw as Record<string, unknown>
-    const mode = typeof item.modo === 'string' ? item.modo : 'preferencia'
-    const rawValue = item.valor
-
-    let displayValue: string | null = null
-    if (typeof rawValue === 'string') {
-      displayValue = rawValue.trim() || null
-    } else if (Array.isArray(rawValue)) {
-      const list = rawValue.map(v => String(v).trim()).filter(Boolean)
-      displayValue = list.length ? list.join(', ') : null
-    } else {
-      displayValue = describeNumericPreference(rawValue)
+const formatPrefValue = (val: unknown): string => {
+  if (val === null || val === undefined || val === '') return '-'
+  if (Array.isArray(val)) {
+    if (val.length === 0) return '-'
+    // New format: [{name, priority}]
+    if (typeof val[0] === 'object' && val[0] !== null && 'name' in (val[0] as object)) {
+      return (val as Array<{ name: string; priority?: string }>)
+        .map(i => `${i.name}${i.priority === 'REQUIRED' ? ' ●' : ''}`)
+        .join(', ')
     }
-
-    if (displayValue) {
-      rows.push({
-        label: def.label,
-        mode,
-        value: displayValue,
-      })
-    }
+    return val.map(v => String(v).trim()).filter(Boolean).join(', ')
   }
-
-  return rows
+  return String(val)
 }
 
 export default function ChatUsersPage() {
@@ -340,8 +307,11 @@ export default function ChatUsersPage() {
       const res = await API.get('/site-users', {
         params: { skip: page * PAGE_SIZE, limit: PAGE_SIZE, search: query },
       })
-      setUsers(res.data.items)
-      setTotal(res.data.total)
+      setUsers(res.data.items ?? [])
+      setTotal(res.data.total ?? 0)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      toast.error(detail || 'Error al cargar usuarios')
     } finally {
       setLoading(false)
     }
@@ -445,13 +415,10 @@ export default function ChatUsersPage() {
     detailProfile?.documents?.financial_capacity_doc_kind ||
     (isPdfUrl(financialDocRaw || '') ? 'pdf' : isImageUrl(financialDocRaw || '') ? 'image' : null)
 
-  const preferenceRows = getPreferenceDisplay(detailProfile?.preferences || null)
-
   const tabs: Array<{ id: DetailTabId; label: string }> = [
     { id: 'profile', label: 'Perfil' },
     { id: 'document', label: 'Documento financiero' },
     { id: 'preferences', label: 'Preferencias' },
-    { id: 'activity', label: 'Actividad' },
   ]
 
   const editableFields: Array<{
@@ -836,57 +803,14 @@ export default function ChatUsersPage() {
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                           {[
-                            { icon: Mail, label: 'Correo', value: detailProfile.user.email },
-                            { icon: User, label: 'Nombre', value: detailProfile.user.name || '-' },
-                            { icon: Phone, label: 'Telefono', value: detailProfile.user.phone || '-' },
-                            { icon: Globe, label: 'Pais', value: detailProfile.user.country || '-' },
-                            {
-                              icon: Send,
-                              label: 'Newsletter',
-                              value: detailProfile.user.wants_newsletter ? 'Si' : 'No',
-                            },
-                            {
-                              icon: Clock,
-                              label: 'Registro',
-                              value: formatDate(detailProfile.user.created_at, true),
-                            },
-                          ].map(({ icon: Icon, label, value }) => (
-                            <div key={label} className="flex items-start gap-2.5 bg-slate-50 rounded-xl p-3">
-                              <Icon className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
-                              <div className="min-w-0">
-                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
-                                  {label}
-                                </p>
-                                <p className="text-sm text-slate-700 font-medium break-all">{value}</p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </section>
-
-                      <section>
-                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-                          Datos capturados por chatbot
-                        </h3>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                          {[
-                            { icon: User, label: 'Nombre completo', value: detailProfile.lead?.full_name || '-' },
-                            { icon: Phone, label: 'WhatsApp', value: detailProfile.lead?.whatsapp || '-' },
-                            { icon: Tag, label: 'Documento', value: detailProfile.lead?.document_number || '-' },
-                            {
-                              icon: Globe,
-                              label: 'Pais residencia',
-                              value:
-                                detailProfile.lead?.country_of_residence ||
-                                detailProfile.user.country ||
-                                '-',
-                            },
-                            { icon: Eye, label: 'Record interesado', value: detailProfile.lead?.record_id || '-' },
-                            {
-                              icon: Clock,
-                              label: 'Ultima captura',
-                              value: formatDate(detailProfile.lead?.updated_at, true),
-                            },
+                            { icon: Mail,  label: 'Correo',      value: detailProfile.user.email },
+                            { icon: User,  label: 'Nombre',      value: detailProfile.user.name || '-' },
+                            { icon: Phone, label: 'Teléfono',    value: detailProfile.user.phone || '-' },
+                            { icon: Phone, label: 'WhatsApp',    value: detailProfile.user.whatsapp || '-' },
+                            { icon: Globe, label: 'País',        value: detailProfile.user.country || '-' },
+                            { icon: Tag,   label: 'Rol',         value: detailProfile.user.role || '-' },
+                            { icon: Send,  label: 'Newsletter',  value: detailProfile.user.wants_newsletter ? 'Sí' : 'No' },
+                            { icon: Clock, label: 'Registro',    value: formatDate(detailProfile.user.created_at, true) },
                           ].map(({ icon: Icon, label, value }) => (
                             <div key={label} className="flex items-start gap-2.5 bg-slate-50 rounded-xl p-3">
                               <Icon className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
@@ -1063,246 +987,99 @@ export default function ChatUsersPage() {
                   {detailTab === 'preferences' && (
                     <div className="h-full overflow-y-auto p-6 space-y-5">
                       <section className="bg-slate-50 rounded-xl p-4">
-                        <div className="flex items-center justify-between gap-3 mb-3">
-                          <h3 className="text-sm font-semibold text-slate-700">Preferencias V2</h3>
+                        <div className="flex items-center justify-between gap-3 mb-4">
+                          <h3 className="text-sm font-semibold text-slate-700">Preferencias de búsqueda</h3>
                           <p className="text-xs text-slate-400">
-                            Actualizado: {formatDate(detailProfile.preferences_updated_at, true)}
+                            {detailProfile.preferences_updated_at
+                              ? `Actualizado: ${formatDate(detailProfile.preferences_updated_at, true)}`
+                              : 'Sin actualizar aún'}
                           </p>
                         </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {PREF_FIELD_DEFS.map(({ key, label, priorityKey, isNearby }) => {
+                            const prefs = detailProfile.preferences || {}
+                            const val = prefs[key]
+                            const priority = priorityKey ? prefs[priorityKey] as string | null | undefined : null
+                            const isSet = val !== null && val !== undefined && val !== '' &&
+                              !(Array.isArray(val) && val.length === 0)
 
-                        {preferenceRows.length > 0 ? (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {preferenceRows.map(item => (
-                              <div
-                                key={`${item.label}-${item.value}`}
-                                className="rounded-lg border border-slate-200 bg-white px-3 py-2.5"
-                              >
-                                <p className="text-[11px] uppercase tracking-wide font-semibold text-slate-400">
-                                  {item.label}
-                                </p>
-                                <p className="text-sm text-slate-700 font-medium break-words">
-                                  {item.value}
-                                </p>
-                                <p className="text-[11px] mt-1 inline-block px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
-                                  {item.mode === 'obligatorio' ? 'Obligatorio' : 'Preferencia'}
-                                </p>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-sm text-slate-400">
-                            No hay preferencias estructuradas registradas.
-                          </p>
-                        )}
-                      </section>
-
-                      {(() => {
-                        const budget = detailProfile.context?.budget_context
-                        const hasBudget = budget && (budget.min != null || budget.max != null)
-                        return (
-                          <section className="bg-slate-50 rounded-xl p-4">
-                            <h3 className="text-sm font-semibold text-slate-700 mb-3">Presupuesto</h3>
-                            {hasBudget ? (
-                              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                                {budget!.min != null && (
-                                  <div className="bg-white rounded-lg border border-slate-200 px-3 py-2.5">
-                                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Minimo</p>
-                                    <p className="text-sm font-medium text-slate-700">{budget!.min!.toLocaleString()} {budget!.currency || 'PEN'}</p>
-                                  </div>
-                                )}
-                                {budget!.max != null && (
-                                  <div className="bg-white rounded-lg border border-slate-200 px-3 py-2.5">
-                                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Maximo</p>
-                                    <p className="text-sm font-medium text-slate-700">{budget!.max!.toLocaleString()} {budget!.currency || 'PEN'}</p>
-                                  </div>
-                                )}
-                                <div className="bg-white rounded-lg border border-slate-200 px-3 py-2.5">
-                                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Moneda</p>
-                                  <p className="text-sm font-medium text-slate-700">{budget!.currency || 'PEN'}</p>
-                                </div>
-                                <div className="bg-white rounded-lg border border-slate-200 px-3 py-2.5">
-                                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Tipo</p>
-                                  <p className={`text-sm font-medium ${budget!.strictness === 'obligatorio' ? 'text-red-600' : 'text-indigo-600'}`}>
-                                    {budget!.strictness === 'obligatorio' ? 'Obligatorio' : 'Preferencia'}
+                            if (isNearby) {
+                              const items = Array.isArray(val)
+                                ? (val as Array<{ name: string; priority?: string }>).filter(i => i?.name)
+                                : []
+                              return (
+                                <div
+                                  key={key}
+                                  className={`rounded-lg border px-3 py-2.5 md:col-span-2 ${
+                                    items.length ? 'bg-white border-slate-200' : 'bg-slate-50/60 border-slate-100'
+                                  }`}
+                                >
+                                  <p className="text-[11px] uppercase tracking-wide font-semibold text-slate-400 mb-1.5">
+                                    {label}
                                   </p>
-                                </div>
-                              </div>
-                            ) : (
-                              <p className="text-sm text-slate-400">Sin presupuesto definido</p>
-                            )}
-                          </section>
-                        )
-                      })()}
-
-                      {(() => {
-                        const beh = detailProfile.context?.behavior_signals
-                        return (
-                          <section className="bg-slate-50 rounded-xl p-4">
-                            <h3 className="text-sm font-semibold text-slate-700 mb-3">Senales de comportamiento</h3>
-                            <div className="flex flex-wrap gap-3">
-                              {[
-                                { label: 'Propiedades vistas', count: beh?.viewed_record_ids?.length ?? 0, color: 'bg-blue-100 text-blue-700' },
-                                { label: 'Calificadas', count: beh?.rated_record_ids?.length ?? 0, color: 'bg-amber-100 text-amber-700' },
-                                { label: 'Con interes', count: beh?.interested_record_ids?.length ?? 0, color: 'bg-emerald-100 text-emerald-700' },
-                                { label: 'Descartadas', count: beh?.discarded_record_ids?.length ?? 0, color: 'bg-slate-100 text-slate-600' },
-                              ].map(({ label, count, color }) => (
-                                <div key={label} className={`flex items-center gap-2 px-3 py-2 rounded-full text-sm font-semibold ${color}`}>
-                                  <span className="text-base font-bold">{count}</span>
-                                  <span className="font-medium">{label}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </section>
-                        )
-                      })()}
-
-                      {(() => {
-                        const mem = detailProfile.context?.conversation_memory
-                        const lastSearch = mem?.last_search_description
-                        const accepted = mem?.ajustes_aceptados ?? []
-                        const rejected = mem?.ajustes_rechazados ?? []
-                        return (
-                          <section className="bg-slate-50 rounded-xl p-4">
-                            <h3 className="text-sm font-semibold text-slate-700 mb-3">Memoria de conversacion</h3>
-                            {lastSearch ? (
-                              <div className="bg-white border border-slate-200 rounded-lg px-3 py-2.5 mb-3">
-                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Ultima busqueda</p>
-                                <p className="text-sm text-slate-700 italic">"{lastSearch}"</p>
-                              </div>
-                            ) : (
-                              <p className="text-sm text-slate-400 mb-3">Sin busquedas registradas aun</p>
-                            )}
-                            {accepted.length > 0 && (
-                              <div className="mb-2">
-                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Ajustes aceptados</p>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {accepted.map((a, i) => (
-                                    <span key={i} className="text-xs px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full">{a}</span>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                            {rejected.length > 0 && (
-                              <div>
-                                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Ajustes rechazados</p>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {rejected.map((r, i) => (
-                                    <span key={i} className="text-xs px-2 py-0.5 bg-red-100 text-red-600 rounded-full">{r}</span>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                            {!lastSearch && accepted.length === 0 && rejected.length === 0 && (
-                              <p className="text-sm text-slate-400">Sin historial de conversacion</p>
-                            )}
-                          </section>
-                        )
-                      })()}
-                    </div>
-                  )}
-
-                  {detailTab === 'activity' && (
-                    <div className="h-full overflow-y-auto p-6 space-y-6">
-                      <section>
-                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-                          Historial de busquedas
-                        </h3>
-                        {detailProfile.search_history.length === 0 ? (
-                          <p className="text-sm text-slate-400">Sin historial registrado.</p>
-                        ) : (
-                          <div className="space-y-2">
-                            {detailProfile.search_history.map(h => (
-                              <div key={h.id} className="flex items-start gap-3 bg-slate-50 rounded-xl px-4 py-3">
-                                <MessageSquare className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
-                                <div className="flex-1 min-w-0">
-                                  {h.query && <p className="text-sm text-slate-700">"{h.query}"</p>}
-                                  {h.location && (
-                                    <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
-                                      <MapPin className="w-3 h-3" />
-                                      {h.location}
-                                    </p>
+                                  {items.length ? (
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {items.map(item => (
+                                        <span
+                                          key={item.name}
+                                          className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border font-medium ${
+                                            item.priority === 'REQUIRED'
+                                              ? 'bg-orange-50 text-orange-700 border-orange-200'
+                                              : 'bg-indigo-50 text-indigo-700 border-indigo-100'
+                                          }`}
+                                        >
+                                          {item.name}
+                                          <span className={`text-[9px] font-bold px-1 py-0.5 rounded-full ${
+                                            item.priority === 'REQUIRED'
+                                              ? 'bg-orange-200 text-orange-800'
+                                              : 'bg-indigo-100 text-indigo-500'
+                                          }`}>
+                                            {item.priority === 'REQUIRED' ? 'OBL' : 'PREF'}
+                                          </span>
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <p className="text-sm font-medium text-slate-300">-</p>
                                   )}
                                 </div>
-                                <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                                  <span
-                                    className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                                      h.source === 'chatbot'
-                                        ? 'bg-blue-100 text-blue-600'
-                                        : 'bg-slate-100 text-slate-500'
-                                    }`}
-                                  >
-                                    {h.source === 'chatbot' ? 'Chat' : 'Portal'}
+                              )
+                            }
+
+                            const displayValue = formatPrefValue(val)
+                            return (
+                              <div
+                                key={key}
+                                className={`rounded-lg border px-3 py-2.5 ${
+                                  isSet
+                                    ? 'bg-white border-slate-200'
+                                    : 'bg-slate-50/60 border-slate-100'
+                                }`}
+                              >
+                                <p className="text-[11px] uppercase tracking-wide font-semibold text-slate-400 mb-0.5">
+                                  {label}
+                                </p>
+                                <p className={`text-sm font-medium ${isSet ? 'text-slate-700' : 'text-slate-300'}`}>
+                                  {displayValue}
+                                </p>
+                                {priority && (
+                                  <span className={`mt-1.5 inline-block text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                                    priority === 'REQUIRED'
+                                      ? 'bg-orange-100 text-orange-700'
+                                      : 'bg-indigo-100 text-indigo-700'
+                                  }`}>
+                                    {priority === 'REQUIRED' ? 'Obligatorio' : 'Preferencia'}
                                   </span>
-                                  <span className="text-[10px] text-slate-300">
-                                    {formatDate(h.created_at)}
-                                  </span>
-                                </div>
+                                )}
                               </div>
-                            ))}
-                          </div>
-                        )}
+                            )
+                          })}
+                        </div>
                       </section>
 
-                      <section>
-                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-                          Interacciones de propiedades
-                        </h3>
-                        {detailProfile.interactions.length === 0 ? (
-                          <p className="text-sm text-slate-400">Sin interacciones registradas.</p>
-                        ) : (
-                          <div className="space-y-2">
-                            {detailProfile.interactions.map(i => (
-                              <div
-                                key={`${i.record_id}-${i.created_at || 'x'}`}
-                                className="bg-slate-50 rounded-xl px-4 py-3 space-y-2"
-                              >
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <p className="text-sm font-medium text-slate-700 truncate">
-                                      {i.property_title ||
-                                        i.property_model ||
-                                        i.property_location ||
-                                        i.record_id}
-                                    </p>
-                                    <p className="text-[11px] text-slate-400 font-mono truncate">
-                                      {i.record_id}
-                                    </p>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    {i.interested && (
-                                      <span className="text-[10px] font-semibold bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">
-                                        Interesado
-                                      </span>
-                                    )}
-                                    {i.rating !== null && (
-                                      <span className="flex items-center gap-1 text-[10px] font-semibold text-amber-600">
-                                        <Star className="w-3 h-3 fill-amber-400 stroke-amber-400" />
-                                        {i.rating}/5
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                                {i.property_price && (
-                                  <p className="text-xs text-slate-500">Precio: {i.property_price}</p>
-                                )}
-                                <p className="text-[11px] text-slate-400">Visto: {formatDate(i.seen_at)}</p>
-                                {i.source_url && (
-                                  <a
-                                    href={i.source_url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-xs text-blue-600 hover:underline break-all inline-block"
-                                  >
-                                    {i.source_url}
-                                  </a>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </section>
                     </div>
                   )}
+
                 </div>
               </>
             ) : (

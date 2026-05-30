@@ -54,12 +54,14 @@ export interface Selector {
   created_at: string
 }
 
+export type PropiedadStatus = 'success' | 'partial' | 'failed' | 'pending_review' | 'public'
+
 export interface ScrapedRecord {
   id: string
   type: 'proyecto' | 'propiedad'
   proyecto_id: string | null
   data: Record<string, any>
-  status: 'success' | 'partial' | 'failed'
+  status: PropiedadStatus
   scraped_at: string
 }
 

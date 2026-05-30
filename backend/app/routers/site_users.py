@@ -13,6 +13,7 @@ from uuid import UUID
 
 from database import get_db
 from app.models.site_user import SiteUser
+from app.models.user_document import UserDocument
 from app.services.email_service import send_email
 from app.models.user_preference import UserPreference
 from app.models.user_property_interaction import UserPropertyInteraction
@@ -30,6 +31,7 @@ class UserUpdate(BaseModel):
     email: Optional[str] = None
     country: Optional[str] = None
     phone: Optional[str] = None
+    whatsapp: Optional[str] = None
     wants_newsletter: Optional[bool] = None
 
 
@@ -74,14 +76,6 @@ def _document_flags_from_lead(lead: dict | None) -> tuple[bool, bool]:
     return bool(identity_doc or financial_doc), bool(financial_doc)
 
 
-def _document_flags_from_context(context: dict | None) -> tuple[bool, bool]:
-    payload = context if isinstance(context, dict) else {}
-    lead_profile = payload.get("lead_profile")
-    if not isinstance(lead_profile, dict):
-        return False, False
-    return _document_flags_from_lead(lead_profile)
-
-
 def _out(u: SiteUser, doc_flags: Optional[dict] = None, score_summary: Optional[dict] = None) -> dict:
     data = {
         "id": str(u.id),
@@ -89,6 +83,7 @@ def _out(u: SiteUser, doc_flags: Optional[dict] = None, score_summary: Optional[
         "name": u.name,
         "country": u.country,
         "phone": u.phone,
+        "whatsapp": u.whatsapp,
         "wants_newsletter": u.wants_newsletter,
         "created_at": u.created_at.isoformat() if u.created_at else None,
         "financial_doc_status": u.financial_doc_status,
@@ -178,16 +173,18 @@ def _load_doc_flags(user_ids: list, db: Session) -> dict:
     if not user_ids:
         return flags
 
-    prefs = (
-        db.query(UserPreference.site_user_id, UserPreference.context)
-        .filter(UserPreference.site_user_id.in_(user_ids))
+    uploaded_docs = (
+        db.query(UserDocument.site_user_id, UserDocument.document_kind, UserDocument.document_url)
+        .filter(UserDocument.site_user_id.in_(user_ids))
         .all()
     )
-    for site_user_id, context in prefs:
-        has_any, has_financial = _document_flags_from_context(context)
-        if has_any:
-            flags[site_user_id]["has_uploaded_documents"] = True
-        if has_financial:
+    for site_user_id, document_kind, document_url in uploaded_docs:
+        if site_user_id not in flags:
+            continue
+        flags[site_user_id]["has_uploaded_documents"] = True
+        kind = (document_kind or "").strip().lower()
+        url = (document_url or "").strip().lower()
+        if kind in {"financial_capacity", "financial", "financial_doc"} or "financial" in url:
             flags[site_user_id]["has_financial_document"] = True
 
     unresolved_ids = [
@@ -365,7 +362,7 @@ def update_user(user_id: UUID, body: UserUpdate, db: Session = Depends(get_db)):
         if existing:
             raise HTTPException(status_code=400, detail="Ese correo ya está en uso.")
         u.email = body.email.lower()
-    for field in ("name", "country", "phone", "wants_newsletter"):
+    for field in ("name", "country", "phone", "whatsapp", "wants_newsletter"):
         val = getattr(body, field)
         if val is not None:
             setattr(u, field, val)
@@ -493,7 +490,27 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
             "financial_capacity_doc_url": financial_doc,
             "financial_capacity_doc_kind": _guess_doc_kind(financial_doc),
         },
-        "preferences": criteria_from_preference(pref) if pref else {},
+        "preferences": {
+            "direccion":            pref.direccion if pref else None,
+            "direccion_priority":   pref.direccion_priority if pref else None,
+            "ubicacion":            pref.ubicacion if pref else None,
+            "ubicacion_priority":   pref.ubicacion_priority if pref else None,
+            "pais":                 pref.pais if pref else None,
+            "pais_priority":        pref.pais_priority if pref else None,
+            "m2":                   pref.m2 if pref else None,
+            "m2_priority":          pref.m2_priority if pref else None,
+            "bedrooms":             pref.bedrooms if pref else None,
+            "bedrooms_priority":    pref.bedrooms_priority if pref else None,
+            "bathrooms":            pref.bathrooms if pref else None,
+            "bathrooms_priority":   pref.bathrooms_priority if pref else None,
+            "min_price":            pref.min_price if pref else None,
+            "min_price_priority":   pref.min_price_priority if pref else None,
+            "max_price":            pref.max_price if pref else None,
+            "max_price_priority":   pref.max_price_priority if pref else None,
+            "nearby_places":        pref.nearby_places if pref else None,
+            "property_type":        pref.property_type if pref else None,
+            "property_type_priority": pref.property_type_priority if pref else None,
+        },
         "preferences_summary": summarize_preference(pref) if pref else "",
         "preferences_updated_at": pref.updated_at.isoformat() if pref and pref.updated_at else None,
         "interactions": [

@@ -163,6 +163,18 @@ def public_records_grouped(
     return {"proyectos": result}
 
 
+def _extract_numeric(val) -> float | None:
+    """Extract a numeric value from various formats."""
+    if val is None:
+        return None
+    import re
+    s = re.sub(r"[^\d.]", "", str(val).replace(",", "."))
+    try:
+        return float(s) if s else None
+    except ValueError:
+        return None
+
+
 @router.get("/catalog")
 def public_catalog(
     skip: int = 0,
@@ -170,6 +182,9 @@ def public_catalog(
     search: str = "",
     location: str = "",
     project_id: str = "",
+    bedrooms: str = "",       # "1" | "2" | "3" | "4+"
+    project_status: str = "", # e.g. "ENTREGA INMEDIATA"
+    price_range: str = "",    # "0-200000" | "200000-400000" | … | "800000+"
     db: Session = Depends(get_db),
 ):
     """Paginated propiedades with parent proyecto data merged."""
@@ -177,9 +192,10 @@ def public_catalog(
 
     propiedades = db.query(Propiedad).order_by(Propiedad.scraped_at.desc()).all()
 
-    all_locations: set = set()
-    all_projects: dict = {}
-    all_items: list = []
+    all_locations: set  = set()
+    all_projects: dict  = {}
+    all_statuses: set   = set()
+    all_items: list     = []
 
     for prop in propiedades:
         proy = prop.proyecto_obj
@@ -198,8 +214,22 @@ def public_catalog(
 
         loc = child_data.get("ubicacion") or ""
         if isinstance(loc, str) and loc.strip():
-            # Normalize newlines for location filter matching
             all_locations.add(loc.split("\n")[0].strip())
+
+        estado = str(child_data.get("estado_del_proyecto") or "").strip()
+        if estado:
+            all_statuses.add(estado)
+
+        beds_raw = child_data.get("dormitorios")
+        beds: int | None = None
+        if beds_raw:
+            try:
+                beds = int(float(str(beds_raw)))
+            except (ValueError, TypeError):
+                pass
+
+        price_raw = child_data.get("precio_desde") or child_data.get("precio") or ""
+        price_num = _extract_numeric(price_raw)
 
         all_items.append({
             "id": str(prop.id),
@@ -208,7 +238,10 @@ def public_catalog(
             "project_name": _proyecto_display_name(proy) if proy else None,
             "proyecto_id": str(prop.proyecto_id) if prop.proyecto_id else None,
             "scraped_at": prop.scraped_at.isoformat() if prop.scraped_at else None,
-            "_loc": loc.strip().lower() if isinstance(loc, str) else "",
+            "_loc":    loc.strip().lower() if isinstance(loc, str) else "",
+            "_status": estado.lower(),
+            "_beds":   beds,
+            "_price":  price_num,
         })
 
     filtered = all_items
@@ -216,6 +249,32 @@ def public_catalog(
         filtered = [i for i in filtered if location.lower() in i["_loc"] or i["_loc"] in location.lower()]
     if project_id:
         filtered = [i for i in filtered if i["project_id"] == project_id]
+    if bedrooms:
+        if bedrooms == "4+":
+            filtered = [i for i in filtered if i["_beds"] is not None and i["_beds"] >= 4]
+        else:
+            try:
+                b = int(bedrooms)
+                filtered = [i for i in filtered if i["_beds"] == b]
+            except ValueError:
+                pass
+    if project_status:
+        ps = project_status.lower()
+        filtered = [i for i in filtered if ps in i["_status"]]
+    if price_range:
+        if price_range.endswith("+"):
+            try:
+                min_p = float(price_range[:-1])
+                filtered = [i for i in filtered if i["_price"] is not None and i["_price"] >= min_p]
+            except ValueError:
+                pass
+        elif "-" in price_range:
+            parts = price_range.split("-", 1)
+            try:
+                lo, hi = float(parts[0]), float(parts[1])
+                filtered = [i for i in filtered if i["_price"] is not None and lo <= i["_price"] <= hi]
+            except ValueError:
+                pass
     if search:
         s = search.lower()
         filtered = [
@@ -225,7 +284,8 @@ def public_catalog(
         ]
 
     for item in all_items + filtered:
-        item.pop("_loc", None)
+        for k in ("_loc", "_status", "_beds", "_price"):
+            item.pop(k, None)
 
     total = len(filtered)
     paginated = filtered[skip: skip + limit]
@@ -234,6 +294,7 @@ def public_catalog(
         "total": total,
         "items": paginated,
         "locations": sorted(all_locations),
+        "project_statuses": sorted(all_statuses),
         "projects": sorted(
             [{"id": pid, "name": name} for pid, name in all_projects.items()],
             key=lambda x: x["name"],

@@ -124,14 +124,14 @@ def _score_preferencias(pref: Optional[UserPreference]) -> dict:
     pts = 0
     detail: list[str] = []
 
-    if pref and pref.location:
+    if pref and pref.ubicacion:
         pts += 5
         detail.append("Ubicación definida (+5)")
 
     if pref:
         extras = [
             pref.bedrooms, pref.bathrooms, pref.nearby_places,
-            pref.features, pref.property_type,
+            pref.property_type, pref.m2,
         ]
         bonus = min(sum(1 for x in extras if x is not None), 5)
         if bonus > 0:

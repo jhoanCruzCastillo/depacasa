@@ -14,6 +14,7 @@ class SiteUser(Base):
     name = Column(String, nullable=True)
     country = Column(String, nullable=True)
     phone = Column(String, nullable=True)
+    whatsapp = Column(String, nullable=True)
     wants_newsletter = Column(Boolean, default=False)
     role = Column(String(20), nullable=False, server_default="USER")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
