@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
-  Building2, LayoutTemplate, MessageSquare, Users, FileText,
-  Settings, Smartphone, UserCheck, Globe, Sliders, Award,
+  Building2, LayoutTemplate, Users,
+  Settings, UserCheck, Globe, Sliders, Award,
 } from 'lucide-react'
 import API from '../services/api'
 
@@ -22,10 +22,8 @@ const siteLinks = [
 const chatLinks = [
   { to: '/chat/users', label: 'Usuarios', icon: Users },
   { to: '/chat/scoring', label: 'Calificación', icon: Award },
-  { to: '/chat/templates', label: 'Plantillas', icon: FileText },
   { to: '/chat/advisors', label: 'Asesores', icon: UserCheck },
   { to: '/chat/config', label: 'Configuración', icon: Settings },
-  { to: '/chat/preview', label: 'Vista Previa', icon: Smartphone },
 ]
 
 type NavItem = { to?: string; href?: string; label: string; icon: React.ElementType }

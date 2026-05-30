@@ -13,21 +13,55 @@ from app.models.user_property_interaction import UserPropertyInteraction
 from app.models.web_chat_session import WebChatSession
 
 
-# ── Tier boundaries ────────────────────────────────────────────────────────────
+DEFAULT_SCORING_CONFIG = {
+    "perfil_max": 15,
+    "presupuesto_max": 10,
+    "preferencias_max": 10,
+    "actividad_max": 20,
+    "interes_max": 15,
+    "doc_subido_max": 10,
+    "doc_validado_max": 20,
+    "tier_muy_caliente_min": 76,
+    "tier_caliente_min": 56,
+    "tier_tibio_min": 31,
+}
 
-_TIERS = [
-    (76, "muy_caliente", "Muy caliente"),
-    (56, "caliente", "Caliente"),
-    (31, "tibio", "Tibio"),
-    (0,  "frio",   "Frío"),
-]
+
+def load_scoring_config(db: Session) -> dict:
+    from app.models.scoring_config import ScoringConfig
+    cfg = db.query(ScoringConfig).filter_by(id=1).first()
+    if not cfg:
+        return DEFAULT_SCORING_CONFIG
+    return {
+        "perfil_max": cfg.perfil_max,
+        "presupuesto_max": cfg.presupuesto_max,
+        "preferencias_max": cfg.preferencias_max,
+        "actividad_max": cfg.actividad_max,
+        "interes_max": cfg.interes_max,
+        "doc_subido_max": cfg.doc_subido_max,
+        "doc_validado_max": cfg.doc_validado_max,
+        "tier_muy_caliente_min": cfg.tier_muy_caliente_min,
+        "tier_caliente_min": cfg.tier_caliente_min,
+        "tier_tibio_min": cfg.tier_tibio_min,
+    }
 
 
-def _tier(total: int) -> dict:
-    for threshold, key, label in _TIERS:
-        if total >= threshold:
-            return {"key": key, "label": label}
+def _tier(total: int, cfg: dict) -> dict:
+    if total >= cfg["tier_muy_caliente_min"]:
+        return {"key": "muy_caliente", "label": "Muy caliente"}
+    if total >= cfg["tier_caliente_min"]:
+        return {"key": "caliente", "label": "Caliente"}
+    if total >= cfg["tier_tibio_min"]:
+        return {"key": "tibio", "label": "Tibio"}
     return {"key": "frio", "label": "Frío"}
+
+
+def _apply_max(result: dict, configured_max: int) -> dict:
+    raw_max = result["max"]
+    if configured_max != raw_max and raw_max > 0:
+        result["pts"] = round(result["pts"] * configured_max / raw_max)
+    result["max"] = configured_max
+    return result
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -228,33 +262,36 @@ def compute_score(
     pref: Optional[UserPreference],
     interactions: list[UserPropertyInteraction],
     sessions: list[WebChatSession],
+    config: Optional[dict] = None,
 ) -> dict:
     """Compute a full scoring breakdown for a user. Returns score dict."""
+    cfg = config or DEFAULT_SCORING_CONFIG
     lead = _extract_lead_from_sessions(sessions)
     lead_ctx = _extract_lead_from_context(pref)
 
-    s_perfil = _score_perfil(user, lead, lead_ctx)
-    s_presupuesto = _score_presupuesto(pref)
-    s_preferencias = _score_preferencias(pref)
-    s_actividad = _score_actividad(interactions, sessions)
-    s_interes = _score_interes(interactions)
-    s_doc_subido = _score_documento_subido(lead, lead_ctx)
-    s_doc_validado = _score_documento_validado(user)
+    s_perfil       = _apply_max(_score_perfil(user, lead, lead_ctx), cfg["perfil_max"])
+    s_presupuesto  = _apply_max(_score_presupuesto(pref),            cfg["presupuesto_max"])
+    s_preferencias = _apply_max(_score_preferencias(pref),           cfg["preferencias_max"])
+    s_actividad    = _apply_max(_score_actividad(interactions, sessions), cfg["actividad_max"])
+    s_interes      = _apply_max(_score_interes(interactions),         cfg["interes_max"])
+    s_doc_subido   = _apply_max(_score_documento_subido(lead, lead_ctx), cfg["doc_subido_max"])
+    s_doc_validado = _apply_max(_score_documento_validado(user),      cfg["doc_validado_max"])
 
     total = (
-        s_perfil["pts"]
-        + s_presupuesto["pts"]
-        + s_preferencias["pts"]
-        + s_actividad["pts"]
-        + s_interes["pts"]
-        + s_doc_subido["pts"]
-        + s_doc_validado["pts"]
+        s_perfil["pts"] + s_presupuesto["pts"] + s_preferencias["pts"]
+        + s_actividad["pts"] + s_interes["pts"]
+        + s_doc_subido["pts"] + s_doc_validado["pts"]
+    )
+    total_max = (
+        cfg["perfil_max"] + cfg["presupuesto_max"] + cfg["preferencias_max"]
+        + cfg["actividad_max"] + cfg["interes_max"]
+        + cfg["doc_subido_max"] + cfg["doc_validado_max"]
     )
 
     return {
         "total": total,
-        "max": 100,
-        "tier": _tier(total),
+        "max": total_max,
+        "tier": _tier(total, cfg),
         "breakdown": {
             "perfil": s_perfil,
             "presupuesto": s_presupuesto,
@@ -294,4 +331,5 @@ def compute_score_for_user_id(user_id, db: Session) -> dict | None:
         .limit(50)
         .all()
     )
-    return compute_score(user, pref, interactions, sessions)
+    config = load_scoring_config(db)
+    return compute_score(user, pref, interactions, sessions, config)

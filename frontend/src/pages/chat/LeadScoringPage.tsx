@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import {
   TrendingUp,
   Search,
@@ -18,6 +19,10 @@ import {
   FileQuestion,
   Award,
   BarChart3,
+  FileText,
+  ExternalLink,
+  Image as ImageIcon,
+  Pencil,
 } from 'lucide-react'
 import API from '../../services/api'
 import toast from 'react-hot-toast'
@@ -74,7 +79,49 @@ interface ScoreBreakdown {
   financial_doc_reviewed_by: string | null
 }
 
+interface ScoringConfig {
+  perfil_max: number
+  presupuesto_max: number
+  preferencias_max: number
+  actividad_max: number
+  interes_max: number
+  doc_subido_max: number
+  doc_validado_max: number
+  tier_muy_caliente_min: number
+  tier_caliente_min: number
+  tier_tibio_min: number
+}
+
+const DEFAULT_CONFIG: ScoringConfig = {
+  perfil_max: 15,
+  presupuesto_max: 10,
+  preferencias_max: 10,
+  actividad_max: 20,
+  interes_max: 15,
+  doc_subido_max: 10,
+  doc_validado_max: 20,
+  tier_muy_caliente_min: 76,
+  tier_caliente_min: 56,
+  tier_tibio_min: 31,
+}
+
 const PAGE_SIZE = 20
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+const PUBLIC_BASE_URL = API_URL.replace(/\/api\/?$/, '')
+
+const toAbsoluteResourceUrl = (raw?: string | null): string => {
+  const value = (raw || '').trim()
+  if (!value) return ''
+  if (/^https?:\/\//i.test(value) || value.startsWith('data:')) return value
+  if (value.startsWith('//')) return `https:${value}`
+  if (value.startsWith('/')) return `${PUBLIC_BASE_URL}${value}`
+  return `${PUBLIC_BASE_URL}/${value}`
+}
+
+const isPdfUrl = (url: string): boolean => /\.pdf(?:$|[?#])/i.test(url)
+const isImageUrl = (url: string): boolean =>
+  /\.(jpg|jpeg|png|webp|gif|bmp|avif|heic)(?:$|[?#])/i.test(url)
 
 const TIERS = [
   { key: 'muy_caliente', label: 'Muy caliente', color: 'text-red-600', bg: 'bg-red-100', border: 'border-red-200', icon: Flame },
@@ -175,10 +222,20 @@ export default function LeadScoringPage() {
   const [scoreBreakdown, setScoreBreakdown] = useState<ScoreBreakdown | null>(null)
   const [scoreLoading, setScoreLoading] = useState(false)
 
-  const [validating, setValidating] = useState(false)
-  const [validateStatus, setValidateStatus] = useState<'approved' | 'rejected' | 'pending'>('pending')
-  const [validateNotes, setValidateNotes] = useState('')
-  const [validateReviewer, setValidateReviewer] = useState('')
+
+  const [scoringConfig, setScoringConfig] = useState<ScoringConfig>(DEFAULT_CONFIG)
+  const [configModalOpen, setConfigModalOpen] = useState(false)
+  const [configForm, setConfigForm] = useState<ScoringConfig>(DEFAULT_CONFIG)
+  const [configSaving, setConfigSaving] = useState(false)
+
+  const [quickValidateUser, setQuickValidateUser] = useState<SiteUser | null>(null)
+  const [quickValidateStatus, setQuickValidateStatus] = useState<'approved' | 'rejected' | 'pending'>('pending')
+  const [quickValidateNotes, setQuickValidateNotes] = useState('')
+  const [quickValidateReviewer, setQuickValidateReviewer] = useState('')
+  const [quickValidating, setQuickValidating] = useState(false)
+  const [quickDocUrl, setQuickDocUrl] = useState('')
+  const [quickDocKind, setQuickDocKind] = useState<'pdf' | 'image' | 'file' | 'link' | null>(null)
+  const [quickDocLoading, setQuickDocLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -203,6 +260,33 @@ export default function LeadScoringPage() {
     load()
   }, [load])
 
+  useEffect(() => {
+    API.get('/chat/scoring-config').then(r => {
+      setScoringConfig(r.data)
+      setConfigForm(r.data)
+    }).catch(() => {})
+  }, [])
+
+  const openConfigModal = () => {
+    setConfigForm({ ...scoringConfig })
+    setConfigModalOpen(true)
+  }
+
+  const handleConfigSave = async () => {
+    setConfigSaving(true)
+    try {
+      const res = await API.put('/chat/scoring-config', configForm)
+      setScoringConfig(res.data)
+      setConfigModalOpen(false)
+      toast.success('Criterios actualizados')
+      load()
+    } catch {
+      toast.error('Error al guardar los criterios')
+    } finally {
+      setConfigSaving(false)
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   const handleSearch = (e: React.FormEvent) => {
@@ -215,9 +299,6 @@ export default function LeadScoringPage() {
     setDetailUser(u)
     setScoreBreakdown(null)
     setScoreLoading(true)
-    setValidateStatus((u.financial_doc_status as 'approved' | 'rejected' | 'pending') || 'pending')
-    setValidateNotes(u.financial_doc_notes || '')
-    setValidateReviewer(u.financial_doc_reviewed_by || '')
     try {
       const res = await API.get(`/site-users/${u.id}/score`)
       setScoreBreakdown(res.data)
@@ -233,34 +314,52 @@ export default function LeadScoringPage() {
     setScoreBreakdown(null)
   }
 
-  const handleValidate = async () => {
-    if (!detailUser) return
-    setValidating(true)
+  const openQuickValidate = async (u: SiteUser) => {
+    setQuickValidateUser(u)
+    setQuickValidateStatus((u.financial_doc_status as 'approved' | 'rejected' | 'pending') || 'pending')
+    setQuickValidateNotes(u.financial_doc_notes || '')
+    setQuickValidateReviewer(u.financial_doc_reviewed_by || '')
+    setQuickDocUrl('')
+    setQuickDocKind(null)
+    setQuickDocLoading(true)
     try {
-      await API.post(`/site-users/${detailUser.id}/validate-document`, {
-        status: validateStatus,
-        notes: validateNotes.trim() || null,
-        reviewed_by: validateReviewer.trim() || null,
+      const res = await API.get(`/site-users/${u.id}/profile`)
+      const docRaw =
+        res.data?.documents?.financial_capacity_doc_url ||
+        res.data?.lead?.financial_capacity_doc ||
+        null
+      const absUrl = toAbsoluteResourceUrl(docRaw)
+      const kind: 'pdf' | 'image' | 'file' | null =
+        res.data?.documents?.financial_capacity_doc_kind ||
+        (isPdfUrl(docRaw || '') ? 'pdf' : isImageUrl(docRaw || '') ? 'image' : docRaw ? 'file' : null)
+      setQuickDocUrl(absUrl)
+      setQuickDocKind(kind)
+    } catch {
+      // no doc, not critical
+    } finally {
+      setQuickDocLoading(false)
+    }
+  }
+
+  const handleQuickValidate = async () => {
+    if (!quickValidateUser) return
+    setQuickValidating(true)
+    try {
+      await API.post(`/site-users/${quickValidateUser.id}/validate-document`, {
+        status: quickValidateStatus,
+        notes: quickValidateNotes.trim() || null,
+        reviewed_by: quickValidateReviewer.trim() || null,
       })
       toast.success('Validación guardada')
-      // Refresh detail and list
-      const [scoreRes] = await Promise.all([
-        API.get(`/site-users/${detailUser.id}/score`),
-        load(),
-      ])
-      setScoreBreakdown(scoreRes.data)
-      setDetailUser(u => u ? {
-        ...u,
-        financial_doc_status: validateStatus,
-        financial_doc_notes: validateNotes.trim() || null,
-        financial_doc_reviewed_by: validateReviewer.trim() || null,
-      } : null)
+      setQuickValidateUser(null)
+      load()
     } catch {
       toast.error('Error al guardar la validación')
     } finally {
-      setValidating(false)
+      setQuickValidating(false)
     }
   }
+
 
   // Summary stats
   const tierCounts = TIERS.map(t => ({
@@ -426,7 +525,13 @@ export default function LeadScoringPage() {
                     )}
                   </td>
                   <td className="px-4 py-3.5">
-                    <DocStatusBadge status={u.financial_doc_status} />
+                    <button
+                      onClick={() => openQuickValidate(u)}
+                      className="rounded-full border border-slate-200 shadow-sm hover:shadow-md hover:border-slate-300 transition-all bg-white px-1 py-0.5"
+                      title="Validar documento"
+                    >
+                      <DocStatusBadge status={u.financial_doc_status} />
+                    </button>
                   </td>
                   <td className="px-4 py-3.5 text-slate-400 text-xs">
                     {formatDate(u.created_at)}
@@ -495,8 +600,8 @@ export default function LeadScoringPage() {
       )}
 
       {/* Score detail modal */}
-      {detailUser && (
-        <div className="fixed inset-0 bg-slate-900/60 z-50 p-3 md:p-6 flex items-center justify-center">
+      {detailUser && createPortal(
+        <div className="fixed inset-0 bg-slate-900/60 z-[9999] p-3 md:p-6 flex items-center justify-center">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
             {/* Modal header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 flex-shrink-0">
@@ -616,50 +721,9 @@ export default function LeadScoringPage() {
                       </p>
                     )}
 
-                    <div className="space-y-3 pt-2 border-t border-slate-100">
-                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                        Actualizar validación
-                      </p>
-                      <div className="flex gap-2">
-                        {(['pending', 'approved', 'rejected'] as const).map(s => (
-                          <button
-                            key={s}
-                            onClick={() => setValidateStatus(s)}
-                            className={`flex-1 py-2 text-xs font-semibold rounded-lg border transition-colors ${
-                              validateStatus === s
-                                ? s === 'approved'
-                                  ? 'bg-emerald-600 text-white border-emerald-600'
-                                  : s === 'rejected'
-                                  ? 'bg-red-600 text-white border-red-600'
-                                  : 'bg-amber-500 text-white border-amber-500'
-                                : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
-                            }`}
-                          >
-                            {s === 'approved' ? 'Aprobar' : s === 'rejected' ? 'Rechazar' : 'En revisión'}
-                          </button>
-                        ))}
-                      </div>
-                      <input
-                        value={validateReviewer}
-                        onChange={e => setValidateReviewer(e.target.value)}
-                        placeholder="Tu nombre (revisor)"
-                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
-                      />
-                      <textarea
-                        value={validateNotes}
-                        onChange={e => setValidateNotes(e.target.value)}
-                        placeholder="Notas de validación (opcional)..."
-                        rows={2}
-                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-amber-500"
-                      />
-                      <button
-                        onClick={handleValidate}
-                        disabled={validating}
-                        className="w-full py-2.5 bg-slate-800 text-white text-sm font-semibold rounded-lg hover:bg-slate-900 disabled:opacity-50 transition-colors"
-                      >
-                        {validating ? 'Guardando...' : 'Guardar validación'}
-                      </button>
-                    </div>
+                    {!scoreBreakdown.financial_doc_reviewed_at && !scoreBreakdown.financial_doc_notes && (
+                      <p className="text-xs text-slate-400 italic">Sin revisión registrada aún.</p>
+                    )}
                   </section>
                 </>
               ) : (
@@ -667,49 +731,290 @@ export default function LeadScoringPage() {
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Quick validate modal */}
+      {quickValidateUser && createPortal(
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-2">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-[96vw] h-[94vh] flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 flex-shrink-0">
+              <div>
+                <h2 className="text-base font-bold text-slate-800">Validar documento financiero</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {quickValidateUser.name
+                    ? <>{quickValidateUser.name} · <span className="text-slate-300">{quickValidateUser.email}</span></>
+                    : quickValidateUser.email}
+                </p>
+              </div>
+              <button
+                onClick={() => setQuickValidateUser(null)}
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Body: two columns */}
+            <div className="flex flex-1 overflow-hidden min-h-0">
+              {/* Left: form */}
+              <div className="w-80 flex-shrink-0 border-r border-slate-100 p-6 space-y-4 overflow-y-auto">
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Estado</p>
+                  <div className="flex gap-2">
+                    {(['pending', 'approved', 'rejected'] as const).map(s => (
+                      <button
+                        key={s}
+                        onClick={() => setQuickValidateStatus(s)}
+                        className={`flex-1 py-2 text-xs font-semibold rounded-lg border transition-colors ${
+                          quickValidateStatus === s
+                            ? s === 'approved'
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : s === 'rejected'
+                              ? 'bg-red-600 text-white border-red-600'
+                              : 'bg-amber-500 text-white border-amber-500'
+                            : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        {s === 'approved' ? 'Aprobar' : s === 'rejected' ? 'Rechazar' : 'En revisión'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Revisor</p>
+                  <input
+                    value={quickValidateReviewer}
+                    onChange={e => setQuickValidateReviewer(e.target.value)}
+                    placeholder="Tu nombre"
+                    className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Notas</p>
+                  <textarea
+                    value={quickValidateNotes}
+                    onChange={e => setQuickValidateNotes(e.target.value)}
+                    placeholder="Notas de validación (opcional)..."
+                    rows={4}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-2 pt-2">
+                  <button
+                    onClick={handleQuickValidate}
+                    disabled={quickValidating}
+                    className="w-full py-2.5 bg-slate-800 text-white text-sm font-semibold rounded-xl hover:bg-slate-900 disabled:opacity-50 transition-colors"
+                  >
+                    {quickValidating ? 'Guardando...' : 'Guardar validación'}
+                  </button>
+                  <button
+                    onClick={() => setQuickValidateUser(null)}
+                    className="w-full py-2 text-sm text-slate-500 hover:text-slate-700"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+
+              {/* Right: document preview */}
+              <div className="flex-1 bg-slate-100 flex flex-col overflow-hidden">
+                {quickDocLoading ? (
+                  <div className="flex-1 flex items-center justify-center text-slate-400">
+                    <div className="w-8 h-8 border-4 border-slate-200 border-t-amber-500 rounded-full animate-spin" />
+                  </div>
+                ) : !quickDocUrl ? (
+                  <div className="flex-1 flex flex-col items-center justify-center text-slate-400 gap-2 p-6">
+                    <FileText className="w-10 h-10 opacity-40" />
+                    <p className="text-sm">Sin documento financiero registrado</p>
+                  </div>
+                ) : quickDocKind === 'pdf' ? (
+                  <div className="flex flex-col flex-1 overflow-hidden p-3 gap-2">
+                    <div className="flex justify-end">
+                      <a
+                        href={quickDocUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs rounded-lg hover:bg-slate-50 transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Abrir en nueva pestaña
+                      </a>
+                    </div>
+                    <iframe
+                      src={quickDocUrl}
+                      title="Documento financiero"
+                      className="flex-1 rounded-xl border border-slate-200 bg-white"
+                    />
+                  </div>
+                ) : quickDocKind === 'image' ? (
+                  <div className="flex flex-col flex-1 overflow-hidden p-3 gap-2">
+                    <div className="flex justify-end">
+                      <a
+                        href={quickDocUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs rounded-lg hover:bg-slate-50 transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Abrir en nueva pestaña
+                      </a>
+                    </div>
+                    <div className="flex-1 overflow-auto bg-white rounded-xl border border-slate-200 flex items-start justify-center p-2">
+                      <img
+                        src={quickDocUrl}
+                        alt="Documento financiero"
+                        className="max-w-full object-contain"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center text-slate-500 gap-3 p-6 text-center">
+                    <ImageIcon className="w-8 h-8 text-slate-400" />
+                    <p className="text-sm">Este formato no tiene vista previa embebida.</p>
+                    <a
+                      href={quickDocUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      Abrir documento
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
 
       {/* Scoring legend */}
       <div className="bg-slate-50 border border-slate-100 rounded-xl p-4">
-        <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3 flex items-center gap-2">
-          <TrendingUp className="w-3.5 h-3.5" /> Criterios de puntuación (total: 100 pts)
-        </p>
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-xs font-bold text-slate-500 uppercase tracking-wide flex items-center gap-2">
+            <TrendingUp className="w-3.5 h-3.5" />
+            Criterios de puntuación (total: {
+              scoringConfig.perfil_max + scoringConfig.presupuesto_max +
+              scoringConfig.preferencias_max + scoringConfig.actividad_max +
+              scoringConfig.interes_max + scoringConfig.doc_subido_max +
+              scoringConfig.doc_validado_max
+            } pts)
+          </p>
+          <button
+            onClick={openConfigModal}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-600 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 hover:border-slate-300 shadow-sm transition-all"
+          >
+            <Pencil className="w-3.5 h-3.5" />
+            Editar criterios
+          </button>
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-slate-600">
-          <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
-            <p className="font-semibold text-slate-700">Perfil</p>
-            <p className="text-slate-400">Nombre, tel, país, DNI, rating · 15 pts</p>
-          </div>
-          <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
-            <p className="font-semibold text-slate-700">Presupuesto</p>
-            <p className="text-slate-400">Min/max precio definido · 10 pts</p>
-          </div>
-          <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
-            <p className="font-semibold text-slate-700">Preferencias</p>
-            <p className="text-slate-400">Ubicación, habitaciones, etc. · 10 pts</p>
-          </div>
-          <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
-            <p className="font-semibold text-slate-700">Actividad</p>
-            <p className="text-slate-400">Vistas, ratings, recencia · 20 pts</p>
-          </div>
-          <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
-            <p className="font-semibold text-slate-700">Interés</p>
-            <p className="text-slate-400">"Lo quiero" marcados · 15 pts</p>
-          </div>
-          <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
-            <p className="font-semibold text-slate-700">Doc. subido</p>
-            <p className="text-slate-400">Documento financiero cargado · 10 pts</p>
-          </div>
-          <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
-            <p className="font-semibold text-slate-700">Doc. validado</p>
-            <p className="text-slate-400">Aprobado manualmente · 20 pts</p>
-          </div>
-          <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
-            <p className="font-semibold text-slate-700">Tiers</p>
-            <p className="text-slate-400">Frío 0-30 · Tibio 31-55 · Caliente 56-75 · Muy caliente 76+</p>
-          </div>
+          {[
+            { label: 'Perfil',        desc: 'Nombre, tel, país, DNI, rating', pts: scoringConfig.perfil_max },
+            { label: 'Presupuesto',   desc: 'Min/max precio definido',        pts: scoringConfig.presupuesto_max },
+            { label: 'Preferencias',  desc: 'Ubicación, habitaciones, etc.',  pts: scoringConfig.preferencias_max },
+            { label: 'Actividad',     desc: 'Vistas, ratings, recencia',      pts: scoringConfig.actividad_max },
+            { label: 'Interés',       desc: '"Lo quiero" marcados',           pts: scoringConfig.interes_max },
+            { label: 'Doc. subido',   desc: 'Documento financiero cargado',   pts: scoringConfig.doc_subido_max },
+            { label: 'Doc. validado', desc: 'Aprobado manualmente',           pts: scoringConfig.doc_validado_max },
+            {
+              label: 'Tiers',
+              desc: `Frío 0-${scoringConfig.tier_tibio_min - 1} · Tibio ${scoringConfig.tier_tibio_min}-${scoringConfig.tier_caliente_min - 1} · Caliente ${scoringConfig.tier_caliente_min}-${scoringConfig.tier_muy_caliente_min - 1} · Muy caliente ${scoringConfig.tier_muy_caliente_min}+`,
+              pts: null,
+            },
+          ].map(({ label, desc, pts }) => (
+            <div key={label} className="bg-white rounded-lg px-3 py-2 border border-slate-100">
+              <p className="font-semibold text-slate-700">{label}</p>
+              <p className="text-slate-400">{desc}{pts !== null ? ` · ${pts} pts` : ''}</p>
+            </div>
+          ))}
         </div>
       </div>
+
+      {/* Config edit modal */}
+      {configModalOpen && createPortal(
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999] p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-800">Editar criterios de puntuación</h2>
+              <button onClick={() => setConfigModalOpen(false)} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div>
+              <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Puntos máximos por categoría</p>
+              <div className="grid grid-cols-2 gap-3">
+                {([
+                  ['perfil_max',        'Perfil'],
+                  ['presupuesto_max',   'Presupuesto'],
+                  ['preferencias_max',  'Preferencias'],
+                  ['actividad_max',     'Actividad'],
+                  ['interes_max',       'Interés'],
+                  ['doc_subido_max',    'Doc. subido'],
+                  ['doc_validado_max',  'Doc. validado'],
+                ] as [keyof ScoringConfig, string][]).map(([key, label]) => (
+                  <div key={key}>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">{label}</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={configForm[key]}
+                      onChange={e => setConfigForm(f => ({ ...f, [key]: Number(e.target.value) }))}
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Umbrales de tier (puntuación mínima)</p>
+              <div className="grid grid-cols-3 gap-3">
+                {([
+                  ['tier_tibio_min',        'Tibio'],
+                  ['tier_caliente_min',     'Caliente'],
+                  ['tier_muy_caliente_min', 'Muy caliente'],
+                ] as [keyof ScoringConfig, string][]).map(([key, label]) => (
+                  <div key={key}>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">{label}</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={200}
+                      value={configForm[key]}
+                      onChange={e => setConfigForm(f => ({ ...f, [key]: Number(e.target.value) }))}
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end pt-1">
+              <button onClick={() => setConfigModalOpen(false)} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfigSave}
+                disabled={configSaving}
+                className="px-4 py-2 bg-amber-500 text-white text-sm font-semibold rounded-lg hover:bg-amber-600 disabled:opacity-50 transition-colors"
+              >
+                {configSaving ? 'Guardando...' : 'Guardar cambios'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   )
 }

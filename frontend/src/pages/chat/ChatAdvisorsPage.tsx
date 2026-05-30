@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Plus, Pencil, Trash2, Users, Eye } from 'lucide-react'
+import { Plus, Pencil, Trash2, Users, Eye, KeyRound, X, Mail, Send } from 'lucide-react'
+import toast from 'react-hot-toast'
+import API from '../../services/api'
 import {
   getChatAdvisors,
   getChatAdvisorClients,
@@ -52,6 +54,15 @@ export default function ChatAdvisorsPage() {
   const [clientsAdvisor, setClientsAdvisor] = useState<Advisor | null>(null)
   const [clientsLoading, setClientsLoading] = useState(false)
   const [clients, setClients] = useState<AdvisorClient[]>([])
+
+  const [pwdAdvisor, setPwdAdvisor] = useState<Advisor | null>(null)
+  const [pwdValue, setPwdValue] = useState('')
+  const [pwdSaving, setPwdSaving] = useState(false)
+
+  const [emailTarget, setEmailTarget] = useState<Advisor | null>(null)
+  const [emailSubject, setEmailSubject] = useState('Novedades del portal')
+  const [emailBody, setEmailBody] = useState('')
+  const [emailSending, setEmailSending] = useState(false)
 
   const load = async () => {
     try {
@@ -120,6 +131,45 @@ export default function ChatAdvisorsPage() {
     load()
   }
 
+  const handleSetPassword = async () => {
+    if (!pwdAdvisor || pwdValue.length < 6) return
+    setPwdSaving(true)
+    try {
+      await API.patch(`/chat/advisors/${pwdAdvisor.id}/set-password`, { password: pwdValue })
+      toast.success('Contraseña establecida')
+      setPwdAdvisor(null)
+      setPwdValue('')
+    } catch {
+      toast.error('Error al establecer la contraseña')
+    } finally {
+      setPwdSaving(false)
+    }
+  }
+
+  const openEmail = (a: Advisor) => {
+    setEmailTarget(a)
+    setEmailSubject('Novedades del portal')
+    setEmailBody('')
+  }
+
+  const handleSendEmail = async () => {
+    if (!emailTarget || !emailBody.trim()) return
+    setEmailSending(true)
+    try {
+      await API.post(`/chat/advisors/${emailTarget.id}/send-email`, {
+        subject: emailSubject.trim(),
+        body: emailBody.trim(),
+      })
+      toast.success(`Correo enviado a ${emailTarget.email}`)
+      setEmailTarget(null)
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      toast.error(msg || 'Error al enviar el correo')
+    } finally {
+      setEmailSending(false)
+    }
+  }
+
   if (loading) return <div className="flex items-center justify-center h-64 text-slate-400">Cargando asesores...</div>
 
   return (
@@ -179,7 +229,23 @@ export default function ChatAdvisorsPage() {
                     </button>
                   </td>
                   <td className="px-5 py-3">
-                    <div className="flex gap-1 justify-end">
+                    <div className="flex items-center gap-1 justify-end">
+                      <button
+                        onClick={() => openEmail(a)}
+                        disabled={!a.email}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-600 text-white text-xs rounded-lg hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        title={a.email ? 'Enviar correo' : 'Sin correo registrado'}
+                      >
+                        <Mail className="w-3.5 h-3.5" />
+                        Enviar
+                      </button>
+                      <button
+                        onClick={() => { setPwdAdvisor(a); setPwdValue('') }}
+                        className="p-1.5 text-slate-400 hover:text-amber-600 transition-colors"
+                        title="Establecer contraseña"
+                      >
+                        <KeyRound className="w-4 h-4" />
+                      </button>
                       <button onClick={() => openEdit(a)} className="p-1.5 text-slate-400 hover:text-blue-600 transition-colors">
                         <Pencil className="w-4 h-4" />
                       </button>
@@ -300,6 +366,96 @@ export default function ChatAdvisorsPage() {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Send email modal */}
+      {emailTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-800">Enviar correo</h2>
+              <button onClick={() => setEmailTarget(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-slate-500">
+              Para: <span className="font-medium text-slate-700">{emailTarget.name}</span>{' '}
+              <span className="text-slate-400">({emailTarget.email})</span>
+            </p>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">Asunto</label>
+              <input
+                value={emailSubject}
+                onChange={e => setEmailSubject(e.target.value)}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">Mensaje</label>
+              <textarea
+                value={emailBody}
+                onChange={e => setEmailBody(e.target.value)}
+                placeholder="Escribe el contenido del correo..."
+                rows={5}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setEmailTarget(null)} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">
+                Cancelar
+              </button>
+              <button
+                onClick={handleSendEmail}
+                disabled={emailSending || !emailBody.trim()}
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+              >
+                <Send className="w-4 h-4" />
+                {emailSending ? 'Enviando...' : 'Enviar correo'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Set password modal */}
+      {pwdAdvisor && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-slate-800">Establecer contraseña</h2>
+                <p className="text-xs text-slate-400 mt-0.5">{pwdAdvisor.name}</p>
+              </div>
+              <button onClick={() => setPwdAdvisor(null)} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5">Nueva contraseña</label>
+              <input
+                type="password"
+                value={pwdValue}
+                onChange={e => setPwdValue(e.target.value)}
+                placeholder="Mínimo 6 caracteres"
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+              {pwdValue.length > 0 && pwdValue.length < 6 && (
+                <p className="text-xs text-red-500 mt-1">Mínimo 6 caracteres</p>
+              )}
+            </div>
+            <div className="flex gap-2 justify-end pt-1">
+              <button onClick={() => setPwdAdvisor(null)} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">
+                Cancelar
+              </button>
+              <button
+                onClick={handleSetPassword}
+                disabled={pwdSaving || pwdValue.length < 6}
+                className="px-4 py-2 bg-amber-500 text-white text-sm font-semibold rounded-lg hover:bg-amber-600 disabled:opacity-50 transition-colors"
+              >
+                {pwdSaving ? 'Guardando...' : 'Guardar contraseña'}
+              </button>
             </div>
           </div>
         </div>

@@ -6,18 +6,18 @@ import TemplatesPage from './pages/TemplatesPage'
 import TemplateEditorPage from './pages/TemplateEditorPage'
 import ChatUsersPage from './pages/chat/ChatUsersPage'
 import LeadScoringPage from './pages/chat/LeadScoringPage'
-import ChatTemplatesPage from './pages/chat/ChatTemplatesPage'
 import ChatAdvisorsPage from './pages/chat/ChatAdvisorsPage'
 import ChatConfigPage from './pages/chat/ChatConfigPage'
-import MessagePreviewPage from './pages/chat/MessagePreviewPage'
 import SiteBuilderPage from './pages/site-builder/SiteBuilderPage'
 import PublicSitePage from './pages/public/PublicSitePage'
+import AdvisorPortalPage from './pages/public/AdvisorPortalPage'
 
 function App() {
   return (
     <Routes>
       {/* Public portal — full page, no admin sidebar */}
       <Route path="/public" element={<PublicSitePage />} />
+      <Route path="/asesores" element={<AdvisorPortalPage />} />
 
       {/* Admin panel */}
       <Route path="*" element={
@@ -32,10 +32,8 @@ function App() {
             <Route path="/chat" element={<Navigate to="/chat/users" replace />} />
             <Route path="/chat/users" element={<ChatUsersPage />} />
             <Route path="/chat/scoring" element={<LeadScoringPage />} />
-            <Route path="/chat/templates" element={<ChatTemplatesPage />} />
             <Route path="/chat/advisors" element={<ChatAdvisorsPage />} />
             <Route path="/chat/config" element={<ChatConfigPage />} />
-            <Route path="/chat/preview" element={<MessagePreviewPage />} />
             {/* Site Builder */}
             <Route path="/site-builder" element={<SiteBuilderPage />} />
             <Route path="*" element={<Navigate to="/developers" replace />} />

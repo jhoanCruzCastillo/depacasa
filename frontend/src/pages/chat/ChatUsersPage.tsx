@@ -495,7 +495,6 @@ export default function ChatUsersPage() {
               <tr className="border-b border-slate-100 bg-slate-50 text-xs text-slate-500 uppercase tracking-wider">
                 <th className="text-left px-5 py-3 font-semibold">Usuario</th>
                 <th className="text-left px-4 py-3 font-semibold">Pais</th>
-                <th className="text-left px-4 py-3 font-semibold">Score</th>
                 <th className="text-left px-4 py-3 font-semibold">Documentos</th>
                 <th className="text-left px-4 py-3 font-semibold">Registro</th>
                 <th className="px-4 py-3" />
@@ -519,16 +518,6 @@ export default function ChatUsersPage() {
                   </td>
                   <td className="px-4 py-3.5 text-slate-600">
                     {u.country || <span className="text-slate-300">-</span>}
-                  </td>
-                  <td className="px-4 py-3.5">
-                    {u.score ? (
-                      <div className="flex flex-col gap-1">
-                        <TierBadge score={u.score} />
-                        <DocStatusBadge status={u.financial_doc_status} />
-                      </div>
-                    ) : (
-                      <span className="text-slate-300 text-xs">-</span>
-                    )}
                   </td>
                   <td className="px-4 py-3.5">
                     {u.has_uploaded_documents ? (

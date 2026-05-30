@@ -425,6 +425,8 @@ def run_migrations():
         # ── site_users: role column ──────────────────────────────────────────────
         "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'USER'",
         "ALTER TABLE site_users ADD COLUMN IF NOT EXISTS whatsapp VARCHAR(50)",
+        # ── sales_advisors: advisor login ────────────────────────────────────────
+        "ALTER TABLE sales_advisors ADD COLUMN IF NOT EXISTS password_hash TEXT",
         # ── admin_notifications table ────────────────────────────────────────────
         """CREATE TABLE IF NOT EXISTS admin_notifications (
             id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),

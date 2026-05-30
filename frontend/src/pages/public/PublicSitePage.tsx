@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  ChevronLeft, ChevronRight, Building2, LogIn,
+  ChevronLeft, ChevronRight, Building2, LogIn, User,
   MapPin, BedDouble, Maximize2, SlidersHorizontal, Star,
   LayoutList, Map,
 } from 'lucide-react'
@@ -1106,6 +1106,13 @@ export default function PublicSitePage() {
 
           {/* Right actions */}
           <div className="flex items-center gap-2">
+            <a
+              href="/asesores"
+              className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors border border-slate-200"
+            >
+              <User className="w-3.5 h-3.5" />
+              Portal Asesores
+            </a>
             {/* Favoritos */}
             {user && (
               <button className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors">

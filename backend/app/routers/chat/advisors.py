@@ -1,6 +1,6 @@
-"""Sales advisors CRUD."""
+"""Sales advisors CRUD + advisor auth."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import Optional
@@ -12,6 +12,8 @@ from app.models.sales_advisor import SalesAdvisor
 from app.models.web_chat_session import WebChatSession
 from app.models.site_user import SiteUser
 from app.models.propiedad import Propiedad
+from app.services.auth_service import hash_password, verify_password, create_token, decode_token
+from app.services.email_service import send_email
 
 router = APIRouter()
 
@@ -22,6 +24,36 @@ class AdvisorIn(BaseModel):
     email: Optional[str] = None
     whatsapp_number: Optional[str] = None
     is_active: bool = True
+
+
+class AdvisorLoginIn(BaseModel):
+    email: str
+    password: str
+
+
+class AdvisorRegisterIn(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    password: str
+
+
+class AdvisorSetPasswordIn(BaseModel):
+    password: str
+
+
+def _get_current_advisor(authorization: Optional[str] = Header(None), db: Session = Depends(get_db)) -> SalesAdvisor:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="No autenticado")
+    token = authorization.split(" ", 1)[1]
+    try:
+        advisor_id = decode_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+    advisor = db.query(SalesAdvisor).filter(SalesAdvisor.id == advisor_id).first()
+    if not advisor or not advisor.is_active:
+        raise HTTPException(status_code=401, detail="Asesor no encontrado o inactivo")
+    return advisor
 
 
 def _serialize(a: SalesAdvisor) -> dict:
@@ -255,3 +287,78 @@ async def delete_advisor(advisor_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Advisor not found")
     db.delete(a)
     db.commit()
+
+
+# ── Advisor auth endpoints ─────────────────────────────────────────────────────
+
+@router.post("/advisors/register", status_code=201)
+def advisor_register(body: AdvisorRegisterIn, db: Session = Depends(get_db)):
+    if not body.name.strip() or not body.email.strip() or len(body.password) < 6:
+        raise HTTPException(status_code=422, detail="Datos inválidos")
+    existing = db.query(SalesAdvisor).filter(SalesAdvisor.email == body.email.strip().lower()).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Ya existe un asesor con ese correo")
+    advisor = SalesAdvisor(
+        name=body.name.strip(),
+        email=body.email.strip().lower(),
+        phone=body.phone,
+        password_hash=hash_password(body.password),
+        is_active=False,
+    )
+    db.add(advisor)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/advisors/login")
+def advisor_login(body: AdvisorLoginIn, db: Session = Depends(get_db)):
+    advisor = db.query(SalesAdvisor).filter(
+        SalesAdvisor.email == body.email.strip().lower(),
+        SalesAdvisor.is_active == True,
+    ).first()
+    if not advisor or not advisor.password_hash:
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    if not verify_password(body.password, advisor.password_hash):
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    token = create_token(str(advisor.id))
+    return {"token": token, "advisor": _serialize(advisor)}
+
+
+@router.get("/advisors/me")
+def advisor_me(current: SalesAdvisor = Depends(_get_current_advisor)):
+    return _serialize(current)
+
+
+@router.patch("/advisors/{advisor_id}/set-password", status_code=200)
+def set_advisor_password(advisor_id: UUID, body: AdvisorSetPasswordIn, db: Session = Depends(get_db)):
+    a = db.query(SalesAdvisor).filter(SalesAdvisor.id == advisor_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Advisor not found")
+    if not body.password or len(body.password) < 6:
+        raise HTTPException(status_code=422, detail="La contraseña debe tener al menos 6 caracteres")
+    a.password_hash = hash_password(body.password)
+    db.commit()
+    return {"ok": True}
+
+
+class AdvisorEmailIn(BaseModel):
+    subject: str
+    body: str
+
+
+@router.post("/advisors/{advisor_id}/send-email")
+def send_advisor_email(advisor_id: UUID, body: AdvisorEmailIn, db: Session = Depends(get_db)):
+    a = db.query(SalesAdvisor).filter(SalesAdvisor.id == advisor_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Asesor no encontrado")
+    if not a.email:
+        raise HTTPException(status_code=422, detail="Este asesor no tiene correo registrado")
+    html = f"""
+    <div style="font-family:sans-serif;max-width:520px;margin:auto;padding:32px 24px">
+      <p style="color:#1e3a5f;font-size:15px;line-height:1.6">{body.body}</p>
+    </div>
+    """
+    ok = send_email(a.email, body.subject, html)
+    if not ok:
+        raise HTTPException(status_code=503, detail="No se pudo enviar el correo. Verifica la configuración de Resend.")
+    return {"sent": True, "to": a.email}

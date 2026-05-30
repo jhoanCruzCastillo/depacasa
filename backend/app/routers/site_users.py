@@ -21,7 +21,7 @@ from app.models.search_history import SearchHistory
 from app.models.propiedad import Propiedad
 from app.models.web_chat_session import WebChatSession
 from app.services.preference_service import criteria_from_preference, summarize_preference
-from app.services.lead_scoring_service import compute_score, compute_score_for_user_id
+from app.services.lead_scoring_service import compute_score, compute_score_for_user_id, load_scoring_config
 
 router = APIRouter(prefix="/api/site-users", tags=["site-users"])
 
@@ -236,6 +236,7 @@ def _load_scores_batch(user_ids: list, users: list[SiteUser], db: Session) -> di
 
     result = {}
     user_map = {u.id: u for u in users}
+    scoring_config = load_scoring_config(db)
     for uid in user_ids:
         user = user_map.get(uid)
         if not user:
@@ -245,6 +246,7 @@ def _load_scores_batch(user_ids: list, users: list[SiteUser], db: Session) -> di
             prefs_map.get(uid),
             interactions_map[uid],
             sessions_map[uid],
+            scoring_config,
         )
         result[uid] = {
             "total": full["total"],
@@ -468,7 +470,7 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
     has_docs = bool(lead_document or financial_doc)
     has_financial = bool(financial_doc)
 
-    score = compute_score(u, pref, interactions, sessions)
+    score = compute_score(u, pref, interactions, sessions, load_scoring_config(db))
 
     return {
         "user": _out(u),
