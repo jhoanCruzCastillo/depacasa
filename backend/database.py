@@ -509,6 +509,21 @@ def run_migrations():
                 END;
             END IF;
         END $$""",
+        # ── Credit system ──────────────────────────────────────────────────────
+        "ALTER TABLE sales_advisors ADD COLUMN IF NOT EXISTS credit_balance INTEGER NOT NULL DEFAULT 0",
+        # Seed default credit settings (single-row config)
+        "INSERT INTO credit_settings (id, base_price, currency) VALUES (1, 0.50, 'USD') ON CONFLICT (id) DO NOTHING",
+        # Seed default credit packages (only if table is empty)
+        """DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM credit_packages LIMIT 1) THEN
+                INSERT INTO credit_packages (id, label, credits, price, badge, is_highlighted, is_active, sort_order)
+                VALUES
+                    (gen_random_uuid(), 'Starter',    10,  5.00,  NULL,          false, true, 0),
+                    (gen_random_uuid(), 'Popular',    25,  12.00, 'Más popular', true,  true, 1),
+                    (gen_random_uuid(), 'Pro',        50,  22.00, 'Mejor valor', false, true, 2),
+                    (gen_random_uuid(), 'Enterprise', 100, 40.00, NULL,          false, true, 3);
+            END IF;
+        END $$""",
     ]
     # ── ALTER TYPE must run outside any transaction (PostgreSQL limitation) ──────
     _ENUM_MIGRATIONS = [

@@ -95,6 +95,36 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     return {"token": create_token(str(user.id)), "user": _user_out(user)}
 
 
+# ── Admin auth ────────────────────────────────────────────────────────────────
+
+@router.post("/admin/login")
+def admin_login(body: LoginIn, db: Session = Depends(get_db)):
+    user = db.query(SiteUser).filter(
+        SiteUser.email == body.email.lower(),
+        SiteUser.role == "ADMIN",
+    ).first()
+    if not user or not verify_password(body.password, user.password_hash or ""):
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas.")
+    return {"token": create_token(str(user.id)), "user": _user_out(user)}
+
+
+@router.get("/admin/me")
+def admin_me(request: Request, db: Session = Depends(get_db)):
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="No autenticado.")
+    try:
+        user_id = decode_token(auth.split(" ", 1)[1])
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token inválido.")
+    user = db.query(SiteUser).filter(
+        SiteUser.id == UUID(user_id), SiteUser.role == "ADMIN",
+    ).first()
+    if not user:
+        raise HTTPException(status_code=403, detail="Acceso denegado.")
+    return _user_out(user)
+
+
 @router.get("/me")
 def me(request: Request, db: Session = Depends(get_db)):
     user = get_optional_user(request, db)

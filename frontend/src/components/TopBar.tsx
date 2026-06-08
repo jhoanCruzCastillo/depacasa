@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Bell, HelpCircle, ChevronDown, User, Shield, LogOut } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { session } from '../services/session'
 import {
   getAdminNotifications,
   getNotificationUnreadCount,
@@ -27,11 +29,16 @@ function notifEmoji(type: string): string {
 }
 
 export default function TopBar() {
+  const navigate = useNavigate()
   const [showNotifs, setShowNotifs] = useState(false)
   const [showUser, setShowUser] = useState(false)
   const notifsRef = useRef<HTMLDivElement>(null)
   const userRef = useRef<HTMLDivElement>(null)
   const qc = useQueryClient()
+  const adminName = session.get()?.name ?? 'Administrador'
+  const adminEmail = session.get()?.email ?? ''
+
+  const handleLogout = () => { session.clear(); navigate('/admin/auth', { replace: true }) }
 
   const { data: countData } = useQuery({
     queryKey: ['notif-count'],
@@ -158,7 +165,7 @@ export default function TopBar() {
           className="flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-lg hover:bg-gray-100 transition-colors"
         >
           <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-xs select-none">
-            AD
+            {adminName.slice(0, 2).toUpperCase()}
           </div>
           <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
         </button>
@@ -166,8 +173,8 @@ export default function TopBar() {
         {showUser && (
           <div className="absolute right-0 top-full mt-2 w-52 bg-white rounded-2xl shadow-2xl border border-gray-100 z-50 overflow-hidden">
             <div className="px-4 py-3 border-b border-gray-100">
-              <p className="text-sm font-semibold text-gray-900">Administrador</p>
-              <p className="text-xs text-gray-400 mt-0.5 truncate">Sistema</p>
+              <p className="text-sm font-semibold text-gray-900">{adminName}</p>
+              <p className="text-xs text-gray-400 mt-0.5 truncate">{adminEmail}</p>
             </div>
             <div className="py-1">
               <button className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors text-left">
@@ -179,7 +186,7 @@ export default function TopBar() {
                 Seguridad
               </button>
               <div className="border-t border-gray-100 my-1" />
-              <button className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors text-left">
+              <button onClick={handleLogout} className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors text-left">
                 <LogOut className="w-4 h-4 flex-shrink-0" />
                 Cerrar sesión
               </button>

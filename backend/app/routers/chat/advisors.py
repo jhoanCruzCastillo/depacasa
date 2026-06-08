@@ -16,6 +16,7 @@ from app.models.propiedad import Propiedad
 from app.models.proyecto import Proyecto
 from app.models.user_property_interaction import UserPropertyInteraction
 from app.models.advisor_lead_purchase import AdvisorLeadPurchase
+from app.models.credit_transaction import CreditTransaction
 from app.models.developer import Developer
 from app.services.auth_service import hash_password, verify_password, create_token, decode_token
 from app.services.email_service import send_email
@@ -498,8 +499,9 @@ def get_marketplace(current: SalesAdvisor = Depends(_get_current_advisor), db: S
     # Load users
     users = {u.id: u for u in db.query(SiteUser).filter(SiteUser.id.in_(list(user_props.keys()))).all()}
 
-    # Load property titles
+    # Load properties and their projects
     props_map = {p.id: p for p in db.query(Propiedad).filter(Propiedad.id.in_(prop_ids)).all()}
+    projects_map = {p.id: p for p in db.query(Proyecto).filter(Proyecto.id.in_(proyecto_ids)).all()}
 
     # Load purchases for this advisor
     purchases = {
@@ -548,11 +550,14 @@ def get_marketplace(current: SalesAdvisor = Depends(_get_current_advisor), db: S
                 (prop.modelo if prop else None) or
                 f"Propiedad {str(inter.record_id)[:8]}"
             )
+            proyecto = projects_map.get(prop.proyecto_id) if prop and prop.proyecto_id else None
             prop_list.append({
                 "id": str(inter.record_id),
                 "title": title,
                 "interested": inter.interested,
                 "rating": inter.rating,
+                "project_name": proyecto.nombre if proyecto else None,
+                "project_location": proyecto.ubicacion if proyecto else None,
             })
 
         leads.append({
@@ -590,33 +595,61 @@ def unlock_lead(user_id: UUID, current: SalesAdvisor = Depends(_get_current_advi
         AdvisorLeadPurchase.site_user_id == user_id,
     ).first()
     if existing:
-        return {"already_unlocked": True, "email": user.email, "phone": user.phone, "whatsapp": user.whatsapp}
+        return {
+            "already_unlocked": True,
+            "full_name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "whatsapp": user.whatsapp,
+            "country": user.country,
+        }
 
+    # Determine credit cost from scoring config
     cfg = load_scoring_config(db)
     score_data = compute_score_for_user_id(user_id, db)
     tier_key = score_data["tier"]["key"] if score_data else "frio"
-    tier_prices = {
-        "muy_caliente": float(cfg.get("price_muy_caliente") or 0),
-        "caliente":     float(cfg.get("price_caliente") or 0),
-        "tibio":        float(cfg.get("price_tibio") or 0),
-        "frio":         float(cfg.get("price_frio") or 0),
+    tier_costs = {
+        "muy_caliente": int(cfg.get("price_muy_caliente") or 0),
+        "caliente":     int(cfg.get("price_caliente") or 0),
+        "tibio":        int(cfg.get("price_tibio") or 0),
+        "frio":         int(cfg.get("price_frio") or 0),
     }
-    price = tier_prices.get(tier_key, 0)
-    currency = cfg.get("price_currency", "PEN")
+    credits_needed = tier_costs.get(tier_key, 0)
 
+    # Check balance (free leads always pass)
+    if credits_needed > 0 and (current.credit_balance or 0) < credits_needed:
+        raise HTTPException(status_code=402, detail="Créditos insuficientes")
+
+    # Register purchase
     purchase = AdvisorLeadPurchase(
         advisor_id=current.id,
         site_user_id=user_id,
-        price_paid=price,
-        currency=currency,
+        price_paid=credits_needed,
+        currency="credits",
     )
     db.add(purchase)
+    db.flush()
+
+    # Deduct credits and record transaction
+    if credits_needed > 0:
+        new_balance = (current.credit_balance or 0) - credits_needed
+        tx = CreditTransaction(
+            advisor_id=current.id,
+            type="deduction",
+            amount=-credits_needed,
+            balance_after=new_balance,
+            description=f"Lead desbloqueado: {user.name or user.email}",
+            lead_user_id=user.id,
+        )
+        db.add(tx)
+        current.credit_balance = new_balance
+
     db.commit()
 
     return {
         "unlocked": True,
-        "price_paid": price,
-        "currency": currency,
+        "credits_spent": credits_needed,
+        "new_balance": current.credit_balance or 0,
         "full_name": user.name,
         "email": user.email,
         "phone": user.phone,

@@ -43,6 +43,11 @@ def load_scoring_config(db: Session) -> dict:
         "tier_muy_caliente_min": cfg.tier_muy_caliente_min,
         "tier_caliente_min": cfg.tier_caliente_min,
         "tier_tibio_min": cfg.tier_tibio_min,
+        "price_muy_caliente": cfg.price_muy_caliente,
+        "price_caliente": cfg.price_caliente,
+        "price_tibio": cfg.price_tibio,
+        "price_frio": cfg.price_frio,
+        "price_currency": cfg.price_currency,
     }
 
 

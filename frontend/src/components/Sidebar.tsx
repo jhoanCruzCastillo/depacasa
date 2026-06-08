@@ -20,10 +20,10 @@ const siteLinks = [
 ]
 
 const chatLinks = [
-  { to: '/chat/users', label: 'Usuarios', icon: Users },
-  { to: '/chat/scoring', label: 'Ajuste de precios', icon: Award },
-  { to: '/chat/advisors', label: 'Asesores', icon: UserCheck },
-  { to: '/chat/config', label: 'Configuración', icon: Settings },
+  { to: '/leads/users', label: 'Usuarios', icon: Users },
+  { to: '/leads/scoring', label: 'Ajuste de precios', icon: Award },
+  { to: '/leads/advisors', label: 'Asesores', icon: UserCheck },
+  { to: '/leads/config', label: 'Configuración', icon: Settings },
 ]
 
 type NavItem = { to?: string; href?: string; label: string; icon: React.ElementType }
@@ -116,9 +116,9 @@ export default function Sidebar() {
           ))}
         </div>
 
-        {/* CHATBOT */}
+        {/* GESTIÓN DE LEADS */}
         <p className="px-3 pt-4 pb-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
-          Chatbot
+          Gestión de Leads
         </p>
         <div className="ml-1 space-y-0.5">
           {chatLinks.map(item => (

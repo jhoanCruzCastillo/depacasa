@@ -23,8 +23,12 @@ import {
   ExternalLink,
   Image as ImageIcon,
   Pencil,
-  DollarSign,
+  Coins,
   Tag,
+  Plus,
+  Trash2,
+  CreditCard,
+  Package,
 } from 'lucide-react'
 import API from '../../services/api'
 import toast from 'react-hot-toast'
@@ -221,8 +225,6 @@ const BREAKDOWN_LABELS: Record<string, { label: string; color: string }> = {
 
 // ── Pricing tab component ──────────────────────────────────────────────────────
 
-const CURRENCIES = ['PEN', 'USD', 'EUR']
-
 const TIER_PRICING_ROWS: Array<{
   key: keyof ScoringConfig
   label: string
@@ -249,9 +251,9 @@ function PricingTab({ config, onSaved }: { config: ScoringConfig; onSaved: (c: S
     try {
       const res = await API.put('/chat/scoring-config', form)
       onSaved(res.data)
-      toast.success('Precios actualizados')
+      toast.success('Créditos actualizados')
     } catch {
-      toast.error('Error al guardar los precios')
+      toast.error('Error al guardar los créditos')
     } finally {
       setSaving(false)
     }
@@ -264,9 +266,9 @@ function PricingTab({ config, onSaved }: { config: ScoringConfig; onSaved: (c: S
     <div className="space-y-6">
       {/* Info banner */}
       <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-start gap-3">
-        <Tag className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+        <Coins className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
         <p className="text-sm text-amber-800">
-          Define el precio que los asesores pagarán por acceder a cada lead según su tier de calificación.
+          Define los créditos que los asesores necesitarán para acceder a cada lead según su tier de calificación.
           Los tiers se calculan según los umbrales configurados en "Editar criterios".
         </p>
       </div>
@@ -282,23 +284,7 @@ function PricingTab({ config, onSaved }: { config: ScoringConfig; onSaved: (c: S
         </div>
       </div>
 
-      {/* Currency selector */}
-      <div className="flex items-center gap-3">
-        <label className="text-sm font-semibold text-slate-600">Moneda:</label>
-        <div className="flex gap-2">
-          {CURRENCIES.map(c => (
-            <button
-              key={c}
-              onClick={() => setForm(f => ({ ...f, price_currency: c }))}
-              className={`px-3 py-1.5 text-sm font-semibold rounded-lg border transition-colors ${form.price_currency === c ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
-            >
-              {c}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Price cards */}
+      {/* Credit cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {TIER_PRICING_ROWS.map(({ key, label, color, bg, border, Icon, desc }) => (
           <div key={key} className={`rounded-xl border-2 ${border} ${bg} p-5 space-y-3`}>
@@ -308,16 +294,17 @@ function PricingTab({ config, onSaved }: { config: ScoringConfig; onSaved: (c: S
             </div>
             <p className="text-xs text-slate-500">{desc}</p>
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-slate-500">{form.price_currency}</span>
+              <Coins className="w-4 h-4 text-slate-400 flex-shrink-0" />
               <input
                 type="number"
                 min={0}
-                step={0.01}
+                step={1}
                 value={form[key] as number}
-                onChange={e => setForm(f => ({ ...f, [key]: parseFloat(e.target.value) || 0 }))}
+                onChange={e => setForm(f => ({ ...f, [key]: Math.round(parseFloat(e.target.value) || 0) }))}
                 className="flex-1 border border-white/80 bg-white rounded-lg px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-400"
-                placeholder="0.00"
+                placeholder="0"
               />
+              <span className="text-xs text-slate-400 font-medium">créditos</span>
             </div>
           </div>
         ))}
@@ -329,10 +316,307 @@ function PricingTab({ config, onSaved }: { config: ScoringConfig; onSaved: (c: S
           disabled={saving}
           className="flex items-center gap-2 px-5 py-2.5 bg-amber-500 text-white text-sm font-semibold rounded-lg hover:bg-amber-600 disabled:opacity-50 transition-colors"
         >
-          <DollarSign className="w-4 h-4" />
-          {saving ? 'Guardando...' : 'Guardar precios'}
+          <Coins className="w-4 h-4" />
+          {saving ? 'Guardando...' : 'Guardar créditos'}
         </button>
       </div>
+    </div>
+  )
+}
+
+// ── Packages config tab ───────────────────────────────────────────────────────
+
+interface PkgConfig {
+  id: string; label: string; credits: number; price: number
+  badge: string; highlighted: boolean; active: boolean
+}
+
+
+function Toggle({ on, onToggle, color = 'bg-emerald-500' }: { on: boolean; onToggle: () => void; color?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={`relative inline-flex flex-shrink-0 w-9 h-5 rounded-full transition-colors duration-200 cursor-pointer p-0 border-0 outline-none focus:ring-2 focus:ring-offset-1 focus:ring-amber-400 ${on ? color : 'bg-slate-200'}`}
+    >
+      <span className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-200 ${on ? 'translate-x-4' : 'translate-x-0'}`} />
+    </button>
+  )
+}
+
+function fromApi(p: Record<string, unknown>): PkgConfig {
+  return {
+    id: p.id as string,
+    label: p.label as string,
+    credits: p.credits as number,
+    price: p.price as number,
+    badge: (p.badge as string) ?? '',
+    highlighted: p.is_highlighted as boolean,
+    active: p.is_active as boolean,
+  }
+}
+
+function toApi(p: PkgConfig) {
+  return {
+    label: p.label,
+    credits: p.credits,
+    price: p.price,
+    badge: p.badge || null,
+    is_highlighted: p.highlighted,
+    is_active: p.active,
+    sort_order: 0,
+  }
+}
+
+function PackagesConfigTab() {
+  const [basePriceValue, setBasePriceValue] = useState('0.50')
+  const [basePriceCurrency, setBasePriceCurrency] = useState('USD')
+  const [packages, setPackages] = useState<PkgConfig[]>([])
+  const [loadingPkgs, setLoadingPkgs] = useState(true)
+  const [editPkg, setEditPkg] = useState<PkgConfig | null>(null)
+  const [savingBase, setSavingBase] = useState(false)
+  const [savingPkg, setSavingPkg] = useState(false)
+
+  useEffect(() => {
+    API.get('/credits/settings').then(r => {
+      setBasePriceValue(String(r.data.base_price))
+      setBasePriceCurrency(r.data.currency)
+    }).catch(() => {})
+    API.get('/credits/packages').then(r => {
+      setPackages(r.data.map(fromApi))
+    }).catch(() => {}).finally(() => setLoadingPkgs(false))
+  }, [])
+
+  const handleToggleActive = async (pkg: PkgConfig) => {
+    const updated = { ...pkg, active: !pkg.active }
+    setPackages(prev => prev.map(p => p.id === pkg.id ? updated : p))
+    try { await API.put(`/credits/packages/${pkg.id}`, toApi(updated)) }
+    catch { setPackages(prev => prev.map(p => p.id === pkg.id ? pkg : p)); toast.error('Error al actualizar') }
+  }
+
+  const handleToggleHighlighted = async (pkg: PkgConfig) => {
+    const updated = { ...pkg, highlighted: !pkg.highlighted }
+    setPackages(prev => prev.map(p => p.id === pkg.id ? updated : p))
+    try { await API.put(`/credits/packages/${pkg.id}`, toApi(updated)) }
+    catch { setPackages(prev => prev.map(p => p.id === pkg.id ? pkg : p)); toast.error('Error al actualizar') }
+  }
+
+  const handleDelete = async (id: string) => {
+    setPackages(prev => prev.filter(p => p.id !== id))
+    try { await API.delete(`/credits/packages/${id}`) }
+    catch { toast.error('Error al eliminar'); API.get('/credits/packages').then(r => setPackages(r.data.map(fromApi))) }
+  }
+
+  const handleAddPackage = () => {
+    setEditPkg({ id: '', label: 'Nuevo paquete', credits: 20, price: 10, badge: '', highlighted: false, active: true })
+  }
+
+  const handleSavePkg = async (updated: PkgConfig) => {
+    setSavingPkg(true)
+    try {
+      if (!updated.id) {
+        const r = await API.post('/credits/packages', toApi(updated))
+        setPackages(prev => [...prev, fromApi(r.data)])
+      } else {
+        const r = await API.put(`/credits/packages/${updated.id}`, toApi(updated))
+        setPackages(prev => prev.map(p => p.id === updated.id ? fromApi(r.data) : p))
+      }
+      setEditPkg(null)
+      toast.success('Paquete guardado')
+    } catch { toast.error('Error al guardar el paquete') }
+    finally { setSavingPkg(false) }
+  }
+
+  const handleSaveBase = async () => {
+    setSavingBase(true)
+    try {
+      await API.put('/credits/settings', { base_price: parseFloat(basePriceValue) || 0.5, currency: basePriceCurrency })
+      toast.success('Precio base guardado')
+    } catch { toast.error('Error al guardar el precio base') }
+    finally { setSavingBase(false) }
+  }
+
+  return (
+    <div className="space-y-8">
+
+      {/* ── Precio base ── */}
+      <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <Coins className="w-4 h-4 text-amber-500" />
+          <h2 className="text-sm font-bold text-slate-700">Precio base por crédito</h2>
+        </div>
+        <p className="text-xs text-slate-500">
+          Define el valor en dinero real de 1 crédito. Los asesores compran créditos a este precio al adquirir cualquier paquete.
+        </p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-sm text-slate-600 font-medium">1 crédito =</span>
+          <div className="flex gap-2">
+            {CURRENCIES_BASE.map(c => (
+              <button
+                key={c}
+                onClick={() => setBasePriceCurrency(c)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${basePriceCurrency === c ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden">
+            <span className="px-3 py-2 bg-slate-50 text-slate-500 text-sm font-medium border-r border-slate-200">{basePriceCurrency}</span>
+            <input
+              type="number" min={0} step={0.01} value={basePriceValue}
+              onChange={e => setBasePriceValue(e.target.value)}
+              className="px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none w-24"
+            />
+          </div>
+        </div>
+        <div className="flex justify-end">
+          <button
+            onClick={handleSaveBase} disabled={savingBase}
+            className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white text-sm font-semibold rounded-lg hover:bg-amber-600 disabled:opacity-50 transition-colors"
+          >
+            <Coins className="w-4 h-4" />
+            {savingBase ? 'Guardando...' : 'Guardar precio base'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Paquetes ── */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-bold text-slate-700">Paquetes de créditos</h2>
+            <p className="text-xs text-slate-400 mt-0.5">Estos paquetes se muestran a los asesores en el portal de compra.</p>
+          </div>
+          <button
+            onClick={handleAddPackage}
+            className="flex items-center gap-2 px-3 py-2 bg-slate-800 text-white text-xs font-semibold rounded-lg hover:bg-slate-700 transition-colors flex-shrink-0"
+          >
+            <Plus className="w-3.5 h-3.5" /> Agregar paquete
+          </button>
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-400 uppercase tracking-wider">
+                <th className="text-left px-5 py-3 font-semibold">Nombre</th>
+                <th className="text-left px-4 py-3 font-semibold">Créditos</th>
+                <th className="text-left px-4 py-3 font-semibold">Precio</th>
+                <th className="text-left px-4 py-3 font-semibold">Badge</th>
+                <th className="text-center px-4 py-3 font-semibold">Destacado</th>
+                <th className="text-center px-4 py-3 font-semibold">Visible</th>
+                <th className="px-4 py-3" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {loadingPkgs ? (
+                <tr><td colSpan={7} className="px-5 py-10 text-center text-slate-400 text-xs">Cargando...</td></tr>
+              ) : packages.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-5 py-10 text-center text-slate-400 text-xs">
+                    <Package className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                    No hay paquetes configurados.
+                  </td>
+                </tr>
+              ) : packages.map(pkg => (
+                <tr key={pkg.id} className={`transition-colors ${pkg.active ? 'hover:bg-slate-50' : 'opacity-40 bg-slate-50/60'}`}>
+                  <td className="px-5 py-3.5 font-semibold text-slate-800">{pkg.label}</td>
+                  <td className="px-4 py-3.5">
+                    <span className="flex items-center gap-1.5">
+                      <Coins className="w-3.5 h-3.5 text-amber-400" />
+                      <span className="font-bold text-slate-700">{pkg.credits}</span>
+                    </span>
+                  </td>
+                  <td className="px-4 py-3.5 font-semibold text-slate-700">${pkg.price} USD</td>
+                  <td className="px-4 py-3.5">
+                    {pkg.badge
+                      ? <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[11px] font-semibold">{pkg.badge}</span>
+                      : <span className="text-slate-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-4 py-3.5 text-center">
+                    <div className="flex justify-center">
+                      <Toggle on={pkg.highlighted} onToggle={() => handleToggleHighlighted(pkg)} color="bg-blue-500" />
+                    </div>
+                  </td>
+                  <td className="px-4 py-3.5 text-center">
+                    <div className="flex justify-center">
+                      <Toggle on={pkg.active} onToggle={() => handleToggleActive(pkg)} />
+                    </div>
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <div className="flex items-center gap-1 justify-end">
+                      <button
+                        onClick={() => setEditPkg({ ...pkg })}
+                        className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                        title="Editar"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(pkg.id)}
+                        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Eliminar"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ── Package modal (add / edit) ── */}
+      {editPkg && createPortal(
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999] p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-800">{editPkg.id ? 'Editar paquete' : 'Nuevo paquete'}</h2>
+              <button onClick={() => setEditPkg(null)} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-3">
+              {([
+                { label: 'Nombre',           field: 'label',   type: 'text'   },
+                { label: 'Créditos',         field: 'credits', type: 'number' },
+                { label: 'Precio (USD)',     field: 'price',   type: 'number' },
+                { label: 'Badge (etiqueta)', field: 'badge',   type: 'text'   },
+              ] as { label: string; field: keyof PkgConfig; type: string }[]).map(({ label, field, type }) => (
+                <div key={field}>
+                  <label className="block text-xs font-semibold text-slate-500 mb-1.5">{label}</label>
+                  <input
+                    type={type}
+                    value={editPkg[field] as string | number}
+                    onChange={e => setEditPkg(prev => prev ? { ...prev, [field]: type === 'number' ? Number(e.target.value) : e.target.value } : null)}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+              ))}
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-sm text-slate-600">Destacado en el portal</span>
+                <Toggle on={editPkg.highlighted} onToggle={() => setEditPkg(prev => prev ? { ...prev, highlighted: !prev.highlighted } : null)} color="bg-blue-500" />
+              </div>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button onClick={() => setEditPkg(null)} className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-600 hover:bg-slate-50 transition-colors">
+                Cancelar
+              </button>
+              <button
+                onClick={() => handleSavePkg(editPkg)}
+                disabled={savingPkg}
+                className="flex-1 py-2.5 bg-amber-500 text-white text-sm font-bold rounded-xl hover:bg-amber-600 disabled:opacity-50 transition-colors"
+              >
+                {savingPkg ? 'Guardando...' : 'Guardar'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   )
 }
@@ -353,7 +637,7 @@ export default function LeadScoringPage() {
   const [scoreLoading, setScoreLoading] = useState(false)
 
 
-  const [pageTab, setPageTab] = useState<'leads' | 'pricing'>('leads')
+  const [pageTab, setPageTab] = useState<'leads' | 'pricing' | 'packages'>('leads')
   const [scoringConfig, setScoringConfig] = useState<ScoringConfig>(DEFAULT_CONFIG)
   const [configModalOpen, setConfigModalOpen] = useState(false)
   const [configForm, setConfigForm] = useState<ScoringConfig>(DEFAULT_CONFIG)
@@ -553,8 +837,15 @@ export default function LeadScoringPage() {
           onClick={() => setPageTab('pricing')}
           className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${pageTab === 'pricing' ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
         >
-          <DollarSign className="w-4 h-4" />
-          Precios por calificación
+          <Coins className="w-4 h-4" />
+          Créditos por calificación
+        </button>
+        <button
+          onClick={() => setPageTab('packages')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${pageTab === 'packages' ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+        >
+          <Package className="w-4 h-4" />
+          Paquetes de créditos
         </button>
       </div>
 
@@ -562,6 +853,9 @@ export default function LeadScoringPage() {
       {pageTab === 'pricing' && (
         <PricingTab config={scoringConfig} onSaved={cfg => { setScoringConfig(cfg); setConfigForm(cfg) }} />
       )}
+
+      {/* ── PACKAGES CONFIG TAB ── */}
+      {pageTab === 'packages' && <PackagesConfigTab />}
 
       {/* ── LEADS TAB wrapper ── */}
       {pageTab === 'leads' && (<>

@@ -1,14 +1,14 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useNavigate, Navigate } from 'react-router-dom'
 import {
-  Building2, LogOut, User, Phone, Mail, ChevronLeft, Lock, Eye, EyeOff,
-  ArrowRight, UserPlus, Flame, Thermometer, Snowflake, Star, ShoppingBag,
+  Building2, LogOut, ChevronLeft, Flame, Thermometer, Snowflake, Star, ShoppingBag,
   CheckCircle2, UserCheck, X,
-  Unlock, AlertCircle,
+  Unlock, AlertCircle, Filter, ChevronDown,
+  Coins, CreditCard, History, Phone,
 } from 'lucide-react'
 import API from '../../services/api'
+import { session } from '../../services/session'
 import toast from 'react-hot-toast'
-
-const ADVISOR_TOKEN_KEY = 'advisor_token'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -29,7 +29,7 @@ interface MarketplaceLead {
   tier_label: string
   price: number
   currency: string
-  properties: Array<{ id: string; title: string; interested: boolean; rating: number | null }>
+  properties: Array<{ id: string; title: string; interested: boolean; rating: number | null; project_name: string | null; project_location: string | null }>
   full_name: string | null
   email: string | null
   phone: string | null
@@ -38,6 +38,15 @@ interface MarketplaceLead {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+interface CreditPackagePublic {
+  id: string; label: string; credits: number; price: number; badge: string | null
+  is_highlighted: boolean; is_active: boolean; sort_order: number
+}
+interface CreditTx {
+  id: string; type: string; amount: number; balance_after: number
+  description: string | null; created_at: string | null
+}
 
 const TIER_CFG: Record<string, { color: string; bg: string; border: string; Icon: typeof Flame }> = {
   muy_caliente: { color: 'text-red-600',    bg: 'bg-red-100',    border: 'border-red-200',    Icon: Flame },
@@ -57,46 +66,23 @@ function TierBadge({ tier, score }: { tier: string; score: number }) {
 }
 
 function apiHeaders() {
-  const token = localStorage.getItem(ADVISOR_TOKEN_KEY)
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
-
-function PasswordInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
-  const [show, setShow] = useState(false)
-  return (
-    <div className="relative">
-      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-      <input type={show ? 'text' : 'password'} value={value} onChange={e => onChange(e.target.value)}
-        placeholder={placeholder ?? '••••••••••'}
-        className="w-full pl-10 pr-10 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
-      <button type="button" onClick={() => setShow(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-        {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-      </button>
-    </div>
-  )
+  return session.getType() === 'advisor' ? session.authHeader() : {}
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function AdvisorPortalPage() {
+  const navigate = useNavigate()
   const [advisor, setAdvisor] = useState<Advisor | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
-  const [authTab, setAuthTab] = useState<'login' | 'register'>('login')
-
-  // auth forms
-  const [loginEmail, setLoginEmail] = useState('')
-  const [loginPassword, setLoginPassword] = useState('')
-  const [loginLoading, setLoginLoading] = useState(false)
-  const [regName, setRegName] = useState('')
-  const [regEmail, setRegEmail] = useState('')
-  const [regPhone, setRegPhone] = useState('')
-  const [regPassword, setRegPassword] = useState('')
-  const [regConfirm, setRegConfirm] = useState('')
-  const [regLoading, setRegLoading] = useState(false)
-  const [regDone, setRegDone] = useState(false)
 
   // dashboard
-  const [dashTab, setDashTab] = useState<'marketplace' | 'contacts'>('marketplace')
+  const [dashTab, setDashTab] = useState<'marketplace' | 'contacts' | 'credits'>('marketplace')
+  const [creditBalance, setCreditBalance] = useState<number>(0)
+  const [creditPackages, setCreditPackages] = useState<CreditPackagePublic[]>([])
+  const [transactions, setTransactions] = useState<CreditTx[]>([])
+  const [purchasingPkg, setPurchasingPkg] = useState<string | null>(null)
+  const [loadingCredits, setLoadingCredits] = useState(false)
   const [marketplace, setMarketplace] = useState<MarketplaceLead[]>([])
   const [marketplaceCurrency, setMarketplaceCurrency] = useState('PEN')
   const [marketplaceMsg, setMarketplaceMsg] = useState<string | null>(null)
@@ -104,16 +90,19 @@ export default function AdvisorPortalPage() {
   const [unlockModal, setUnlockModal] = useState<MarketplaceLead | null>(null)
   const [unlocking, setUnlocking] = useState(false)
 
+  // filters
+  const [filterTier, setFilterTier] = useState<string>('all')
+  const [filterProject, setFilterProject] = useState<string>('all')
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false)
+
 
   // ── Init ──
   useEffect(() => {
-    const token = localStorage.getItem(ADVISOR_TOKEN_KEY)
+    const token = session.getType() === 'advisor' ? session.getToken() : null
     if (!token) { setAuthLoading(false); return }
     API.get('/chat/advisors/me/full', { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => {
-        setAdvisor(r.data)
-      })
-      .catch(() => localStorage.removeItem(ADVISOR_TOKEN_KEY))
+      .then(r => setAdvisor(r.data))
+      .catch(() => session.clear())
       .finally(() => setAuthLoading(false))
   }, [])
 
@@ -121,7 +110,24 @@ export default function AdvisorPortalPage() {
   useEffect(() => {
     if (!advisor) return
     fetchMarketplace()
+    fetchCredits()
+    fetchCreditPackages()
+
+    // Detect return from Drons Pay checkout
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('payment') === 'success') {
+      toast.success('¡Pago completado! Tus créditos han sido acreditados.')
+      setDashTab('credits')
+      window.history.replaceState({}, '', '/asesores')
+    }
   }, [advisor])
+
+  useEffect(() => {
+    if (!projectDropdownOpen) return
+    const close = () => setProjectDropdownOpen(false)
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [projectDropdownOpen])
 
 
   const fetchMarketplace = useCallback(async () => {
@@ -135,37 +141,24 @@ export default function AdvisorPortalPage() {
     finally { setMarketplaceLoading(false) }
   }, [])
 
-  // ── Auth handlers ──
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoginLoading(true)
+  const fetchCredits = useCallback(async () => {
+    setLoadingCredits(true)
     try {
-      const r = await API.post('/chat/advisors/login', { email: loginEmail.trim(), password: loginPassword })
-      localStorage.setItem(ADVISOR_TOKEN_KEY, r.data.token)
-      // load full profile
-      const full = await API.get('/chat/advisors/me/full', { headers: { Authorization: `Bearer ${r.data.token}` } })
-      setAdvisor(full.data)
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      toast.error(msg || 'Credenciales incorrectas')
-    } finally { setLoginLoading(false) }
-  }
+      const r = await API.get('/credits/me', { headers: apiHeaders() })
+      setCreditBalance(r.data.balance)
+      setTransactions(r.data.transactions ?? [])
+    } catch { /* non-critical */ }
+    finally { setLoadingCredits(false) }
+  }, [])
 
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (regPassword !== regConfirm) { toast.error('Las contraseñas no coinciden'); return }
-    if (regPassword.length < 6) { toast.error('Mínimo 6 caracteres'); return }
-    setRegLoading(true)
+  const fetchCreditPackages = useCallback(async () => {
     try {
-      await API.post('/chat/advisors/register', { name: regName.trim(), email: regEmail.trim(), phone: regPhone.trim() || null, password: regPassword })
-      setRegDone(true)
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      toast.error(msg || 'Error al registrarse')
-    } finally { setRegLoading(false) }
-  }
+      const r = await API.get('/credits/packages/public')
+      setCreditPackages(r.data)
+    } catch { /* non-critical */ }
+  }, [])
 
-  const handleLogout = () => { localStorage.removeItem(ADVISOR_TOKEN_KEY); setAdvisor(null); setMarketplace([]) }
+  const handleLogout = () => { session.clear(); navigate('/advisor/auth', { replace: true }) }
 
   // ── Unlock ──
   const handleUnlock = async () => {
@@ -174,17 +167,54 @@ export default function AdvisorPortalPage() {
     try {
       const r = await API.post(`/chat/advisors/marketplace/${unlockModal.user_id}/unlock`, {}, { headers: apiHeaders() })
       toast.success('¡Contacto desbloqueado!')
+      if (r.data.new_balance !== undefined) setCreditBalance(r.data.new_balance)
       setUnlockModal(null)
       setMarketplace(prev => prev.map(l =>
         l.user_id === unlockModal.user_id
           ? { ...l, is_unlocked: true, full_name: r.data.full_name, email: r.data.email, phone: r.data.phone, whatsapp: r.data.whatsapp, country: r.data.country, display_name: r.data.full_name || l.display_name }
           : l
       ))
+      fetchCredits()
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
       toast.error(msg || 'Error al desbloquear')
     } finally { setUnlocking(false) }
   }
+
+  // ── Purchase credits — redirects to Drons Pay checkout ──
+  const handlePurchase = async (pkgId: string) => {
+    setPurchasingPkg(pkgId)
+    try {
+      const r = await API.post('/credits/purchase', { package_id: pkgId }, { headers: apiHeaders() })
+      window.location.href = r.data.checkout_url
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      toast.error(msg || 'Error al iniciar el pago')
+      setPurchasingPkg(null)
+    }
+  }
+
+  // ── Derived filter data (must be at top level — Rules of Hooks) ──────────────
+  const availableProjects = useMemo(() => {
+    const seen = new Map<string, string>()
+    marketplace.filter(l => !l.is_unlocked).forEach(lead => {
+      lead.properties.forEach(p => {
+        if (p.project_name && !seen.has(p.project_name)) {
+          seen.set(p.project_name, p.project_name)
+        }
+      })
+    })
+    return Array.from(seen.values()).sort()
+  }, [marketplace])
+
+  const filteredLockedLeads = useMemo(() => {
+    return marketplace.filter(l => {
+      if (l.is_unlocked) return false
+      if (filterTier !== 'all' && l.tier_key !== filterTier) return false
+      if (filterProject !== 'all' && !l.properties.some(p => p.project_name === filterProject)) return false
+      return true
+    })
+  }, [marketplace, filterTier, filterProject])
 
   // ─────────────────────────────────────────────────────────────────────────────
   if (authLoading) return (
@@ -196,7 +226,7 @@ export default function AdvisorPortalPage() {
   // ══ DASHBOARD ══════════════════════════════════════════════════════════════
   if (advisor) {
     const unlockedLeads = marketplace.filter(l => l.is_unlocked)
-    const lockedLeads = marketplace.filter(l => !l.is_unlocked)
+    const lockedLeads = filteredLockedLeads
 
     return (
       <div className="min-h-screen bg-slate-50">
@@ -214,6 +244,13 @@ export default function AdvisorPortalPage() {
             </div>
             <div className="flex-1" />
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => setDashTab('credits')}
+                className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition-all text-xs font-bold ${dashTab === 'credits' ? 'bg-amber-500 border-amber-500 text-white' : 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100'}`}
+              >
+                <Coins className="w-3.5 h-3.5" />
+                {creditBalance} cr
+              </button>
               <div className="hidden sm:flex items-center gap-2 border border-slate-200 rounded-xl px-3 py-1.5">
                 <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-600">{advisor.name[0].toUpperCase()}</div>
                 <div className="text-xs leading-tight">
@@ -230,8 +267,9 @@ export default function AdvisorPortalPage() {
           {/* Dashboard tabs */}
           <div className="max-w-6xl mx-auto px-4 flex gap-1 border-t border-slate-100">
             {[
-              { id: 'marketplace', label: 'Marketplace', Icon: ShoppingBag, count: lockedLeads.length },
-              { id: 'contacts',    label: 'Mis contactos', Icon: UserCheck, count: unlockedLeads.length },
+              { id: 'marketplace', label: 'Marketplace',   Icon: ShoppingBag, count: lockedLeads.length   },
+              { id: 'contacts',    label: 'Mis contactos', Icon: UserCheck,   count: unlockedLeads.length },
+              { id: 'credits',     label: 'Créditos',      Icon: Coins,       count: null                 },
             ].map(({ id, label, Icon, count }) => (
               <button
                 key={id}
@@ -273,12 +311,94 @@ export default function AdvisorPortalPage() {
                 </div>
               )}
 
+              {/* ── Filters ── */}
+              {!marketplaceLoading && marketplace.some(l => !l.is_unlocked) && (
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* Tier chips */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="flex items-center gap-1 text-xs text-slate-500 font-medium mr-1">
+                      <Filter className="w-3.5 h-3.5" /> Temperatura:
+                    </span>
+                    {[
+                      { key: 'all',         label: 'Todos' },
+                      { key: 'muy_caliente', label: 'Muy caliente', color: 'bg-red-100 text-red-700 border-red-200',     activeColor: 'bg-red-500 text-white border-red-500' },
+                      { key: 'caliente',     label: 'Caliente',     color: 'bg-orange-100 text-orange-700 border-orange-200', activeColor: 'bg-orange-500 text-white border-orange-500' },
+                      { key: 'tibio',        label: 'Tibio',        color: 'bg-amber-100 text-amber-700 border-amber-200',   activeColor: 'bg-amber-500 text-white border-amber-500' },
+                      { key: 'frio',         label: 'Frío',         color: 'bg-slate-100 text-slate-600 border-slate-200',   activeColor: 'bg-slate-500 text-white border-slate-500' },
+                    ].map(({ key, label, color, activeColor }) => (
+                      <button
+                        key={key}
+                        onClick={() => setFilterTier(key)}
+                        className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all ${
+                          filterTier === key
+                            ? (activeColor || 'bg-slate-800 text-white border-slate-800')
+                            : (color || 'bg-white text-slate-600 border-slate-200 hover:border-slate-300')
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Project dropdown */}
+                  {availableProjects.length > 1 && (
+                    <div className="relative">
+                      <button
+                        onClick={e => { e.stopPropagation(); setProjectDropdownOpen(v => !v) }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:border-slate-300 transition-colors"
+                      >
+                        <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                        {filterProject === 'all' ? 'Todos los proyectos' : filterProject}
+                        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${projectDropdownOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                      {projectDropdownOpen && (
+                        <div className="absolute left-0 top-full mt-1 z-20 bg-white border border-slate-200 rounded-xl shadow-lg py-1 min-w-[200px]">
+                          <button
+                            onClick={() => { setFilterProject('all'); setProjectDropdownOpen(false) }}
+                            className={`w-full text-left px-4 py-2 text-xs font-medium transition-colors ${filterProject === 'all' ? 'text-blue-600 bg-blue-50' : 'text-slate-600 hover:bg-slate-50'}`}
+                          >
+                            Todos los proyectos
+                          </button>
+                          {availableProjects.map(name => (
+                            <button
+                              key={name}
+                              onClick={() => { setFilterProject(name); setProjectDropdownOpen(false) }}
+                              className={`w-full text-left px-4 py-2 text-xs font-medium transition-colors ${filterProject === name ? 'text-blue-600 bg-blue-50' : 'text-slate-600 hover:bg-slate-50'}`}
+                            >
+                              {name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Active filter count / clear */}
+                  {(filterTier !== 'all' || filterProject !== 'all') && (
+                    <button
+                      onClick={() => { setFilterTier('all'); setFilterProject('all') }}
+                      className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-600 transition-colors ml-1"
+                    >
+                      <X className="w-3.5 h-3.5" /> Limpiar filtros
+                    </button>
+                  )}
+                </div>
+              )}
+
               {marketplaceLoading ? (
                 <div className="flex items-center justify-center h-40"><div className="w-8 h-8 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" /></div>
               ) : lockedLeads.length === 0 && !marketplaceMsg ? (
                 <div className="text-center py-20 text-slate-400">
                   <ShoppingBag className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                  <p>No hay leads disponibles en este momento.</p>
+                  {filterTier !== 'all' || filterProject !== 'all'
+                    ? <p>No hay leads que coincidan con los filtros seleccionados.</p>
+                    : <p>No hay leads disponibles en este momento.</p>
+                  }
+                  {(filterTier !== 'all' || filterProject !== 'all') && (
+                    <button onClick={() => { setFilterTier('all'); setFilterProject('all') }} className="mt-2 text-sm text-blue-600 hover:underline font-medium">
+                      Limpiar filtros
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -301,14 +421,23 @@ export default function AdvisorPortalPage() {
                         </div>
 
                         {/* Properties */}
-                        <div className="px-4 py-3 space-y-1.5">
+                        <div className="px-4 py-3 space-y-2">
                           <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Interesado en</p>
                           {lead.properties.slice(0, 3).map(p => (
-                            <div key={p.id} className="flex items-center gap-2 text-xs text-slate-600">
-                              {p.interested
-                                ? <CheckCircle2 className="w-3 h-3 text-emerald-500 flex-shrink-0" />
-                                : p.rating ? <Star className="w-3 h-3 text-amber-400 flex-shrink-0" /> : <div className="w-3 h-3 rounded-full bg-slate-200 flex-shrink-0" />}
-                              <span className="truncate">{p.title}</span>
+                            <div key={p.id} className="flex items-start gap-2">
+                              <div className="mt-0.5 flex-shrink-0">
+                                {p.interested
+                                  ? <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                                  : p.rating ? <Star className="w-3 h-3 text-amber-400" /> : <div className="w-3 h-3 rounded-full bg-slate-200" />}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-xs text-slate-700 font-medium truncate">{p.title}</p>
+                                {(p.project_name || p.project_location) && (
+                                  <p className="text-[10px] text-slate-400 truncate">
+                                    {[p.project_name, p.project_location].filter(Boolean).join(' · ')}
+                                  </p>
+                                )}
+                              </div>
                             </div>
                           ))}
                           {lead.properties.length > 3 && <p className="text-[10px] text-slate-400">+{lead.properties.length - 3} propiedades más</p>}
@@ -317,9 +446,11 @@ export default function AdvisorPortalPage() {
                         {/* Footer: price + unlock */}
                         <div className="px-4 pb-4 pt-2 border-t border-slate-100 flex items-center justify-between gap-3">
                           <div>
-                            <p className="text-[10px] text-slate-400 uppercase font-semibold">Precio de contacto</p>
-                            <p className={`text-lg font-black ${tierCfg.color}`}>
-                              {lead.price > 0 ? `${marketplaceCurrency} ${lead.price.toFixed(2)}` : 'Gratis'}
+                            <p className="text-[10px] text-slate-400 uppercase font-semibold">Costo de desbloqueo</p>
+                            <p className={`text-lg font-black flex items-center gap-1 ${tierCfg.color}`}>
+                              {lead.price > 0
+                                ? <><Coins className="w-4 h-4" />{lead.price} crédito{lead.price !== 1 ? 's' : ''}</>
+                                : 'Gratis'}
                             </p>
                           </div>
                           <button
@@ -397,7 +528,137 @@ export default function AdvisorPortalPage() {
             </div>
           )}
 
-          {/* ── PROFILE tab ── */}
+          {/* ── CREDITS tab ── */}
+          {dashTab === 'credits' && (
+            <div className="space-y-8">
+              {/* Header */}
+              <div>
+                <h1 className="text-xl font-bold text-slate-800">Mis créditos</h1>
+                <p className="text-sm text-slate-500 mt-0.5">Compra créditos para desbloquear contactos del marketplace</p>
+              </div>
+
+              {/* Balance card */}
+              <div className="rounded-2xl p-6 text-white shadow-lg" style={{ background: 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 60%, #3b82f6 100%)' }}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-blue-200 text-sm font-medium">Saldo disponible</p>
+                    <p className="text-6xl font-black mt-1 tracking-tight">{creditBalance}</p>
+                    <p className="text-blue-200 text-sm mt-1">crédito{creditBalance !== 1 ? 's' : ''}</p>
+                  </div>
+                  <div className="w-24 h-24 rounded-full bg-white/10 flex items-center justify-center">
+                    <Coins className="w-12 h-12 text-white/70" />
+                  </div>
+                </div>
+                {creditBalance === 0 && (
+                  <div className="mt-5 bg-white/10 rounded-xl px-4 py-2.5 text-sm text-blue-100">
+                    Aún no tienes créditos. ¡Elige un paquete para empezar a desbloquear leads!
+                  </div>
+                )}
+              </div>
+
+              {/* Credit packages */}
+              <div>
+                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Paquetes disponibles</h2>
+                {creditPackages.length === 0 ? (
+                  <div className="flex items-center justify-center h-32 text-slate-400 text-sm">
+                    {loadingCredits ? 'Cargando paquetes...' : 'No hay paquetes disponibles en este momento.'}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                    {creditPackages.map(pkg => (
+                      <div
+                        key={pkg.id}
+                        className={`relative rounded-2xl border-2 p-5 flex flex-col gap-4 transition-all hover:shadow-md ${pkg.is_highlighted ? 'border-blue-500 bg-blue-50 shadow-sm' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                      >
+                        {pkg.badge && (
+                          <span className={`absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide whitespace-nowrap ${pkg.is_highlighted ? 'bg-blue-600 text-white' : 'bg-amber-500 text-white'}`}>
+                            {pkg.badge}
+                          </span>
+                        )}
+
+                        <div>
+                          <p className={`text-xs font-semibold uppercase tracking-wide mb-2 ${pkg.is_highlighted ? 'text-blue-500' : 'text-slate-400'}`}>
+                            {pkg.label}
+                          </p>
+                          <div className="flex items-end gap-2">
+                            <span className="text-4xl font-black text-slate-800 leading-none">{pkg.credits}</span>
+                            <span className="text-slate-500 font-medium text-sm mb-0.5">créditos</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 text-sm text-slate-500">
+                          <Coins className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                          <span className="font-semibold">${(pkg.price / pkg.credits).toFixed(2)}</span>
+                          <span className="text-slate-400">por crédito</span>
+                        </div>
+
+                        <div className="mt-auto pt-2 border-t border-slate-100 space-y-3">
+                          <p className="text-2xl font-black text-slate-800">
+                            ${pkg.price}
+                            <span className="text-sm font-medium text-slate-400 ml-1">USD</span>
+                          </p>
+                          <button
+                            onClick={() => handlePurchase(pkg.id)}
+                            disabled={purchasingPkg === pkg.id}
+                            className={`w-full py-2.5 rounded-xl text-sm font-bold transition-all hover:brightness-105 active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-60 ${pkg.is_highlighted ? 'bg-blue-600 text-white' : 'bg-slate-800 text-white'}`}
+                          >
+                            <CreditCard className="w-4 h-4" />
+                            {purchasingPkg === pkg.id ? 'Procesando...' : 'Comprar'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs text-slate-400 mt-3 flex items-center gap-1.5">
+                  <CreditCard className="w-3.5 h-3.5" />
+                  Los créditos se acreditan al instante.
+                </p>
+              </div>
+
+              {/* Transaction history */}
+              <div>
+                <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Historial de transacciones</h2>
+                {transactions.length === 0 ? (
+                  <div className="bg-white rounded-2xl border border-slate-200 flex flex-col items-center justify-center py-16 gap-3">
+                    <History className="w-10 h-10 text-slate-200" />
+                    <p className="text-slate-400 text-sm">No hay transacciones registradas aún.</p>
+                    <p className="text-xs text-slate-300">Tus compras de créditos aparecerán aquí.</p>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-400 uppercase tracking-wider">
+                          <th className="text-left px-5 py-3 font-semibold">Descripción</th>
+                          <th className="text-right px-4 py-3 font-semibold">Monto</th>
+                          <th className="text-right px-4 py-3 font-semibold">Saldo</th>
+                          <th className="text-right px-5 py-3 font-semibold">Fecha</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {transactions.map(tx => (
+                          <tr key={tx.id} className="hover:bg-slate-50 transition-colors">
+                            <td className="px-5 py-3.5 text-slate-700">
+                              {tx.description || (tx.type === 'purchase' ? 'Compra de créditos' : tx.type === 'deduction' ? 'Desbloqueo de lead' : tx.type)}
+                            </td>
+                            <td className={`px-4 py-3.5 text-right font-bold ${tx.amount > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                              {tx.amount > 0 ? '+' : ''}{tx.amount} cr
+                            </td>
+                            <td className="px-4 py-3.5 text-right text-slate-500 text-xs">{tx.balance_after} cr</td>
+                            <td className="px-5 py-3.5 text-right text-slate-400 text-xs">
+                              {tx.created_at ? new Date(tx.created_at).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
         </div>
 
         {/* ── Unlock confirm modal ── */}
@@ -419,22 +680,38 @@ export default function AdvisorPortalPage() {
                 <p className="text-xs text-slate-500">{unlockModal.properties.length} propiedad{unlockModal.properties.length !== 1 ? 'es' : ''} de interés</p>
               </div>
 
-              <div className="bg-slate-50 rounded-xl p-4 text-center">
-                <p className="text-xs text-slate-500 mb-1">Precio a pagar</p>
-                <p className="text-3xl font-black text-slate-800">
-                  {unlockModal.price > 0 ? `${marketplaceCurrency} ${unlockModal.price.toFixed(2)}` : 'Gratis'}
+              <div className="bg-slate-50 rounded-xl p-4 text-center space-y-1">
+                <p className="text-xs text-slate-500">Créditos necesarios</p>
+                <p className="text-3xl font-black text-slate-800 flex items-center justify-center gap-2">
+                  <Coins className="w-7 h-7 text-amber-500" />
+                  {unlockModal.price > 0 ? `${unlockModal.price}` : 'Gratis'}
                 </p>
+                {unlockModal.price > 0 && (
+                  <p className="text-xs text-slate-400">
+                    Saldo tras desbloqueo: <span className={creditBalance - unlockModal.price < 0 ? 'text-red-500 font-bold' : 'font-semibold text-slate-600'}>{creditBalance - unlockModal.price} cr</span>
+                  </p>
+                )}
               </div>
 
-              <p className="text-xs text-slate-500 text-center">
-                Al confirmar, se registrará el pago y podrás ver el nombre completo, correo, teléfono y WhatsApp del lead.
-              </p>
+              {creditBalance < unlockModal.price && (
+                <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-2.5 flex items-center gap-2 text-sm text-red-700">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  No tienes suficientes créditos.{' '}
+                  <button onClick={() => { setUnlockModal(null); setDashTab('credits') }} className="underline font-semibold">Comprar créditos</button>
+                </div>
+              )}
+
+              {creditBalance >= unlockModal.price && (
+                <p className="text-xs text-slate-500 text-center">
+                  Al confirmar se descontarán los créditos y podrás ver el nombre completo, correo, teléfono y WhatsApp del lead.
+                </p>
+              )}
 
               <div className="flex gap-2">
                 <button onClick={() => setUnlockModal(null)} className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-600 hover:bg-slate-50 font-medium transition-colors">
                   Cancelar
                 </button>
-                <button onClick={handleUnlock} disabled={unlocking}
+                <button onClick={handleUnlock} disabled={unlocking || creditBalance < unlockModal.price}
                   className="flex-1 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
                   <Unlock className="w-4 h-4" />
                   {unlocking ? 'Desbloqueando...' : 'Confirmar'}
@@ -447,141 +724,6 @@ export default function AdvisorPortalPage() {
     )
   }
 
-  // ══ AUTH PAGE ══════════════════════════════════════════════════════════════
-  return (
-    <div className="min-h-screen relative flex flex-col overflow-hidden" style={{ background: 'linear-gradient(135deg, #e8f0fe 0%, #dce8fb 40%, #cfe0f8 100%)' }}>
-      <div className="absolute bottom-0 left-0 w-[500px] h-[500px] rounded-full opacity-30" style={{ background: 'radial-gradient(circle, #93c5fd 0%, #60a5fa 60%, transparent 100%)', transform: 'translate(-30%, 30%)' }} />
-      <div className="absolute top-0 right-0 w-[350px] h-[350px] rounded-full opacity-20" style={{ background: 'radial-gradient(circle, #a5b4fc 0%, transparent 70%)', transform: 'translate(30%, -30%)' }} />
-
-      <nav className="relative z-10 px-6 py-4 flex items-center gap-4">
-        <a href="/public" className="flex items-center gap-2 text-slate-600 hover:text-slate-800 transition-colors text-sm font-medium">
-          <ChevronLeft className="w-4 h-4" /> Volver al portal
-        </a>
-        <div className="flex-1" />
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-sm">
-            <Building2 className="w-4 h-4 text-white" />
-          </div>
-          <span className="font-bold text-slate-800">Portal de Asesores</span>
-        </div>
-      </nav>
-
-      <div className="relative z-10 flex-1 flex items-center justify-center px-4 py-10">
-        <div className="bg-white/90 backdrop-blur-sm rounded-3xl shadow-xl border border-white/60 w-full max-w-[540px] h-[720px] flex flex-col overflow-hidden">
-
-          {/* Tabs */}
-          <div className="flex-shrink-0 px-8 pt-8 pb-0">
-            <div className="flex gap-2 bg-slate-100 rounded-2xl p-1">
-              <button onClick={() => setAuthTab('login')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all ${authTab === 'login' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
-                <User className="w-4 h-4" /> Iniciar sesión
-              </button>
-              <button onClick={() => { setAuthTab('register'); setRegDone(false) }} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all ${authTab === 'register' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
-                <UserPlus className="w-4 h-4" /> Registrarse
-              </button>
-            </div>
-          </div>
-
-          {/* Login form */}
-          {authTab === 'login' && (
-            <form onSubmit={handleLogin} className="flex flex-col flex-1 overflow-hidden">
-              <div className="flex-1 overflow-y-auto px-8 pt-6 pb-2 space-y-4">
-                <div className="text-center mb-5">
-                  <div className="w-14 h-14 rounded-full bg-blue-100 flex items-center justify-center mx-auto mb-3"><User className="w-7 h-7 text-blue-600" /></div>
-                  <h1 className="text-2xl font-bold text-slate-800">Acceso Asesores</h1>
-                  <p className="text-sm text-slate-500 mt-1.5">Ingresa con tus credenciales para gestionar tus leads y oportunidades</p>
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">Correo electrónico</label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                    <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="tu@correo.com" required className="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">Contraseña</label>
-                  <PasswordInput value={loginPassword} onChange={setLoginPassword} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input type="checkbox" className="w-4 h-4 rounded accent-blue-600" defaultChecked />
-                    <span className="text-sm text-slate-600">Recordarme</span>
-                  </label>
-                  <button type="button" className="text-sm text-blue-600 hover:underline font-medium">¿Olvidaste tu contraseña?</button>
-                </div>
-              </div>
-              <div className="flex-shrink-0 px-8 pb-8 pt-4 space-y-3 border-t border-slate-100 bg-white/80">
-                <button type="submit" disabled={loginLoading} className="w-full py-3 rounded-xl text-white font-semibold text-sm flex items-center justify-center gap-2 transition-all hover:brightness-105 disabled:opacity-50" style={{ background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)' }}>
-                  <ArrowRight className="w-4 h-4" /> {loginLoading ? 'Ingresando...' : 'Ingresar'}
-                </button>
-                <p className="text-center text-sm text-slate-500">
-                  ¿Aún no tienes cuenta?{' '}
-                  <button type="button" onClick={() => setAuthTab('register')} className="text-blue-600 font-semibold hover:underline">Regístrate</button>
-                  {' '}para acceder al portal.
-                </p>
-              </div>
-            </form>
-          )}
-
-          {/* Register form */}
-          {authTab === 'register' && !regDone && (
-            <form onSubmit={handleRegister} className="flex flex-col flex-1 overflow-hidden">
-              <div className="flex-1 overflow-y-auto px-8 pt-6 pb-2 space-y-4">
-                <div className="text-center mb-5">
-                  <div className="w-14 h-14 rounded-full bg-blue-100 flex items-center justify-center mx-auto mb-3"><User className="w-7 h-7 text-blue-600" /></div>
-                  <h1 className="text-2xl font-bold text-slate-800">Crear cuenta</h1>
-                  <p className="text-sm text-slate-500 mt-1.5">Completa el formulario para solicitar acceso al portal de asesores</p>
-                </div>
-                {[
-                  { label: 'Nombre completo', value: regName, setter: setRegName, type: 'text', placeholder: 'Tu nombre', Icon: User },
-                  { label: 'Correo electrónico', value: regEmail, setter: setRegEmail, type: 'email', placeholder: 'tu@correo.com', Icon: Mail },
-                  { label: 'Teléfono (opcional)', value: regPhone, setter: setRegPhone, type: 'tel', placeholder: '+51 999 999 999', Icon: Phone },
-                ].map(({ label, value, setter, type, placeholder, Icon }) => (
-                  <div key={label}>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1.5">{label}</label>
-                    <div className="relative">
-                      <Icon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                      <input type={type} value={value} onChange={e => setter(e.target.value)} placeholder={placeholder} required={type !== 'tel'}
-                        className="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
-                    </div>
-                  </div>
-                ))}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">Contraseña</label>
-                  <PasswordInput value={regPassword} onChange={setRegPassword} placeholder="Mínimo 6 caracteres" />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">Confirmar contraseña</label>
-                  <PasswordInput value={regConfirm} onChange={setRegConfirm} placeholder="Repite tu contraseña" />
-                  {regConfirm && regPassword !== regConfirm && <p className="text-xs text-red-500 mt-1">Las contraseñas no coinciden</p>}
-                </div>
-              </div>
-              <div className="flex-shrink-0 px-8 pb-8 pt-4 space-y-3 border-t border-slate-100 bg-white/80">
-                <button type="submit" disabled={regLoading || (!!regConfirm && regPassword !== regConfirm)} className="w-full py-3 rounded-xl text-white font-semibold text-sm flex items-center justify-center gap-2 transition-all hover:brightness-105 disabled:opacity-50" style={{ background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)' }}>
-                  <UserPlus className="w-4 h-4" /> {regLoading ? 'Enviando...' : 'Crear cuenta'}
-                </button>
-                <p className="text-center text-sm text-slate-500">
-                  ¿Ya tienes cuenta?{' '}
-                  <button type="button" onClick={() => setAuthTab('login')} className="text-blue-600 font-semibold hover:underline">Inicia sesión</button>
-                </p>
-              </div>
-            </form>
-          )}
-
-          {/* Register success */}
-          {authTab === 'register' && regDone && (
-            <div className="flex flex-col flex-1 items-center justify-center px-8 pb-8 text-center space-y-4">
-              <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center">
-                <CheckCircle2 className="w-8 h-8 text-emerald-600" />
-              </div>
-              <h2 className="text-lg font-bold text-slate-800">¡Solicitud enviada!</h2>
-              <p className="text-sm text-slate-500">Tu cuenta está pendiente de aprobación. Un administrador te habilitará el acceso.</p>
-              <button onClick={() => { setAuthTab('login'); setRegDone(false) }} className="w-full py-3 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
-                Volver al inicio de sesión
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
+  // No advisor session → redirect to auth page
+  return <Navigate to="/advisor/auth" replace />
 }
