@@ -1650,6 +1650,12 @@ async def create_session(db: Session, site_user=None) -> tuple[WebChatSession, d
 
 async def handle_message(session_id: str, user_content: str, db: Session) -> dict:
     try:
+        # Set per-request model from DB config so claude_service picks it up
+        from app.services.claude_service import set_chat_model
+        from app.models.chat_config import ChatConfig, DEFAULT_CONFIG_ID
+        _cfg = db.query(ChatConfig).filter(ChatConfig.id == DEFAULT_CONFIG_ID).first()
+        set_chat_model((_cfg.ai_model if _cfg and _cfg.ai_model else "") )
+
         session = db.query(WebChatSession).filter(WebChatSession.id == UUID(session_id)).first()
         if not session:
             return _text("Sesión no encontrada.")

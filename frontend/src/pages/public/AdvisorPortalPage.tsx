@@ -46,6 +46,8 @@ interface CreditPackagePublic {
 interface CreditTx {
   id: string; type: string; amount: number; balance_after: number
   description: string | null; created_at: string | null
+  package_label: string | null; amount_usd: number | null
+  payment_method: string | null; payment_reference: string | null
 }
 
 const TIER_CFG: Record<string, { color: string; bg: string; border: string; Icon: typeof Flame }> = {
@@ -113,11 +115,14 @@ export default function AdvisorPortalPage() {
     fetchCredits()
     fetchCreditPackages()
 
-    // Detect return from Drons Pay checkout
+    // Detect return from checkout (Stripe or Drons Pay)
     const params = new URLSearchParams(window.location.search)
     if (params.get('payment') === 'success') {
       toast.success('¡Pago completado! Tus créditos han sido acreditados.')
       setDashTab('credits')
+      window.history.replaceState({}, '', '/asesores')
+    } else if (params.get('payment') === 'cancelled') {
+      toast.error('Pago cancelado. Puedes intentarlo de nuevo cuando quieras.')
       window.history.replaceState({}, '', '/asesores')
     }
   }, [advisor])
@@ -181,11 +186,11 @@ export default function AdvisorPortalPage() {
     } finally { setUnlocking(false) }
   }
 
-  // ── Purchase credits — redirects to Drons Pay checkout ──
-  const handlePurchase = async (pkgId: string) => {
+  // ── Purchase credits — redirects to checkout (Stripe or Drons Pay) ──
+  const handlePurchase = async (pkgId: string, provider: 'stripe' | 'drons' = 'stripe') => {
     setPurchasingPkg(pkgId)
     try {
-      const r = await API.post('/credits/purchase', { package_id: pkgId }, { headers: apiHeaders() })
+      const r = await API.post('/credits/purchase', { package_id: pkgId, provider }, { headers: apiHeaders() })
       window.location.href = r.data.checkout_url
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
@@ -598,12 +603,19 @@ export default function AdvisorPortalPage() {
                             <span className="text-sm font-medium text-slate-400 ml-1">USD</span>
                           </p>
                           <button
-                            onClick={() => handlePurchase(pkg.id)}
+                            onClick={() => handlePurchase(pkg.id, 'stripe')}
                             disabled={purchasingPkg === pkg.id}
                             className={`w-full py-2.5 rounded-xl text-sm font-bold transition-all hover:brightness-105 active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-60 ${pkg.is_highlighted ? 'bg-blue-600 text-white' : 'bg-slate-800 text-white'}`}
                           >
                             <CreditCard className="w-4 h-4" />
-                            {purchasingPkg === pkg.id ? 'Procesando...' : 'Comprar'}
+                            {purchasingPkg === pkg.id ? 'Procesando...' : 'Pagar con Stripe'}
+                          </button>
+                          <button
+                            onClick={() => handlePurchase(pkg.id, 'drons')}
+                            disabled={purchasingPkg === pkg.id}
+                            className="w-full py-2 rounded-xl text-xs font-medium text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-all disabled:opacity-60"
+                          >
+                            Usar Drons Pay (simulado)
                           </button>
                         </div>
                       </div>
@@ -630,27 +642,88 @@ export default function AdvisorPortalPage() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-slate-100 bg-slate-50 text-[11px] text-slate-400 uppercase tracking-wider">
-                          <th className="text-left px-5 py-3 font-semibold">Descripción</th>
-                          <th className="text-right px-4 py-3 font-semibold">Monto</th>
-                          <th className="text-right px-4 py-3 font-semibold">Saldo</th>
+                          <th className="text-left px-5 py-3 font-semibold">Transacción</th>
+                          <th className="text-left px-4 py-3 font-semibold hidden md:table-cell">Método</th>
+                          <th className="text-right px-4 py-3 font-semibold hidden lg:table-cell">Monto USD</th>
+                          <th className="text-right px-4 py-3 font-semibold">Créditos</th>
+                          <th className="text-right px-4 py-3 font-semibold hidden sm:table-cell">Saldo</th>
                           <th className="text-right px-5 py-3 font-semibold">Fecha</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {transactions.map(tx => (
-                          <tr key={tx.id} className="hover:bg-slate-50 transition-colors">
-                            <td className="px-5 py-3.5 text-slate-700">
-                              {tx.description || (tx.type === 'purchase' ? 'Compra de créditos' : tx.type === 'deduction' ? 'Desbloqueo de lead' : tx.type)}
-                            </td>
-                            <td className={`px-4 py-3.5 text-right font-bold ${tx.amount > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                              {tx.amount > 0 ? '+' : ''}{tx.amount} cr
-                            </td>
-                            <td className="px-4 py-3.5 text-right text-slate-500 text-xs">{tx.balance_after} cr</td>
-                            <td className="px-5 py-3.5 text-right text-slate-400 text-xs">
-                              {tx.created_at ? new Date(tx.created_at).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
-                            </td>
-                          </tr>
-                        ))}
+                        {transactions.map(tx => {
+                          const isPurchase = tx.type === 'purchase' || tx.amount > 0
+                          const isStripe = tx.payment_method === 'stripe'
+                          const isDrons = tx.payment_method === 'drons'
+                          const isAdmin = tx.payment_method === 'admin' || (tx.type === 'admin_grant')
+                          const refShort = tx.payment_reference
+                            ? (tx.payment_reference.startsWith('cs_') ? tx.payment_reference.slice(0, 18) + '…' : tx.payment_reference.slice(-8))
+                            : null
+                          const label = isPurchase
+                            ? (tx.package_label || 'Compra de créditos')
+                            : (tx.description?.replace(/^Lead desbloqueado:\s*/i, '') || 'Desbloqueo')
+                          return (
+                            <tr key={tx.id} className="hover:bg-slate-50 transition-colors">
+                              {/* Transacción */}
+                              <td className="px-5 py-3.5">
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${isPurchase ? 'bg-emerald-50' : 'bg-orange-50'}`}>
+                                    {isPurchase
+                                      ? <Coins className="w-4 h-4 text-emerald-500" />
+                                      : <Unlock className="w-4 h-4 text-orange-400" />}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <p className="font-medium text-slate-800 truncate">{label}</p>
+                                    {refShort && (
+                                      <p className="text-[10px] text-slate-400 font-mono mt-0.5">{refShort}</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                              {/* Método */}
+                              <td className="px-4 py-3.5 hidden md:table-cell">
+                                {isStripe && (
+                                  <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold bg-indigo-50 text-indigo-600 px-2.5 py-1 rounded-full">
+                                    <CreditCard className="w-3 h-3" /> Stripe
+                                  </span>
+                                )}
+                                {isDrons && (
+                                  <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold bg-slate-100 text-slate-500 px-2.5 py-1 rounded-full">
+                                    <CreditCard className="w-3 h-3" /> Drons Pay
+                                  </span>
+                                )}
+                                {isAdmin && (
+                                  <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold bg-blue-50 text-blue-500 px-2.5 py-1 rounded-full">
+                                    Admin
+                                  </span>
+                                )}
+                                {!isStripe && !isDrons && !isAdmin && (
+                                  <span className="text-slate-300 text-xs">—</span>
+                                )}
+                              </td>
+                              {/* Monto USD */}
+                              <td className="px-4 py-3.5 text-right hidden lg:table-cell">
+                                {tx.amount_usd != null
+                                  ? <span className="text-slate-700 font-medium">${tx.amount_usd.toFixed(2)}</span>
+                                  : <span className="text-slate-300 text-xs">—</span>}
+                              </td>
+                              {/* Créditos */}
+                              <td className={`px-4 py-3.5 text-right font-bold ${tx.amount > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                                {tx.amount > 0 ? '+' : ''}{tx.amount.toLocaleString()} cr
+                              </td>
+                              {/* Saldo */}
+                              <td className="px-4 py-3.5 text-right text-slate-400 text-xs hidden sm:table-cell">
+                                {tx.balance_after.toLocaleString()} cr
+                              </td>
+                              {/* Fecha */}
+                              <td className="px-5 py-3.5 text-right text-slate-400 text-xs whitespace-nowrap">
+                                {tx.created_at
+                                  ? new Date(tx.created_at).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' })
+                                  : '—'}
+                              </td>
+                            </tr>
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>

@@ -370,7 +370,7 @@ function toApi(p: PkgConfig) {
 
 function PackagesConfigTab() {
   const [basePriceValue, setBasePriceValue] = useState('0.50')
-  const [basePriceCurrency, setBasePriceCurrency] = useState('USD')
+  const basePriceCurrency = 'USD'
   const [packages, setPackages] = useState<PkgConfig[]>([])
   const [loadingPkgs, setLoadingPkgs] = useState(true)
   const [editPkg, setEditPkg] = useState<PkgConfig | null>(null)
@@ -380,7 +380,6 @@ function PackagesConfigTab() {
   useEffect(() => {
     API.get('/credits/settings').then(r => {
       setBasePriceValue(String(r.data.base_price))
-      setBasePriceCurrency(r.data.currency)
     }).catch(() => {})
     API.get('/credits/packages').then(r => {
       setPackages(r.data.map(fromApi))
@@ -450,19 +449,8 @@ function PackagesConfigTab() {
         </p>
         <div className="flex items-center gap-3 flex-wrap">
           <span className="text-sm text-slate-600 font-medium">1 crédito =</span>
-          <div className="flex gap-2">
-            {CURRENCIES_BASE.map(c => (
-              <button
-                key={c}
-                onClick={() => setBasePriceCurrency(c)}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${basePriceCurrency === c ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
-              >
-                {c}
-              </button>
-            ))}
-          </div>
           <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden">
-            <span className="px-3 py-2 bg-slate-50 text-slate-500 text-sm font-medium border-r border-slate-200">{basePriceCurrency}</span>
+            <span className="px-3 py-2 bg-slate-50 text-slate-500 text-sm font-medium border-r border-slate-200">USD</span>
             <input
               type="number" min={0} step={0.01} value={basePriceValue}
               onChange={e => setBasePriceValue(e.target.value)}

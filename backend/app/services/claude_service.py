@@ -4,7 +4,19 @@ import json
 import re
 import unicodedata
 import logging
+from contextvars import ContextVar
 from config import settings
+
+# Per-request model override — set by web_conversation.handle_message via set_chat_model()
+_chat_model_var: ContextVar[str] = ContextVar("chat_model", default="")
+
+
+def set_chat_model(model: str) -> None:
+    _chat_model_var.set(model)
+
+
+def _active_model() -> str:
+    return _chat_model_var.get() or settings.ANTHROPIC_MODEL
 from app.services.chatbot_intents.types import (
     AJUSTAR_CRITERIOS_BUSQUEDA,
     CALIFICAR_PROPIEDAD,
@@ -31,15 +43,76 @@ def _norm(s: str) -> str:
     )
 
 logger = logging.getLogger(__name__)
-_client = None
+_anthropic_client = None
+_openai_client = None
 
 
-def _get_client():
-    global _client
-    if _client is None:
+def _is_openai(model: str) -> bool:
+    return model.startswith(("gpt-", "o1", "o3", "o4"))
+
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
         from anthropic import Anthropic
-        _client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-    return _client
+        _anthropic_client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    return _anthropic_client
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+        _openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    return _openai_client
+
+
+class _OpenAITextContent:
+    """Mimics Anthropic's response.content[0].text so call sites need no changes."""
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _OpenAIResponse:
+    """Mimics Anthropic's response.content[0] shape."""
+    def __init__(self, text: str):
+        self.content = [_OpenAITextContent(text)]
+
+
+class _UnifiedMessages:
+    """Routes .create() to Anthropic or OpenAI based on the active model."""
+
+    def create(self, model: str, max_tokens: int, system: str, messages: list, **kwargs):
+        if _is_openai(model):
+            full_messages = [{"role": "system", "content": system}] + messages
+            response = _get_openai_client().chat.completions.create(
+                model=model,
+                messages=full_messages,
+                max_tokens=max_tokens,
+            )
+            text = response.choices[0].message.content or ""
+            return _OpenAIResponse(text)
+        else:
+            return _get_anthropic_client().messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+                **kwargs,
+            )
+
+
+class _UnifiedClient:
+    def __init__(self):
+        self.messages = _UnifiedMessages()
+
+
+_unified_client = _UnifiedClient()
+
+
+def _get_client() -> _UnifiedClient:
+    """Returns a unified client that works for both Anthropic and OpenAI models."""
+    return _unified_client
 
 
 # â”€â”€ Regex-based fallbacks (used when Claude is unavailable) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -165,7 +238,7 @@ async def extract_user_field(step: int, raw: str) -> str:
     }
     try:
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=60,
             system=instructions[step],
             messages=[{"role": "user", "content": raw}],
@@ -237,7 +310,7 @@ async def extract_contact_fields(raw: str) -> dict:
     """Extract possible lead contact fields from a mixed free-text message."""
     try:
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=200,
             system=_CONTACT_SYSTEM,
             messages=[{"role": "user", "content": raw}],
@@ -356,7 +429,7 @@ async def generate_quick_replies(
             "has_saved_criteria": has_saved_criteria,
         }
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=220,
             system=_QUICK_REPLIES_SYSTEM,
             messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
@@ -496,7 +569,7 @@ async def rank_intents(
             "candidates": candidates,
         }
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=240,
             system=_INTENT_RANKING_SYSTEM,
             messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
@@ -666,7 +739,7 @@ async def extract_criteria(description: str) -> dict:
     """Extract structured property criteria from a natural language description."""
     try:
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=600,
             system=_CRITERIA_SYSTEM,
             messages=[{"role": "user", "content": description}],
@@ -728,7 +801,7 @@ async def rerank_properties(
 
     try:
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=200,
             system=(
                 "Eres un experto inmobiliario. Ordena propiedades por relevancia "
@@ -1005,7 +1078,7 @@ async def extract_rating_feedback_criteria(feedback: str, rating: int, property_
 
     try:
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=300,
             system=_RATING_FEEDBACK_SYSTEM,
             messages=[{"role": "user", "content": user_prompt}],
@@ -1058,7 +1131,7 @@ async def generate_contextual_response(
     )
     try:
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=120,
             system=_CONTEXTUAL_FALLBACK_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
@@ -1089,7 +1162,7 @@ async def generate_criteria_acknowledgment(user_text: str) -> str:
     """Generate a short Spanish confirmation that the user's criteria adjustment was understood."""
     try:
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=60,
             system=_CRITERIA_ACK_SYSTEM,
             messages=[{"role": "user", "content": f'El usuario dijo: "{user_text}"'}],
@@ -1125,7 +1198,7 @@ async def generate_returning_user_greeting(user_name: str, summary: str) -> str:
     )
     try:
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=150,
             system=_RETURNING_USER_GREETING_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
@@ -1159,7 +1232,7 @@ def normalize_nearby_places_sync(items: list[dict]) -> list[dict]:
         return items
     try:
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=400,
             system=_NORMALIZE_NEARBY_SYSTEM,
             messages=[{"role": "user", "content": json.dumps(items, ensure_ascii=False)}],
@@ -1233,7 +1306,7 @@ async def generate_search_intro(
 
     try:
         response = _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=_active_model(),
             max_tokens=120,
             system=_SEARCH_INTRO_SYSTEM,
             messages=[{"role": "user", "content": prompt}],

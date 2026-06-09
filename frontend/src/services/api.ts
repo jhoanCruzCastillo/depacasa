@@ -172,7 +172,10 @@ export const updateChatConfig = (data: {
   contact_message?: string
   no_results_message?: string
   no_more_message?: string
+  ai_model?: string
 }) => API.put('/chat/config', data)
+export const testAIModel = (model: string, prompt?: string) =>
+  API.post('/chat/config/test-ai', { model, prompt })
 
 // ── Web Chatbot ───────────────────────────────────────────────────────────────
 

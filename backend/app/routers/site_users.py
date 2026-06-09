@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Literal
@@ -184,7 +184,7 @@ def _load_doc_flags(user_ids: list, db: Session) -> dict:
         flags[site_user_id]["has_uploaded_documents"] = True
         kind = (document_kind or "").strip().lower()
         url = (document_url or "").strip().lower()
-        if kind in {"financial_capacity", "financial", "financial_doc"} or "financial" in url:
+        if kind in {"financial_capacity", "financial", "financial_doc", "document"} or "financial" in url:
             flags[site_user_id]["has_financial_document"] = True
 
     unresolved_ids = [
@@ -193,12 +193,14 @@ def _load_doc_flags(user_ids: list, db: Session) -> dict:
     ]
     if unresolved_ids:
         sessions = (
-            db.query(WebChatSession.site_user_id, WebChatSession.extracted_criteria)
+            db.query(WebChatSession.id, WebChatSession.site_user_id, WebChatSession.extracted_criteria)
             .filter(WebChatSession.site_user_id.in_(unresolved_ids))
             .order_by(WebChatSession.updated_at.desc().nullslast(), WebChatSession.created_at.desc())
             .all()
         )
-        for site_user_id, extracted_criteria in sessions:
+        session_id_to_user: dict = {}
+        for session_id, site_user_id, extracted_criteria in sessions:
+            session_id_to_user[session_id] = site_user_id
             if site_user_id not in flags:
                 continue
             criteria = extracted_criteria if isinstance(extracted_criteria, dict) else {}
@@ -208,6 +210,27 @@ def _load_doc_flags(user_ids: list, db: Session) -> dict:
                 flags[site_user_id]["has_uploaded_documents"] = True
             if has_financial:
                 flags[site_user_id]["has_financial_document"] = True
+
+        # Also catch documents uploaded with site_user_id=NULL but belonging to a linked session
+        unlinked_session_ids = list(session_id_to_user.keys())
+        if unlinked_session_ids:
+            session_docs = (
+                db.query(UserDocument.session_id, UserDocument.document_kind, UserDocument.document_url)
+                .filter(
+                    UserDocument.session_id.in_(unlinked_session_ids),
+                    UserDocument.site_user_id.is_(None),
+                )
+                .all()
+            )
+            for session_id, document_kind, document_url in session_docs:
+                site_user_id = session_id_to_user.get(session_id)
+                if site_user_id not in flags:
+                    continue
+                flags[site_user_id]["has_uploaded_documents"] = True
+                kind = (document_kind or "").strip().lower()
+                url = (document_url or "").strip().lower()
+                if kind in {"financial_capacity", "financial", "financial_doc", "document"} or "financial" in url:
+                    flags[site_user_id]["has_financial_document"] = True
 
     return flags
 
@@ -467,7 +490,31 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
 
     lead_document = _clean_text(lead_data.get("document_number"))
     financial_doc = _clean_text(lead_data.get("financial_capacity_doc"))
-    has_docs = bool(lead_document or financial_doc)
+
+    # Also load documents from UserDocument table (uploaded via chatbot attachment).
+    # Match by site_user_id OR by session_id to catch docs uploaded before the
+    # session was linked to a registered user.
+    session_ids = [s.id for s in sessions]
+    doc_filters = [UserDocument.site_user_id == user_id]
+    if session_ids:
+        doc_filters.append(UserDocument.session_id.in_(session_ids))
+    user_uploaded_docs = (
+        db.query(UserDocument)
+        .filter(or_(*doc_filters))
+        .order_by(UserDocument.uploaded_at.desc())
+        .all()
+    )
+
+    # If no financial doc from lead data, fall back to most recent uploaded document
+    if not financial_doc:
+        for ud in user_uploaded_docs:
+            if ud.document_kind == "document":
+                financial_doc = ud.document_url
+                break
+        if not financial_doc and user_uploaded_docs:
+            financial_doc = user_uploaded_docs[0].document_url
+
+    has_docs = bool(lead_document or financial_doc or user_uploaded_docs)
     has_financial = bool(financial_doc)
 
     score = compute_score(u, pref, interactions, sessions, load_scoring_config(db))
@@ -491,6 +538,17 @@ def get_user_profile(user_id: UUID, db: Session = Depends(get_db)):
             "identity_document": lead_document,
             "financial_capacity_doc_url": financial_doc,
             "financial_capacity_doc_kind": _guess_doc_kind(financial_doc),
+            "uploaded_files": [
+                {
+                    "id": str(ud.id),
+                    "url": ud.document_url,
+                    "kind": ud.document_kind,
+                    "original_filename": ud.original_filename,
+                    "mime_type": ud.mime_type,
+                    "uploaded_at": ud.uploaded_at.isoformat() if ud.uploaded_at else None,
+                }
+                for ud in user_uploaded_docs
+            ],
         },
         "preferences": {
             "direccion":            pref.direccion if pref else None,
