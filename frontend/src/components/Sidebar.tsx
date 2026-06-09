@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   Building2, LayoutTemplate, Users,
-  Settings, UserCheck, Globe, Sliders, Award,
+  Settings, UserCheck, Globe, Sliders, Award, UserCircle,
 } from 'lucide-react'
 import API from '../services/api'
 
@@ -125,6 +125,24 @@ export default function Sidebar() {
             <SectionLink key={item.to} item={item} activeColor="bg-green-600/20 text-green-400" />
           ))}
         </div>
+
+        {/* CUENTA */}
+        <p className="px-3 pt-4 pb-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
+          Cuenta
+        </p>
+        <NavLink
+          to="/admin/profile"
+          className={({ isActive }) =>
+            `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+              isActive
+                ? 'bg-blue-600/20 text-blue-400 ring-1 ring-blue-600/20'
+                : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
+            }`
+          }
+        >
+          <UserCircle className="w-4 h-4 flex-shrink-0" />
+          Perfil y Seguridad
+        </NavLink>
       </nav>
 
       {/* System status */}

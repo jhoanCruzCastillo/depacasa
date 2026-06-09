@@ -5,7 +5,9 @@ import {
   faXmark, faUser, faPhone, faCommentDots, faGlobe, faBell,
   faLocationDot, faMapPin, faBed, faBath, faRulerCombined,
   faCoins, faBuilding, faCheck, faSpinner, faFloppyDisk,
+  faStar, faHeart, faEye, faClockRotateLeft,
 } from '@fortawesome/free-solid-svg-icons'
+import { faStar as faStarOutline } from '@fortawesome/free-regular-svg-icons'
 import API from '../services/api'
 import type { SiteUser } from '../hooks/useAuth'
 import toast from 'react-hot-toast'
@@ -80,7 +82,29 @@ const parseNum = (s: string): number | null => {
   return !isNaN(n) && n > 0 ? n : null
 }
 
-type Tab = 'info' | 'preferences'
+type Tab = 'info' | 'preferences' | 'history'
+
+interface HistoryItem {
+  record_id: string
+  seen_in_chat: boolean
+  rating: number | null
+  interested: boolean
+  comment: string | null
+  seen_at: string | null
+  rated_at: string | null
+  created_at: string | null
+  property: {
+    id: string
+    modelo: string
+    dormitorios: string | null
+    baños: string | null
+    m2: string | null
+    imagen: string | null
+    precio: string | null
+    proyecto_nombre: string | null
+    ubicacion: string | null
+  }
+}
 
 // ─── PriorityPill ─────────────────────────────────────────────────────────────
 
@@ -238,10 +262,11 @@ interface Props {
   primaryColor: string
   onClose: () => void
   onUserUpdated: (u: SiteUser) => void
+  initialTab?: Tab
 }
 
-export default function UserProfileModal({ user, token, primaryColor, onClose, onUserUpdated }: Props) {
-  const [tab, setTab] = useState<Tab>('info')
+export default function UserProfileModal({ user, token, primaryColor, onClose, onUserUpdated, initialTab }: Props) {
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'info')
   const [savingInfo, setSavingInfo] = useState(false)
   const [savingPrefs, setSavingPrefs] = useState(false)
   const [loadingPrefs, setLoadingPrefs] = useState(true)
@@ -256,6 +281,8 @@ export default function UserProfileModal({ user, token, primaryColor, onClose, o
   })
 
   const [prefs, setPrefs] = useState<Preferences>(EMPTY_PREFS)
+  const [history, setHistory] = useState<HistoryItem[]>([])
+  const [loadingHistory, setLoadingHistory] = useState(false)
 
   // Lock background scroll while modal is open
   useEffect(() => {
@@ -272,6 +299,15 @@ export default function UserProfileModal({ user, token, primaryColor, onClose, o
       .catch(() => toast.error('No se pudieron cargar las preferencias'))
       .finally(() => setLoadingPrefs(false))
   }, [token])
+
+  useEffect(() => {
+    if (tab !== 'history' || history.length > 0) return
+    setLoadingHistory(true)
+    API.get('/auth/me/history', { headers: headersRef.current })
+      .then(r => setHistory(r.data.items ?? []))
+      .catch(() => toast.error('No se pudo cargar el historial'))
+      .finally(() => setLoadingHistory(false))
+  }, [tab])
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -319,7 +355,18 @@ export default function UserProfileModal({ user, token, primaryColor, onClose, o
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: 'info', label: 'Mi información' },
     { id: 'preferences', label: 'Mis preferencias' },
+    { id: 'history', label: 'Historial' },
   ]
+
+  const MEDIA_BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api').replace(/\/api\/?$/, '')
+  const IMG_EXT = /\.(jpg|jpeg|png|webp|gif|avif|bmp|svg)(\?.*)?$/i
+  const HTTP = /^https?:\/\//
+  const resolveImg = (src: string | null | undefined) => {
+    if (!src) return null
+    if (HTTP.test(src)) return src
+    if (IMG_EXT.test(src)) return `${MEDIA_BASE}/media/${src}`
+    return null
+  }
 
   return (
     <AnimatePresence>
@@ -587,6 +634,113 @@ export default function UserProfileModal({ user, token, primaryColor, onClose, o
                 </motion.div>
               )}
 
+              {tab === 'history' && (
+                <motion.div
+                  key="history"
+                  initial={{ opacity: 0, x: 16 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -16 }}
+                  transition={{ duration: 0.18 }}
+                  className="p-5 space-y-3"
+                >
+                  {loadingHistory ? (
+                    <div className="flex items-center justify-center py-16 gap-2 text-slate-400 text-sm">
+                      <FontAwesomeIcon icon={faSpinner} className="animate-spin" /> Cargando historial…
+                    </div>
+                  ) : history.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+                      <FontAwesomeIcon icon={faClockRotateLeft} className="w-10 h-10 text-slate-200" />
+                      <p className="text-slate-400 text-sm font-medium">Sin historial aún</p>
+                      <p className="text-slate-300 text-xs">Las propiedades que veas en el chatbot aparecerán aquí.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {history.map(item => {
+                        const img = resolveImg(item.property.imagen)
+                        return (
+                          <div key={item.record_id} className="flex gap-3 bg-slate-50 rounded-xl p-3 border border-slate-100">
+                            {/* Imagen */}
+                            <div className="w-16 h-16 rounded-lg overflow-hidden flex-shrink-0 bg-slate-200">
+                              {img
+                                ? <img src={img} alt="" className="w-full h-full object-cover" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                                : <div className="w-full h-full flex items-center justify-center"><FontAwesomeIcon icon={faBuilding} className="text-slate-300 text-xl" /></div>}
+                            </div>
+
+                            {/* Info */}
+                            <div className="flex-1 min-w-0 space-y-1">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="font-semibold text-slate-800 text-sm truncate">{item.property.modelo}</p>
+                                  {item.property.proyecto_nombre && (
+                                    <p className="text-xs text-slate-400 truncate">{item.property.proyecto_nombre}</p>
+                                  )}
+                                </div>
+                                {item.interested && (
+                                  <span className="flex-shrink-0 inline-flex items-center gap-1 text-[10px] font-bold bg-rose-100 text-rose-500 px-2 py-0.5 rounded-full">
+                                    <FontAwesomeIcon icon={faHeart} className="w-2.5 h-2.5" /> Me interesa
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-3 text-xs text-slate-400 flex-wrap">
+                                {item.property.dormitorios && (
+                                  <span className="flex items-center gap-1">
+                                    <FontAwesomeIcon icon={faBed} className="w-3 h-3" />{item.property.dormitorios}
+                                  </span>
+                                )}
+                                {item.property.m2 && (
+                                  <span className="flex items-center gap-1">
+                                    <FontAwesomeIcon icon={faRulerCombined} className="w-3 h-3" />{item.property.m2} m²
+                                  </span>
+                                )}
+                                {item.property.ubicacion && (
+                                  <span className="flex items-center gap-1">
+                                    <FontAwesomeIcon icon={faLocationDot} className="w-3 h-3" />{item.property.ubicacion}
+                                  </span>
+                                )}
+                                {item.property.precio && (
+                                  <span className="flex items-center gap-1 text-emerald-600 font-medium">
+                                    <FontAwesomeIcon icon={faCoins} className="w-3 h-3" />{item.property.precio}
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Calificación */}
+                              <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-0.5">
+                                  {[1, 2, 3, 4, 5].map(star => (
+                                    <FontAwesomeIcon
+                                      key={star}
+                                      icon={item.rating && star <= item.rating ? faStar : faStarOutline}
+                                      className={`w-3 h-3 ${item.rating && star <= item.rating ? 'text-amber-400' : 'text-slate-300'}`}
+                                    />
+                                  ))}
+                                </div>
+                                {item.rating
+                                  ? <span className="text-[10px] text-slate-400">{item.rating}/5</span>
+                                  : <span className="text-[10px] text-slate-300 italic">Sin calificar</span>}
+                                {item.seen_at && (
+                                  <span className="ml-auto text-[10px] text-slate-300 flex items-center gap-1">
+                                    <FontAwesomeIcon icon={faEye} className="w-2.5 h-2.5" />
+                                    {new Date(item.seen_at).toLocaleDateString('es-PE', { day: '2-digit', month: 'short' })}
+                                  </span>
+                                )}
+                              </div>
+
+                              {item.comment && (
+                                <p className="text-[11px] text-slate-500 italic bg-white rounded-lg px-2 py-1 border border-slate-100">
+                                  "{item.comment}"
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </motion.div>
+              )}
+
             </AnimatePresence>
           </div>
 
@@ -603,6 +757,13 @@ export default function UserProfileModal({ user, token, primaryColor, onClose, o
                   ? <><FontAwesomeIcon icon={faSpinner} className="animate-spin" /> Guardando…</>
                   : <><FontAwesomeIcon icon={faFloppyDisk} /> Guardar información</>
                 }
+              </button>
+            ) : tab === 'history' ? (
+              <button
+                onClick={onClose}
+                className="w-full py-3 rounded-xl text-sm font-bold border border-slate-200 text-slate-500 hover:bg-slate-50 transition-colors"
+              >
+                Cerrar
               </button>
             ) : (
               <button

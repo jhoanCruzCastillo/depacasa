@@ -9,6 +9,7 @@ import LeadScoringPage from './pages/chat/LeadScoringPage'
 import ChatAdvisorsPage from './pages/chat/ChatAdvisorsPage'
 import ChatConfigPage from './pages/chat/ChatConfigPage'
 import SiteBuilderPage from './pages/site-builder/SiteBuilderPage'
+import AdminProfilePage from './pages/admin/AdminProfilePage'
 import PublicSitePage from './pages/public/PublicSitePage'
 import AdvisorPortalPage from './pages/public/AdvisorPortalPage'
 import DronsPayPage from './pages/public/DronsPayPage'
@@ -55,6 +56,8 @@ function App() {
               <Route path="/leads/config" element={<ChatConfigPage />} />
               {/* Site Builder */}
               <Route path="/site-builder" element={<SiteBuilderPage />} />
+              {/* Admin profile */}
+              <Route path="/admin/profile" element={<AdminProfilePage />} />
               <Route path="*" element={<Navigate to="/developers" replace />} />
             </Routes>
           </Layout>

@@ -8,6 +8,9 @@ from uuid import UUID
 
 from database import get_db
 from app.models.site_user import SiteUser
+from app.models.user_property_interaction import UserPropertyInteraction
+from app.models.propiedad import Propiedad
+from app.models.proyecto import Proyecto
 from app.services.auth_service import hash_password, verify_password, create_token, decode_token
 from app.services.email_service import send_welcome
 from app.services.notification_service import create_notification
@@ -131,6 +134,77 @@ def me(request: Request, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=401, detail="No autenticado.")
     return _user_out(user)
+
+
+@router.get("/me/history")
+def me_history(request: Request, db: Session = Depends(get_db)):
+    user = get_optional_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="No autenticado.")
+
+    interactions = (
+        db.query(UserPropertyInteraction)
+        .filter(UserPropertyInteraction.site_user_id == user.id)
+        .order_by(UserPropertyInteraction.updated_at.desc().nullslast(),
+                  UserPropertyInteraction.created_at.desc())
+        .limit(100)
+        .all()
+    )
+
+    record_ids = [i.record_id for i in interactions]
+    props = {p.id: p for p in db.query(Propiedad).filter(Propiedad.id.in_(record_ids)).all()}
+    proyecto_ids = {p.proyecto_id for p in props.values() if p.proyecto_id}
+    proyectos = {p.id: p for p in db.query(Proyecto).filter(Proyecto.id.in_(proyecto_ids)).all()}
+
+    items = []
+    for ix in interactions:
+        prop = props.get(ix.record_id)
+        if not prop:
+            continue
+        data = prop.to_data()
+        proyecto = proyectos.get(prop.proyecto_id) if prop.proyecto_id else None
+        items.append({
+            "record_id": str(ix.record_id),
+            "seen_in_chat": ix.seen_in_chat,
+            "rating": ix.rating,
+            "interested": ix.interested,
+            "comment": ix.comment,
+            "seen_at": ix.seen_at.isoformat() if ix.seen_at else None,
+            "rated_at": ix.rated_at.isoformat() if ix.rated_at else None,
+            "created_at": ix.created_at.isoformat() if ix.created_at else None,
+            "property": {
+                "id": str(prop.id),
+                "modelo": data.get("modelo") or data.get("tipo") or "Propiedad",
+                "dormitorios": prop.dormitorios or data.get("dormitorios"),
+                "baños": prop.baños or data.get("baños"),
+                "m2": prop.m2 or data.get("m2"),
+                "imagen": prop.imagen_modelo or prop.modelo_imagen or data.get("imagen"),
+                "precio": data.get("precio") or data.get("precio_desde"),
+                "proyecto_nombre": proyecto.nombre if proyecto else data.get("proyecto"),
+                "ubicacion": data.get("ubicacion") or data.get("distrito"),
+            },
+        })
+
+    return {"items": items, "total": len(items)}
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.put("/me/password")
+def change_password(body: ChangePasswordIn, request: Request, db: Session = Depends(get_db)):
+    user = get_optional_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="No autenticado.")
+    if not verify_password(body.current_password, user.password_hash or ""):
+        raise HTTPException(status_code=400, detail="Contraseña actual incorrecta.")
+    if len(body.new_password) < 6:
+        raise HTTPException(status_code=400, detail="La nueva contraseña debe tener al menos 6 caracteres.")
+    user.password_hash = hash_password(body.new_password)
+    db.commit()
+    return {"ok": True}
 
 
 @router.put("/me")

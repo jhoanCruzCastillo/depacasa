@@ -177,11 +177,17 @@ export default function TopBar() {
               <p className="text-xs text-gray-400 mt-0.5 truncate">{adminEmail}</p>
             </div>
             <div className="py-1">
-              <button className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors text-left">
+              <button
+                onClick={() => { setShowUser(false); navigate('/admin/profile') }}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors text-left"
+              >
                 <User className="w-4 h-4 text-gray-400 flex-shrink-0" />
                 Perfil
               </button>
-              <button className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors text-left">
+              <button
+                onClick={() => { setShowUser(false); navigate('/admin/profile#security') }}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors text-left"
+              >
                 <Shield className="w-4 h-4 text-gray-400 flex-shrink-0" />
                 Seguridad
               </button>

@@ -216,6 +216,12 @@ export const authLogin = (email: string, password: string) =>
   API.post('/auth/login', { email, password })
 export const authMe = (token: string) =>
   API.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+export const authAdminMe = (token: string) =>
+  API.get('/auth/admin/me', { headers: { Authorization: `Bearer ${token}` } })
+export const updateAdminProfile = (token: string, data: { name?: string; phone?: string; country?: string; whatsapp?: string }) =>
+  API.put('/auth/me', data, { headers: { Authorization: `Bearer ${token}` } })
+export const changeAdminPassword = (token: string, current_password: string, new_password: string) =>
+  API.put('/auth/me/password', { current_password, new_password }, { headers: { Authorization: `Bearer ${token}` } })
 
 // ── Admin Notifications ───────────────────────────────────────────────────────
 

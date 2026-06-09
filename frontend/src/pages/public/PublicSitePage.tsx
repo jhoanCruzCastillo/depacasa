@@ -953,6 +953,7 @@ export default function PublicSitePage() {
   const { user, token, logout, refresh, updateUser } = useAuth()
   const [showAuth, setShowAuth] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
+  const [profileInitialTab, setProfileInitialTab] = useState<'info' | 'preferences' | 'history'>('info')
   const [showDropdown, setShowDropdown] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const [authTab, setAuthTab] = useState<'login' | 'register'>('login')
@@ -1115,7 +1116,10 @@ export default function PublicSitePage() {
             </a>
             {/* Favoritos */}
             {user && (
-              <button className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors">
+              <button
+                onClick={() => { setProfileInitialTab('history'); setShowProfile(true) }}
+                className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors"
+              >
                 <FontAwesomeIcon icon={faHeart} className="text-slate-400 text-sm" />
                 <span>Favoritos</span>
               </button>
@@ -1147,7 +1151,7 @@ export default function PublicSitePage() {
                 {showDropdown && (
                   <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-lg border border-slate-100 overflow-hidden z-50 animate-[fadeInDown_0.15s_ease]">
                     <button
-                      onClick={() => { setShowDropdown(false); setShowProfile(true) }}
+                      onClick={() => { setShowDropdown(false); setProfileInitialTab('info'); setShowProfile(true) }}
                       className="w-full flex items-center gap-3 px-4 py-3 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
                     >
                       <FontAwesomeIcon icon={faUser} className="w-4 text-slate-400" />
@@ -1389,6 +1393,7 @@ export default function PublicSitePage() {
           primaryColor={config.primary_color}
           onClose={() => setShowProfile(false)}
           onUserUpdated={u => { updateUser(u) }}
+          initialTab={profileInitialTab}
         />
       )}
 
