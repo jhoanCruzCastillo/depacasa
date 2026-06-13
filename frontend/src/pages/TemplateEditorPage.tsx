@@ -19,7 +19,7 @@ import toast from 'react-hot-toast'
 import Modal from '../components/ui/Modal'
 import ScrapeProgress from '../components/scrape/ScrapeProgress'
 import Badge from '../components/ui/Badge'
-import VisualSelectorModal from '../components/visual-selector/VisualSelectorModal'
+import VisualSelectorModal, { type VisualSelectorPayload } from '../components/visual-selector/VisualSelectorModal'
 import { Developer, ScrapeJob, ScrapedRecord } from '../types'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -165,25 +165,47 @@ export default function TemplateEditorPage() {
     setSelectorOpen(true)
   }
 
-  const applyVisualFields = (payload: { cardSelector?: string; fields: Array<{ name: string; selector: string; type: string }> }) => {
-    if (!selectorNodeId) return
-    const cardSelector = payload.cardSelector?.trim() || ''
-    const newFields = payload.fields
-      .filter(field => field.selector?.trim())
-      .map((field, index) => ({
+  const toNodeFields = (fields: VisualSelectorPayload['fields']) =>
+    fields
+      .filter(f => f.selector?.trim())
+      .map((f, index) => ({
         id: uid(),
-        name: (field.name?.trim() || `campo_${index + 1}`).toLowerCase(),
-        is_child_url: field.type === 'url',
+        name: (f.name?.trim() || `campo_${index + 1}`).toLowerCase(),
+        is_child_url: f.type === 'url',
         plain_text: false,
         is_shared: false,
         is_list: false,
         list_container: '',
-        is_image: false,
+        is_image: f.type === 'image',
         extract_attr: '',
         order: index,
-        selectors: [field.selector.trim()].map((value, order) => ({ id: uid(), value, order })),
+        selectors: [f.selector.trim()].map((value, order) => ({ id: uid(), value, order })),
       }))
-    updateNode(selectorNodeId, { container_selector: cardSelector, fields: newFields })
+
+  const applyVisualFields = (payload: VisualSelectorPayload) => {
+    if (!selectorNodeId) return
+
+    // Apply listing fields to the selected node
+    updateNode(selectorNodeId, {
+      container_selector: payload.cardSelector?.trim() || '',
+      fields: toNodeFields(payload.fields),
+    })
+
+    // If detail fields were defined, create a child node for them
+    if (payload.detailFields?.length) {
+      const childId = uid()
+      const siblings = nodes.filter(n => n.parent_client_id === selectorNodeId)
+      const newChild: NodeDraft = {
+        client_id: childId,
+        parent_client_id: selectorNodeId,
+        name: 'Detalle',
+        url: '',
+        container_selector: payload.detailContainerSelector?.trim() || '',
+        order: siblings.length,
+        fields: toNodeFields(payload.detailFields),
+      }
+      setNodes(prev => [...prev, newChild])
+    }
   }
 
   const normalizeNodes = (raw: NodeDraft[]) =>
