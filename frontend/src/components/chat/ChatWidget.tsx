@@ -542,6 +542,7 @@ export default function ChatWidget({
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [initializing, setInitializing] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [state, setState] = useState('collecting_info')
   const [showRegBanner, setShowRegBanner] = useState(false)
@@ -571,6 +572,7 @@ export default function ChatWidget({
 
   const startSession = async () => {
     if (sessionId) return
+    setInitializing(true)
     try {
       const res = await createWebChatSession(token)
       setSessionId(res.data.session_id)
@@ -578,6 +580,8 @@ export default function ChatWidget({
       setMessages([{ role: 'assistant', content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }])
     } catch {
       setMessages([{ role: 'assistant', content: 'Error al iniciar la sesión. Recarga la página.', card: null, quick_replies: [] }])
+    } finally {
+      setInitializing(false)
     }
   }
 
@@ -591,11 +595,17 @@ export default function ChatWidget({
     if (!sessionId || loading || uploading) return
     setLoading(true)
     try {
-      const res = await sendWebChatMessage(sessionId, payload)
+      const res = await sendWebChatMessage(sessionId, payload, token)
       setMessages(m => {
-        const next = [...m, { role: 'assistant' as const, content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }]
+        const preludes: Message[] = (res.data.prelude_messages || []).map((content: string) => ({
+          role: 'assistant' as const,
+          content,
+          card: null,
+          quick_replies: [],
+        }))
+        const main: Message = { role: 'assistant', content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }
         if (res.data.card && !user && !showRegBanner) setShowRegBanner(true)
-        return next
+        return [...m, ...preludes, main]
       })
       setState(res.data.state)
     } catch {
@@ -756,6 +766,19 @@ export default function ChatWidget({
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0 bg-slate-50">
+            {/* Session init spinner */}
+            {initializing && messages.length === 0 && (
+              <div className="flex flex-col items-center justify-center gap-3 py-16">
+                <div
+                  className="w-9 h-9 rounded-full border-4 animate-spin"
+                  style={{
+                    borderColor: `${primaryColor}25`,
+                    borderTopColor: primaryColor,
+                  }}
+                />
+                <p className="text-xs text-slate-400">Iniciando conversación...</p>
+              </div>
+            )}
             {messages.map((msg, i) => (
               <div key={i} className="space-y-2">
                 {msg.role === 'user' ? (

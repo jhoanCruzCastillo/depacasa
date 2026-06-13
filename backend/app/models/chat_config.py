@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, DateTime, Text
+from sqlalchemy import Column, Integer, DateTime, Text, String
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -43,4 +43,5 @@ class ChatConfig(Base):
     contact_message = Column(Text, default=_DEFAULT_CONTACT)
     no_results_message = Column(Text, default=_DEFAULT_NO_RESULTS)
     no_more_message = Column(Text, default=_DEFAULT_NO_MORE)
+    ai_model = Column(String(100), default="claude-sonnet-4-6", nullable=False, server_default="claude-sonnet-4-6")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

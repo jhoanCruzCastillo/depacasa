@@ -12,6 +12,7 @@ class DeveloperCreate(BaseModel):
     description: Optional[str] = Field(None, max_length=1000)
     base_url: str = Field(..., max_length=2000)
     logo_url: Optional[str] = Field(None, max_length=2000)
+    proyectos_url: Optional[str] = Field(None, max_length=2000)
     source: DeveloperSource = DeveloperSource.MANUAL
 
 
@@ -21,6 +22,7 @@ class DeveloperUpdate(BaseModel):
     description: Optional[str] = Field(None, max_length=1000)
     base_url: Optional[str] = Field(None, max_length=2000)
     logo_url: Optional[str] = Field(None, max_length=2000)
+    proyectos_url: Optional[str] = Field(None, max_length=2000)
 
 
 class DeveloperResponse(BaseModel):
@@ -30,6 +32,7 @@ class DeveloperResponse(BaseModel):
     description: Optional[str]
     base_url: str
     logo_url: Optional[str]
+    proyectos_url: Optional[str]
     source: DeveloperSource
     created_at: datetime
 

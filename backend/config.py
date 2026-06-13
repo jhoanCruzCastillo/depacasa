@@ -47,6 +47,19 @@ class Settings(BaseSettings):
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
     FROM_EMAIL: str = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
 
+    # Google Maps
+    GOOGLE_MAPS_API_KEY: str = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    VITE_GOOGLE_MAPS_API_KEY: str = os.getenv("VITE_GOOGLE_MAPS_API_KEY", "")
+
+    # OpenAI
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+
+    # Stripe
+    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
+    STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
+    STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
     # CORS
     CORS_ORIGINS: list = ["http://localhost:5173", "http://localhost:3000"]
     

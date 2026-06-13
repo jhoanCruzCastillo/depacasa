@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+import re
+
+_UUID_QUICK = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
 from app.services.chatbot_intents.ajustar_criterios_busqueda import handle as handle_ajustar
+from app.services.chatbot_intents.filtro_exacto_propiedades import handle as handle_filtro_exacto
 from app.services.chatbot_intents.calificar_propiedad import handle as handle_calificar
 from app.services.chatbot_intents.capturar_datos_contacto import handle as handle_capturar_contacto
 from app.services.chatbot_intents.capturar_sustento_financiero import handle as handle_capturar_sustento
@@ -15,6 +23,7 @@ from app.services.chatbot_intents.fallback_no_entendido import handle as handle_
 from app.services.chatbot_intents.inicio_busqueda import handle as handle_inicio_busqueda
 from app.services.chatbot_intents.marcar_interes_lo_quiero import handle as handle_marcar_interes
 from app.services.chatbot_intents.types import (
+    FILTRO_EXACTO_PROPIEDADES,
     AJUSTAR_CRITERIOS_BUSQUEDA,
     CALIFICAR_PROPIEDAD,
     CAPTURAR_DATOS_CONTACTO,
@@ -36,6 +45,7 @@ from app.services.chatbot_intents.ver_siguiente_propiedad import handle as handl
 
 
 _REGISTRY = {
+    FILTRO_EXACTO_PROPIEDADES: handle_filtro_exacto,
     INICIO_BUSQUEDA: handle_inicio_busqueda,
     CONTINUAR_CON_CONTEXTO: handle_continuar_contexto,
     VER_PROPIEDADES_NUEVAS_NO_VISTAS: handle_ver_nuevas,
@@ -58,6 +68,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
     if state == "collecting_info":
         if step == 8:
             return [
+                FILTRO_EXACTO_PROPIEDADES,
                 CONTINUAR_CON_CONTEXTO,
                 AJUSTAR_CRITERIOS_BUSQUEDA,
                 VER_PROPIEDADES_NUEVAS_NO_VISTAS,
@@ -68,6 +79,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
             ]
         if step == 6:
             return [
+                FILTRO_EXACTO_PROPIEDADES,
                 AJUSTAR_CRITERIOS_BUSQUEDA,
                 CONFIRMAR_RELAJACION_RESULTADOS,
                 INICIO_BUSQUEDA,
@@ -76,14 +88,26 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
             ]
         if step == 11:
             return [
+                FILTRO_EXACTO_PROPIEDADES,
                 AJUSTAR_CRITERIOS_BUSQUEDA,
                 INICIO_BUSQUEDA,
                 FALLBACK_FUERA_DE_ALCANCE,
                 FALLBACK_NO_ENTENDIDO,
             ]
+        if step == 13:
+            # Awaiting yes/no to "¿Seguimos con las propiedades que estabamos revisando?"
+            # Fallbacks excluded: _collect_info step 13 handles yes/no/other directly
+            return [
+                FILTRO_EXACTO_PROPIEDADES,
+                INICIO_BUSQUEDA,
+                AJUSTAR_CRITERIOS_BUSQUEDA,
+                VER_PROPIEDADES_NUEVAS_NO_VISTAS,
+                VER_PROPIEDADES_VISTAS,
+            ]
         if step in {9, 10}:
             # Contact capture steps: include search escapes so intent-shifting users aren't stuck
             return [
+                FILTRO_EXACTO_PROPIEDADES,
                 INICIO_BUSQUEDA,
                 AJUSTAR_CRITERIOS_BUSQUEDA,
                 CAPTURAR_DATOS_CONTACTO,
@@ -92,12 +116,14 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
         if step == 12:
             # Financial doc step: same escape hatches
             return [
+                FILTRO_EXACTO_PROPIEDADES,
                 INICIO_BUSQUEDA,
                 AJUSTAR_CRITERIOS_BUSQUEDA,
                 CAPTURAR_SUSTENTO_FINANCIERO,
                 FALLBACK_NO_ENTENDIDO,
             ]
         return [
+            FILTRO_EXACTO_PROPIEDADES,
             AJUSTAR_CRITERIOS_BUSQUEDA,
             VER_PROPIEDADES_NUEVAS_NO_VISTAS,
             VER_PROPIEDADES_VISTAS,
@@ -108,6 +134,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
 
     if state == "presenting":
         return [
+            FILTRO_EXACTO_PROPIEDADES,
             CALIFICAR_PROPIEDAD,
             VER_SIGUIENTE_PROPIEDAD,
             MARCAR_INTERES_LO_QUIERO,
@@ -122,6 +149,7 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
 
     if state == "contact_requested":
         return [
+            FILTRO_EXACTO_PROPIEDADES,
             INICIO_BUSQUEDA,
             AJUSTAR_CRITERIOS_BUSQUEDA,
             VER_PROPIEDADES_NUEVAS_NO_VISTAS,
@@ -136,12 +164,12 @@ def candidate_intents_for_state(state: str, step: int | None) -> list[str]:
 def _merge_preludes(response: dict, preludes: list[str]) -> dict:
     if not preludes:
         return response
-    message = str(response.get("message") or "").strip()
-    prelude_text = "\n".join(part.strip() for part in preludes if part and part.strip())
-    if not prelude_text:
+    clean = [p.strip() for p in preludes if p and p.strip()]
+    if not clean:
         return response
     merged = dict(response)
-    merged["message"] = f"{prelude_text}\n\n{message}" if message else prelude_text
+    existing = list(response.get("prelude_messages") or [])
+    merged["prelude_messages"] = clean + existing
     return merged
 
 
@@ -149,6 +177,10 @@ async def _rank_candidates(runtime: IntentRuntime, candidates: list[str]) -> lis
     """Rank candidates using Claude with a deterministic local fallback."""
     if not candidates:
         return []
+    # Deterministic fast path: UUID in message → filtro_exacto must lead
+    if FILTRO_EXACTO_PROPIEDADES in candidates and _UUID_QUICK.search(runtime.user_text or ""):
+        rest = [c for c in candidates if c != FILTRO_EXACTO_PROPIEDADES]
+        return [FILTRO_EXACTO_PROPIEDADES] + rest
     try:
         from app.services.claude_service import rank_intents
 

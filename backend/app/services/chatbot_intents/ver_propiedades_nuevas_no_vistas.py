@@ -11,9 +11,9 @@ INTENT_NAME = VER_PROPIEDADES_NUEVAS_NO_VISTAS
 
 async def handle(runtime: IntentRuntime) -> IntentResult | None:
     state = runtime.state
-    # Allow from collecting_info (steps 4/8), presenting, or contact_requested
+    # Allow from collecting_info (steps 4/8/13), presenting, or contact_requested
     allowed = (
-        (state == "collecting_info" and runtime.step in {4, 8})
+        (state == "collecting_info" and runtime.step in {4, 8, 13})
         or state in {"presenting", "contact_requested"}
     )
     if not allowed:

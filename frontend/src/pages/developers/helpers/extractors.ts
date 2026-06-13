@@ -21,11 +21,13 @@ function titleFromUrlSlug(url: string): string {
 }
 
 // "TIPO 1 / 59 m2 / 1 dorms / 2 baños" → "Tipo 1"
+// "DUPLEX 2307 / 150 m2 / 3 dorms / 3 baños" → "Duplex 2307"
 function tipoFromModelo(d: Record<string, unknown>): string {
   const m = pick(d, ['modelo'])
   if (!m) return ''
-  const match = m.match(/^(TIPO\s+\S+)/i)
-  return match ? match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase() : ''
+  const part = m.split('/')[0].trim()
+  if (!part || /^\d/.test(part) || part.toLowerCase() === 'null') return ''
+  return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
 }
 
 // Parses "TIPO 1 / 59 m2 / 1 dorms / 2 baños" → { area, dorms, baths }
@@ -56,11 +58,12 @@ export function extractTitle(d: Record<string, unknown>): string {
 }
 
 export function extractLocation(d: Record<string, unknown>) {
-  return pick(d, ['ubicación', 'ubicacion', 'location', 'distrito', 'ciudad', 'zona', 'direccion', 'barrio'])
+  const raw = pick(d, ['ubicación', 'ubicacion', 'location', 'distrito', 'ciudad', 'zona', 'direccion', 'barrio'])
+  return raw.replace(/\s*\n\s*/g, ', ').replace(/\s{2,}/g, ' ').trim()
 }
 
 export function extractStatus(d: Record<string, unknown>) {
-  return pick(d, ['estado del proyecto', 'estado', 'estado_proyecto', 'status', 'disponibilidad', 'estado_disponibilidad'])
+  return pick(d, ['estado_del_proyecto', 'estado del proyecto', 'estado', 'estado_proyecto', 'status', 'disponibilidad', 'estado_disponibilidad'])
 }
 
 export function extractBedrooms(d: Record<string, unknown>): string {
@@ -97,7 +100,10 @@ export function extractPrice(d: Record<string, unknown>): string {
   if (!raw) return ''
   if (/S\/|USD|\$|PEN/i.test(raw)) return raw
   const n = parseFloat(raw.replace(/[^\d.]/g, ''))
-  return (!isNaN(n) && n > 0) ? `S/ ${n.toLocaleString('es-PE')}` : raw
+  if (!isNaN(n) && n > 0) return `S/ ${n.toLocaleString('es-PE')}`
+  // Si no tiene dígitos ni símbolo de moneda, no es un precio válido
+  if (!/\d/.test(raw)) return ''
+  return raw
 }
 
 export function extractArea(d: Record<string, unknown>): string {
@@ -122,12 +128,23 @@ export function extractTags(d: Record<string, unknown>, keys: string[]): string[
 
 export function statusClass(s: string) {
   const t = (s || '').toLowerCase()
-  if (t.includes('complet') || t.includes('disponib') || t.includes('inmediata')) return 'bg-green-100 text-green-700'
-  if (t.includes('parcial') || t.includes('preventa') || t.includes('construc')) return 'bg-yellow-100 text-yellow-700'
+  if (t.includes('complet') || t.includes('disponib') || t.includes('inmediata') || t.includes('entrega')) return 'bg-green-100 text-green-700'
+  if (t.includes('parcial') || t.includes('preventa') || t.includes('construc') || t.includes('próx') || t.includes('prox')) return 'bg-yellow-100 text-yellow-700'
   if (t.includes('error') || t.includes('agotad') || t.includes('vendid'))       return 'bg-red-100 text-red-700'
   return 'bg-gray-100 text-gray-600'
 }
 
 export function recordStatusLabel(s: string) {
-  return s === 'success' ? 'Completo' : s === 'partial' ? 'Parcial' : 'Error'
+  if (s === 'public')         return 'Público'
+  if (s === 'pending_review') return 'Pendiente'
+  if (s === 'success')        return 'Pendiente'
+  if (s === 'partial')        return 'Parcial'
+  return 'Error'
+}
+
+export function propiedadStatusClass(s: string) {
+  if (s === 'public')         return 'bg-blue-100 text-blue-700'
+  if (s === 'pending_review' || s === 'success') return 'bg-amber-100 text-amber-700'
+  if (s === 'partial')        return 'bg-orange-100 text-orange-700'
+  return 'bg-gray-100 text-gray-500'
 }

@@ -29,6 +29,20 @@ export const updateDeveloper = (id: string, data: Partial<Developer>) =>
   API.patch<Developer>(`/developers/${id}`, data)
 export const deleteDeveloper = (id: string) => API.delete(`/developers/${id}`)
 
+// Propiedades
+export const getPropiedad = (id: string) => API.get(`/propiedades/${id}`)
+export const updatePropiedad = (
+  id: string,
+  data: { dormitorios?: string; baños?: string; m2?: string; modelo?: string; status?: string }
+) => API.patch(`/propiedades/${id}`, data)
+
+export const extractPropertyFields = (developerId: string, onlyMissing = true) =>
+  API.post<{ processed: number; updated: number; ai_calls: number }>(
+    `/developers/${developerId}/extract-fields`,
+    null,
+    { params: { only_missing: onlyMissing }, timeout: 120_000 }
+  )
+
 // Developer URL nodes (summary list)
 export const getDeveloperUrlNodes = (developerId: string) =>
   API.get(`/developers/${developerId}/url-nodes`)
@@ -158,7 +172,10 @@ export const updateChatConfig = (data: {
   contact_message?: string
   no_results_message?: string
   no_more_message?: string
+  ai_model?: string
 }) => API.put('/chat/config', data)
+export const testAIModel = (model: string, prompt?: string) =>
+  API.post('/chat/config/test-ai', { model, prompt })
 
 // ── Web Chatbot ───────────────────────────────────────────────────────────────
 
@@ -175,9 +192,12 @@ export const sendWebChatMessage = (
         attachment_urls?: string[]
         financial_document_url?: string
       },
+  token?: string | null,
 ) => {
   const body = typeof payload === 'string' ? { content: payload } : payload
-  return API.post(`/chat/web/sessions/${sessionId}/message`, body)
+  return API.post(`/chat/web/sessions/${sessionId}/message`, body, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
 }
 
 export const uploadWebChatAttachment = (sessionId: string, file: File) => {
@@ -196,6 +216,23 @@ export const authLogin = (email: string, password: string) =>
   API.post('/auth/login', { email, password })
 export const authMe = (token: string) =>
   API.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+export const authAdminMe = (token: string) =>
+  API.get('/auth/admin/me', { headers: { Authorization: `Bearer ${token}` } })
+export const updateAdminProfile = (token: string, data: { name?: string; phone?: string; country?: string; whatsapp?: string }) =>
+  API.put('/auth/me', data, { headers: { Authorization: `Bearer ${token}` } })
+export const changeAdminPassword = (token: string, current_password: string, new_password: string) =>
+  API.put('/auth/me/password', { current_password, new_password }, { headers: { Authorization: `Bearer ${token}` } })
+
+// ── Admin Notifications ───────────────────────────────────────────────────────
+
+export const getAdminNotifications = (limit = 50) =>
+  API.get('/admin/notifications', { params: { limit } })
+export const getNotificationUnreadCount = () =>
+  API.get('/admin/notifications/unread-count')
+export const markNotificationRead = (id: string) =>
+  API.patch(`/admin/notifications/${id}/read`)
+export const markAllNotificationsRead = () =>
+  API.post('/admin/notifications/mark-all-read')
 
 // ── Site Builder (admin) ──────────────────────────────────────────────────────
 

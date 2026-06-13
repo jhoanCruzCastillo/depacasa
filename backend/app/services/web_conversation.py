@@ -9,13 +9,6 @@ from sqlalchemy.orm import Session
 from app.models.web_chat_session import WebChatSession, WebChatMessage
 from app.services.lead_notification_service import notify_active_advisor_for_lead
 from app.services.matchmaking import find_matches, get_record_data, _extract_bedroom_counts
-from app.services.preference_service import (
-    build_preferences_v2_from_criteria,
-    criteria_from_preferences_v2,
-    default_preferences_v2,
-    merge_consolidated_context,
-    summarize_preferences_v2,
-)
 from app.services.chatbot_intents.context import IntentRuntime
 from app.services.chatbot_intents.engine import candidate_intents_for_state, dispatch_intents
 
@@ -42,6 +35,7 @@ def _property_card(
     data: dict,
     state: str = "presenting",
     seen_by_user_before: bool | None = None,
+    user_rating: int | None = None,
 ) -> dict:
     return {
         "message": msg,
@@ -51,6 +45,7 @@ def _property_card(
             "record_id": record_id,
             "property_identifier": record_id,
             "seen_by_user_before": seen_by_user_before,
+            "user_rating": user_rating,
             "data": data,
         },
         "state": state,
@@ -286,7 +281,7 @@ def _has_actionable_criteria(criteria: dict | None) -> bool:
 def _is_affirmative_message(text: str) -> bool:
     yes_words = {
         "si", "sí", "claro", "dale", "ok", "okay", "bueno", "vamos",
-        "adelante", "perfecto", "listo", "de acuerdo", "hazlo", "busca",
+        "adelante", "perfecto", "listo", "de acuerdo", "hazlo",
     }
     norm = _normalize_text(text).strip()
     if not norm:
@@ -300,7 +295,13 @@ def _is_affirmative_message(text: str) -> bool:
         return True
     if tokens[0] in {"si", "sí"}:
         return True
-    return any(w in norm for w in ["verlas", "ver opciones", "mostrar opciones", "quiero ver", "si, ver", "si ver"])
+    affirmative_phrases = [
+        "verlas", "ver opciones", "mostrar opciones", "quiero ver", "si, ver", "si ver",
+        "usar mis preferencias", "iniciar busqueda ahora", "iniciar con estas preferencias",
+        "buscar con mis preferencias", "buscar ahora", "empezar busqueda", "iniciar busqueda",
+        "continuar con mis preferencias", "usar preferencias actuales", "buscar con mis datos",
+    ]
+    return any(w in norm for w in affirmative_phrases)
 
 
 def _is_negative_message(text: str) -> bool:
@@ -403,7 +404,14 @@ def _summarize_preferences(criteria: dict | None) -> str:
     if c.get("area_exact"):
         parts.append(f"{c.get('area_exact')} m2")
     elif c.get("area_min") or c.get("area_max"):
-        parts.append(f"área {c.get('area_min', '?')}–{c.get('area_max', '?')} m2")
+        a_min = c.get("area_min")
+        a_max = c.get("area_max")
+        if a_min is not None and a_max is not None:
+            parts.append(f"área {int(a_min)}–{int(a_max)} m2")
+        elif a_min is not None:
+            parts.append(f"área desde {int(a_min)} m2")
+        else:
+            parts.append(f"área hasta {int(a_max)} m2")
     budget = _format_budget(c.get("min_price"), c.get("max_price"))
     if budget:
         parts.append(f"presupuesto {budget}")
@@ -510,7 +518,7 @@ def _fallback_not_understood() -> dict:
 
 def _is_new_unseen_request(text: str) -> bool:
     t = _normalize_text(text)
-    if t.strip() in {"1", "uno", "nuevas", "nueva"}:
+    if t.strip() in {"1", "uno", "nuevas", "nueva", "novedades"}:
         return True
 
     patterns = [
@@ -529,6 +537,12 @@ def _is_new_unseen_request(text: str) -> bool:
         "que no vi",
         "que no he visto",
         "no me mostraste",
+        "novedades disponibles",
+        "ver novedades",
+        "opciones nuevas",
+        "ver opciones nuevas",
+        "opciones disponibles",
+        "propiedades disponibles",
     ]
     if any(p in t for p in patterns):
         return True
@@ -549,7 +563,12 @@ def _is_viewed_request(text: str) -> bool:
         or "ya vistas" in t
         or "vistas" in t
         or "anteriores" in t
-        or t.strip() in {"2", "dos"}
+        or "propiedades vistas" in t
+        or "ver vistas" in t
+        or "ver las vistas" in t
+        or "propiedades que ya vi" in t
+        or "que ya revise" in t
+        or t.strip() in {"2", "dos", "vistas"}
     )
 
 
@@ -586,16 +605,25 @@ def _is_adjust_search_intent(text: str) -> bool:
         "ajustar la busqueda",
         "ajustar parametros",
         "ajustar filtros",
+        "ajustar criterios",
+        "ajustar mis criterios",
+        "ajustar preferencias",
+        "ajustar mis preferencias",
         "cambiar parametros",
         "cambiar filtros",
+        "cambiar criterios",
+        "cambiar mis criterios",
+        "cambiar preferencias",
         "cambiar zona",
         "cambiar ciudad",
         "cambiar zona o ciudad",
         "otra zona",
         "otra ciudad",
         "modificar parametros",
+        "modificar criterios",
         "nueva busqueda",
         "quiero ajustar",
+        "quiero cambiar",
     ]
     return any(h in t for h in hints)
 
@@ -624,9 +652,10 @@ def _contains_adjustment_details(text: str) -> bool:
     # Bare location token after an adjustment prompt, e.g. "Miraflores".
     tokens = re.findall(r"[a-z0-9]+", t)
     ignored = {
-        "si", "no", "ok", "okay", "hola", "gracias",
+        "si", "no", "ok", "okay", "hola", "gracias", "mis", "los", "las", "la", "el",
         "ajustar", "ajuste", "cambiar", "cambio", "filtro", "filtros",
         "parametro", "parametros", "busqueda", "zona", "ciudad", "distrito", "ubicacion",
+        "criterio", "criterios", "preferencia", "preferencias", "modificar",
     }
     if 1 <= len(tokens) <= 3 and not any(tok in ignored for tok in tokens):
         return True
@@ -667,10 +696,7 @@ def _rating_feedback(rating: int) -> str:
             "Buena señal. Esta propiedad se acerca bastante a lo que buscas, "
             "así que tomaré sus características como referencia."
         )
-    return (
-        "Excelente, esta parece una opción muy fuerte para ti. "
-        "Guardaré esta preferencia para mostrarte propiedades similares."
-    )
+    return "Excelente, esta encaja muy bien contigo."
 
 
 def _country_to_doc_label(country: str | None) -> str:
@@ -1045,30 +1071,26 @@ def _finalize_lead_request(session: WebChatSession, clean: dict, lead: dict, db:
         _upsert_interaction(session.site_user_id, record_id, db, sent_by_email=True)
     session.extracted_criteria = {**clean, "_lead": lead}
     if session.site_user_id:
-        _save_preferences(
-            session.site_user_id,
-            {**clean, "_lead": lead},
-            session.ideal_description or "",
-            db,
-            extra_context={
-                "lead_profile": {
-                    "full_name": lead.get("full_name"),
-                    "country": lead.get("country_of_residence"),
-                    "whatsapp": lead.get("whatsapp"),
-                    "document": lead.get("document_number"),
-                    "financial_capacity_doc": lead.get("financial_capacity_doc"),
-                },
-                "conversation_memory": {"last_intent": "capturar_datos_contacto"},
-            },
-        )
+        _save_preferences(session.site_user_id, clean, db)
 
-    session.info_step = 4
-    session.state = "collecting_info"
-    return _text(
+    confirm_msg = (
         "Listo, ya registré tu interés en esta propiedad. "
-        "Un asesor podrá contactarte por WhatsApp para darte más información. "
-        "Si quieres, también puedo seguir mostrándote opciones similares."
+        "Un asesor podrá contactarte por WhatsApp para darte más información."
     )
+
+    next_idx = (session.current_match_index or 0) + 1
+    remaining = len(session.matched_record_ids or []) - next_idx
+    if remaining > 0:
+        hab = "propiedad" if remaining == 1 else "propiedades"
+        confirm_msg += f" Tengo {remaining} {hab} más de tu búsqueda si quieres seguir viendo."
+        session.state = "presenting"
+        session.info_step = 7
+    else:
+        confirm_msg += " ¿Quieres que busque más propiedades similares?"
+        session.state = "collecting_info"
+        session.info_step = 4
+
+    return _text(confirm_msg)
 
 
 def _get_viewed_record_ids(site_user_id, db: Session) -> list[str]:
@@ -1098,50 +1120,45 @@ def _get_viewed_record_ids(site_user_id, db: Session) -> list[str]:
         return []
 
 
-def _get_viewed_source_urls(site_user_id, db: Session) -> set[str]:
-    """Return detail-page source URLs already seen by the user across chats."""
+def _get_viewed_proyecto_ids(site_user_id, db: Session) -> set[str]:
+    """Return proyecto UUIDs whose properties have already been seen by the user in chat."""
     try:
         from app.models.user_property_interaction import UserPropertyInteraction
-        from app.models.scraped_record import ScrapedRecord
+        from app.models.propiedad import Propiedad
         uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
         rows = (
-            db.query(ScrapedRecord.source_url)
-            .join(UserPropertyInteraction, UserPropertyInteraction.record_id == ScrapedRecord.id)
+            db.query(Propiedad.proyecto_id)
+            .join(UserPropertyInteraction, UserPropertyInteraction.record_id == Propiedad.id)
             .filter(
                 UserPropertyInteraction.site_user_id == uid,
                 UserPropertyInteraction.seen_in_chat.is_(True),
-                ScrapedRecord.source_url.isnot(None),
+                Propiedad.proyecto_id.isnot(None),
             )
             .all()
         )
-        out: set[str] = set()
-        for row in rows:
-            url = (row[0] or "").strip()
-            if url:
-                out.add(url)
-        return out
+        return {str(row[0]) for row in rows if row[0]}
     except Exception as e:
-        logger.warning(f"[tracking] could not fetch viewed source urls: {e}")
+        logger.warning(f"[tracking] could not fetch viewed proyecto ids: {e}")
         return set()
 
 
-def _get_record_source_url(db: Session, record_id: str) -> str:
+def _get_record_proyecto_id(db: Session, record_id: str) -> str:
     try:
-        from app.models.scraped_record import ScrapedRecord
+        from app.models.propiedad import Propiedad
         rid = UUID(record_id)
-        row = db.query(ScrapedRecord.source_url).filter(ScrapedRecord.id == rid).first()
-        return (row[0] or "").strip() if row else ""
+        row = db.query(Propiedad.proyecto_id).filter(Propiedad.id == rid).first()
+        return str(row[0]) if row and row[0] else ""
     except Exception:
         return ""
 
 
-def _exclude_seen_sources(db: Session, candidate_ids: list[str], seen_urls: set[str]) -> list[str]:
-    if not seen_urls:
+def _exclude_seen_sources(db: Session, candidate_ids: list[str], seen_proyecto_ids: set[str]) -> list[str]:
+    if not seen_proyecto_ids:
         return candidate_ids
     filtered: list[str] = []
     for rid in candidate_ids:
-        src = _get_record_source_url(db, rid)
-        if src and src in seen_urls:
+        pid = _get_record_proyecto_id(db, rid)
+        if pid and pid in seen_proyecto_ids:
             continue
         filtered.append(rid)
     return filtered
@@ -1241,7 +1258,7 @@ async def _build_alternative_bedroom_pool(
     excluded_ids: set[str],
     raw_description: str,
     current_ids: list[str],
-    seen_source_urls: set[str] | None = None,
+    seen_proyecto_ids: set[str] | None = None,
 ) -> tuple[list[str], list[int]]:
     """Find same-location properties with bedroom counts different from requested bedrooms."""
     from app.services.matchmaking import _extract_bedroom_counts
@@ -1266,9 +1283,9 @@ async def _build_alternative_bedroom_pool(
     for rid in candidates:
         if rid in current_set:
             continue
-        if seen_source_urls:
-            src = _get_record_source_url(db, rid)
-            if src and src in seen_source_urls:
+        if seen_proyecto_ids:
+            pid = _get_record_proyecto_id(db, rid)
+            if pid and pid in seen_proyecto_ids:
                 continue
         data = get_record_data(db, rid) or {}
         counts = _extract_bedroom_counts(data)
@@ -1340,6 +1357,134 @@ def _get_disliked_ids(site_user_id, db: Session) -> set[str]:
         return set()
 
 
+def _get_user_rating(site_user_id, record_id: str, db: Session) -> int | None:
+    """Return the user's star rating for a property, or None if unrated."""
+    try:
+        from app.models.user_property_interaction import UserPropertyInteraction
+        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
+        rid = UUID(record_id)
+        row = (
+            db.query(UserPropertyInteraction.rating)
+            .filter(
+                UserPropertyInteraction.site_user_id == uid,
+                UserPropertyInteraction.record_id == rid,
+            )
+            .first()
+        )
+        return int(row[0]) if row and row[0] is not None else None
+    except Exception as e:
+        logger.warning(f"[tracking] could not fetch user rating: {e}")
+        return None
+
+
+def _get_properties_by_rating_filter(
+    site_user_id, db: Session,
+    min_rating: int | None = None,
+    max_rating: int | None = None,
+) -> list[str]:
+    """Return record IDs filtered by the user's star rating, ordered by rating desc."""
+    try:
+        from app.models.user_property_interaction import UserPropertyInteraction
+        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
+        q = db.query(UserPropertyInteraction).filter(
+            UserPropertyInteraction.site_user_id == uid,
+            UserPropertyInteraction.rating.isnot(None),
+        )
+        if min_rating is not None:
+            q = q.filter(UserPropertyInteraction.rating >= min_rating)
+        if max_rating is not None:
+            q = q.filter(UserPropertyInteraction.rating <= max_rating)
+        rows = q.order_by(UserPropertyInteraction.rating.desc()).all()
+        return [str(r.record_id) for r in rows]
+    except Exception as e:
+        logger.warning(f"[tracking] could not fetch properties by rating: {e}")
+        return []
+
+
+def _get_properties_without_price(db: Session) -> list[str]:
+    """Return record IDs (propiedades) that have no known price."""
+    try:
+        from app.models.propiedad import Propiedad
+        rows = (
+            db.query(Propiedad.id)
+            .filter(
+                (Propiedad.precio_desde.is_(None)) | (Propiedad.precio_desde == "")
+            )
+            .order_by(Propiedad.scraped_at.desc())
+            .limit(50)
+            .all()
+        )
+        return [str(r[0]) for r in rows]
+    except Exception as e:
+        logger.warning(f"[tracking] could not fetch properties without price: {e}")
+        return []
+
+
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
+_HIGH_RATING_KW = [
+    "muchas estrellas", "alta calificacion", "alta puntuacion", "bien calificad",
+    "mejor calificad", "calificacion alta", "buena calificacion", "alta nota",
+    "altas estrellas", "estrellas altas", "muchos puntos", "estrellas altas",
+]
+_LOW_RATING_KW = [
+    "pocas estrellas", "baja calificacion", "pocos puntos", "mala calificacion",
+    "baja nota", "estrellas bajas", "bajas estrellas", "mal calificad",
+]
+_NO_PRICE_KW = [
+    "sin precio", "precio desconocido", "no tiene precio", "precio no disponible",
+    "precio no se conoce", "sin saber el precio", "precio oculto", "sin precio conocido",
+]
+
+
+def _detect_exact_filter_request(text: str) -> dict | None:
+    """Detect explicit property filter requests.
+
+    Returns one of:
+      {"type": "by_id",     "record_id": str}
+      {"type": "by_rating", "min_rating": int, "max_rating": int, "label": str}
+      {"type": "no_price"}
+      None
+    """
+    # UUID detection — highest priority
+    m = _UUID_RE.search(text)
+    if m:
+        return {"type": "by_id", "record_id": m.group(0)}
+
+    n = _normalize_text(text)
+
+    # Exact N stars: "califiqué con 3 estrellas", "con 4 estrellas", etc.
+    exact = re.search(
+        r"(?:califiq\w*|con|de|puntuad\w*)\s+(?:con\s+)?(\d)\s*estrell", n
+    )
+    if exact:
+        r = int(exact.group(1))
+        if 1 <= r <= 5:
+            label = f"{r} estrella{'s' if r != 1 else ''}"
+            return {"type": "by_rating", "min_rating": r, "max_rating": r, "label": label}
+
+    # High rating
+    if any(kw in n for kw in _HIGH_RATING_KW):
+        return {"type": "by_rating", "min_rating": 4, "max_rating": 5, "label": "alta calificación (4-5 estrellas)"}
+
+    # Low rating
+    if any(kw in n for kw in _LOW_RATING_KW):
+        return {"type": "by_rating", "min_rating": 1, "max_rating": 2, "label": "baja calificación (1-2 estrellas)"}
+
+    # Generic "propiedades que califiqué" — any rating
+    if re.search(r"califiq\w+|calificad\w+|que\s+puntue\w*", n) and "estrell" in n:
+        return {"type": "by_rating", "min_rating": 1, "max_rating": 5, "label": "calificadas"}
+
+    # No known price
+    if any(kw in n for kw in _NO_PRICE_KW):
+        return {"type": "no_price"}
+
+    return None
+
+
 def _safe_flush(db: Session, *objects) -> None:
     """Add objects and flush inside a savepoint so a failure doesn't corrupt the outer session."""
     sp = db.begin_nested()
@@ -1369,16 +1514,11 @@ def _save_search_history(site_user_id, description: str, criteria: dict, db: Ses
         logger.warning(f"[history] could not save search history: {e}")
 
 
-def _save_preferences(
-    site_user_id,
-    criteria: dict,
-    description: str,
-    db: Session,
-    extra_context: dict | None = None,
-) -> None:
+def _save_preferences(site_user_id, criteria: dict, db: Session) -> None:
     """Upsert user preferences from extracted criteria."""
     try:
         from app.models.user_preference import UserPreference
+        from app.services.preference_service import update_preference_from_criteria
         uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
         sp = db.begin_nested()
         try:
@@ -1386,21 +1526,19 @@ def _save_preferences(
             if not pref:
                 pref = UserPreference(site_user_id=uid)
                 db.add(pref)
-            if criteria.get("location"):
-                pref.location = criteria.get("location")
-            if criteria.get("bedrooms") is not None:
-                pref.bedrooms = criteria.get("bedrooms")
-            if criteria.get("min_price") is not None:
-                pref.min_price = criteria.get("min_price")
-            if criteria.get("max_price") is not None:
-                pref.max_price = criteria.get("max_price")
-            if criteria.get("features"):
-                pref.features = criteria.get("features")
-            if criteria.get("keywords"):
-                pref.keywords = criteria.get("keywords")
-            pref.raw_description = description
-            pref.preferences_v2 = build_preferences_v2_from_criteria(criteria, pref.preferences_v2)
-            pref.context = merge_consolidated_context(pref.context, criteria, description, extra_context)
+            update_preference_from_criteria(pref, criteria)
+            # Normalize nearby_places and common_areas with AI to remove semantic duplicates
+            from app.services.claude_service import normalize_nearby_places_sync
+            if pref.nearby_places and len(pref.nearby_places) > 1:
+                pref.nearby_places = normalize_nearby_places_sync(pref.nearby_places)
+            if pref.common_areas and len(pref.common_areas) > 1:
+                pref.common_areas = normalize_nearby_places_sync(pref.common_areas)
+            # Fill pais from lead profile if criteria didn't supply it
+            if not pref.pais:
+                lead = criteria.get("_lead") or {}
+                country = (lead.get("country_of_residence") or "").strip()
+                if country:
+                    pref.pais = country
             db.flush()
             sp.commit()
         except Exception:
@@ -1411,71 +1549,25 @@ def _save_preferences(
 
 
 def _track_behavior_signal(site_user_id, signal_key: str, record_id: str | None, db: Session) -> None:
-    if not record_id:
-        return
+    # Behavior signals are tracked via UserPropertyInteraction; no-op here.
+    pass
+
+
+def _load_saved_preferences(site_user_id, db: Session) -> tuple[dict, str]:
     try:
         from app.models.user_preference import UserPreference
+        from app.services.preference_service import criteria_from_preference, summarize_preference
         uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
         pref = db.query(UserPreference).filter_by(site_user_id=uid).first()
         if not pref:
-            return
-
-        current_context = pref.context if isinstance(pref.context, dict) else {}
-        behavior = dict(current_context.get("behavior_signals") or {})
-        bucket = list(behavior.get(signal_key) or [])
-        if record_id not in bucket:
-            bucket.append(record_id)
-        behavior[signal_key] = bucket[-100:]
-        pref.context = merge_consolidated_context(
-            current_context,
-            {},
-            pref.raw_description or "",
-            extra_context={"behavior_signals": behavior},
-        )
-        db.flush()
-    except Exception as e:
-        logger.warning(f"[prefs] could not track behavior signal {signal_key}: {e}")
-
-
-def _load_saved_preferences(site_user_id, db: Session) -> tuple[dict, str, dict, str]:
-    try:
-        from app.models.user_preference import UserPreference
-        uid = site_user_id if isinstance(site_user_id, UUID) else UUID(str(site_user_id))
-        pref = db.query(UserPreference).filter_by(site_user_id=uid).first()
-        if not pref:
-            return {}, "", default_preferences_v2(), ""
-
-        context = pref.context if isinstance(pref.context, dict) else {}
-        if isinstance(pref.preferences_v2, dict) and pref.preferences_v2:
-            criteria = criteria_from_preferences_v2(pref.preferences_v2, context)
-            summary = summarize_preferences_v2(pref.preferences_v2, context)
-            description = (
-                (context.get("conversation_memory") or {}).get("last_search_description")
-                if isinstance(context.get("conversation_memory"), dict)
-                else None
-            ) or pref.raw_description or ""
-            clean = {k: v for k, v in criteria.items() if v not in (None, "", []) and v != {}}
-            return clean, description, pref.preferences_v2, summary
-
-        # Backward compatibility path for legacy rows.
-        legacy_criteria = {
-            "location": pref.location,
-            "bedrooms": pref.bedrooms,
-            "min_price": pref.min_price,
-            "max_price": pref.max_price,
-            "features": pref.features or [],
-            "keywords": pref.keywords or [],
-        }
-        legacy_clean = {
-            k: v for k, v in legacy_criteria.items()
-            if v not in (None, "", []) and v != {}
-        }
-        pref_v2 = build_preferences_v2_from_criteria(legacy_clean, None)
-        summary = summarize_preferences_v2(pref_v2, context)
-        return legacy_clean, pref.raw_description or "", pref_v2, summary
+            return {}, ""
+        criteria = criteria_from_preference(pref)
+        clean = {k: v for k, v in criteria.items() if v not in (None, "", []) and v != {}}
+        summary = summarize_preference(pref)
+        return clean, summary
     except Exception as e:
         logger.warning(f"[prefs] could not load preferences: {e}")
-        return {}, "", default_preferences_v2(), ""
+        return {}, ""
 
 
 async def _attach_quick_replies(
@@ -1531,23 +1623,17 @@ async def create_session(db: Session, site_user=None) -> tuple[WebChatSession, d
     greeting = _GREETING
 
     if site_user:
-        saved_criteria, saved_desc, pref_v2, summary = _load_saved_preferences(site_user.id, db)
+        saved_criteria, summary = _load_saved_preferences(site_user.id, db)
         if _has_actionable_criteria(saved_criteria):
             session.extracted_criteria = saved_criteria
-            session.ideal_description = saved_desc or session.ideal_description
             session.info_step = 8
             rehydrated = True
             context_summary = summary
             user_name = site_user.name or "de nuevo"
-            greeting = (
-                f"Hola {user_name}. Rehidrate tu contexto anterior: {summary}.\n"
-                "¿Cómo quieres continuar?\n"
-                "1. Ver propiedades nuevas o que aun no has visto.\n"
-                "2. Volver a ver propiedades que ya revisaste.\n"
-                "3. Ajustar tu búsqueda."
-            )
-        elif isinstance(pref_v2, dict):
-            context_summary = summarize_preferences_v2(pref_v2, {})
+            from app.services.claude_service import generate_returning_user_greeting
+            greeting = await generate_returning_user_greeting(user_name, summary)
+        else:
+            context_summary = summary
 
     db.add(session)
     db.flush()
@@ -1564,6 +1650,12 @@ async def create_session(db: Session, site_user=None) -> tuple[WebChatSession, d
 
 async def handle_message(session_id: str, user_content: str, db: Session) -> dict:
     try:
+        # Set per-request model from DB config so claude_service picks it up
+        from app.services.claude_service import set_chat_model
+        from app.models.chat_config import ChatConfig, DEFAULT_CONFIG_ID
+        _cfg = db.query(ChatConfig).filter(ChatConfig.id == DEFAULT_CONFIG_ID).first()
+        set_chat_model((_cfg.ai_model if _cfg and _cfg.ai_model else "") )
+
         session = db.query(WebChatSession).filter(WebChatSession.id == UUID(session_id)).first()
         if not session:
             return _text("Sesión no encontrada.")
@@ -1718,7 +1810,7 @@ async def _process_rating_feedback(session: WebChatSession, text: str, db: Sessi
     has_meaningful = any(adjustments.get(k) for k in _MEANINGFUL_ADJ_KEYS)
     confirmation_parts: list[str] = []
     if has_meaningful and session.site_user_id:
-        _save_preferences(session.site_user_id, adjustments, "", db)
+        _save_preferences(session.site_user_id, adjustments, db)
         if adjustments.get("max_price"):
             confirmation_parts.append(f"presupuesto máximo {int(adjustments['max_price']):,}")
         if adjustments.get("min_price"):
@@ -1744,13 +1836,9 @@ async def _process_rating_feedback(session: WebChatSession, text: str, db: Sessi
     session.info_step = 7
 
     if confirmation_parts:
-        msg = (
-            f"Anotado: {', '.join(confirmation_parts)}. "
-            "Tendré esto en cuenta para las siguientes recomendaciones. "
-            "¿Quieres ver la siguiente propiedad?"
-        )
+        msg = "Perfecto, lo tendremos en cuenta. ¿Seguimos viendo propiedades?"
     else:
-        msg = "Gracias por el comentario, lo tendré en cuenta. ¿Seguimos buscando?"
+        msg = "Gracias, lo tendré en cuenta. ¿Seguimos viendo propiedades?"
 
     return _text(msg)
 
@@ -1927,6 +2015,9 @@ def _build_intent_runtime(session: WebChatSession, user_text: str, db: Session, 
         "handle_financial_document_step": _financial_doc_capture_action,
         "looks_like_financial_doc_text": _looks_like_financial_doc_text,
         "contextual_fallback_response": _contextual_fallback_action,
+        "detect_exact_filter": _detect_exact_filter_request,
+        "get_properties_by_rating_filter": lambda uid, mn, mx: _get_properties_by_rating_filter(uid, db, mn, mx),
+        "get_properties_without_price": lambda: _get_properties_without_price(db),
     }
     return IntentRuntime(
         session=session,
@@ -2097,13 +2188,12 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
             session.info_step = 4
             return _text("Listo. Cuando quieras, dime qué propiedad buscas y arrancamos.")
 
-        summary = _summarize_preferences(current_criteria if has_saved_criteria else {})
         if has_saved_criteria:
             return _text(
-                f"Si quieres, busco con tus preferencias ({summary}). "
-                "También puedes responder 1 (nuevas/no vistas) o 2 (vistas)."
+                "¿Buscamos con las preferencias que ya tienes guardadas, "
+                "o prefieres ajustar algo antes?"
             )
-        return _text("¿Quieres que empecemos una búsqueda? Puedes contarme zona, dormitorios y presupuesto.")
+        return _text("¿Quieres que empecemos? Cuéntame zona, dormitorios y presupuesto.")
 
     if step == 6:
         if _is_generic_adjust_request(user_text):
@@ -2146,6 +2236,63 @@ async def _collect_info(session: WebChatSession, text: str, db: Session) -> dict
             )
         session.info_step = 5
         return await _start_search(session, user_text, db)
+
+    if step == 13:
+        # User was shown a specific property by ID and asked if they want to resume the previous list
+        ctx13 = dict(session.extracted_criteria or {})
+        suspended = dict(ctx13.get("_suspended_list") or {})
+
+        _RESUME_SIGNALS = {"sigamos", "seguimos", "continuemos", "continua", "retomemos", "retoma", "las otras", "las demas", "las restantes", "verlas", "mostrame mas", "mas opciones"}
+        _is_resume_yes = _is_affirmative_message(user_text) and (
+            not _looks_like_search_update(user_text)
+            or any(p in _normalize_text(user_text) for p in _RESUME_SIGNALS)
+        )
+        if _is_resume_yes and suspended.get("ids"):
+            suspended_ids = list(suspended["ids"])
+            suspended_index = int(suspended.get("index") or 0)
+            suspended_list_mode = suspended.get("list_mode")
+            next_index = suspended_index + 1
+
+            ctx13.pop("_suspended_list", None)
+            if suspended_list_mode:
+                ctx13["_list_mode"] = suspended_list_mode
+            else:
+                ctx13.pop("_list_mode", None)
+            session.extracted_criteria = ctx13
+            session.matched_record_ids = suspended_ids
+            session.state = "presenting"
+            session.info_step = 7
+
+            if next_index >= len(suspended_ids):
+                session.state = "collecting_info"
+                session.info_step = 4
+                session.current_match_index = len(suspended_ids)
+                return _text(
+                    "Claro, pero ya viste todas las propiedades de esa búsqueda. "
+                    "¿Quieres que busque más opciones o ajustamos los filtros?"
+                )
+
+            session.current_match_index = next_index
+            return await _show_property(session, db, suspended_ids[next_index])
+
+        if _is_negative_message(user_text):
+            ctx13.pop("_suspended_list", None)
+            ctx13.pop("_list_mode", None)
+            session.extracted_criteria = ctx13
+            session.info_step = 4
+            session.state = "collecting_info"
+            return _text("Entendido. ¿En qué más puedo ayudarte?")
+
+        # Other response: drop suspension and re-dispatch as step 4
+        ctx13.pop("_suspended_list", None)
+        session.extracted_criteria = ctx13
+        session.info_step = 4
+        runtime4 = _build_intent_runtime(session, user_text, db, 4)
+        candidates4 = candidate_intents_for_state("collecting_info", 4)
+        intent_resp4 = await dispatch_intents(runtime4, candidates4)
+        if intent_resp4 is not None:
+            return intent_resp4
+        return _fallback_not_understood()
 
     if step == 9:
         country = user_text[:80]
@@ -2223,11 +2370,11 @@ async def _start_search(session: WebChatSession, description: str, db: Session) 
     prev_snap = _clean_criteria(session.extracted_criteria)
     is_adjustment = bool(prev_snap)
     result = await _run_search(session, description, db)
-    if is_adjustment:
+    if is_adjustment and result.get("message"):
         from app.services.claude_service import generate_criteria_acknowledgment
         ack = await generate_criteria_acknowledgment(description)
-        if result.get("message"):
-            result = {**result, "message": f"{ack}\n\n{result['message']}"}
+        preludes = list(result.get("prelude_messages") or [])
+        result = {**result, "prelude_messages": [ack] + preludes}
     return result
 
 
@@ -2344,14 +2491,23 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
 
     # Save preferences + search history for registered users
     if session.site_user_id:
-        _save_preferences(
-            session.site_user_id,
-            merged,
-            full_desc,
-            db,
-            extra_context={"conversation_memory": {"last_intent": "inicio_busqueda"}},
-        )
+        _save_preferences(session.site_user_id, merged, db)
         _save_search_history(session.site_user_id, description, merged, db)
+
+    # ── Build search_criteria from user_preferences table (single source of truth) ──
+    # For logged-in users we use only what's persisted in the table.
+    # For guests we fall back to the merged session criteria.
+    search_criteria: dict = merged
+    if session.site_user_id:
+        try:
+            from app.models.user_preference import UserPreference
+            from app.services.preference_service import criteria_from_preference
+            uid = session.site_user_id if isinstance(session.site_user_id, UUID) else UUID(str(session.site_user_id))
+            pref_row = db.query(UserPreference).filter_by(site_user_id=uid).first()
+            if pref_row:
+                search_criteria = criteria_from_preference(pref_row)
+        except Exception as _e:
+            logger.warning(f"[search] could not load prefs from table: {_e}")
 
     from app.models.chat_config import ChatConfig, DEFAULT_CONFIG_ID
     config = db.query(ChatConfig).filter(ChatConfig.id == DEFAULT_CONFIG_ID).first()
@@ -2360,7 +2516,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
     # Exclude properties this user has already disliked
     disliked_excluded: set[str] = set()
     excluded: set[str] = set()
-    seen_source_urls: set[str] = set()
+    seen_proyecto_ids: set[str] = set()
     viewed_ids_set: set[str] = set()
     if session.site_user_id:
         disliked_excluded = _get_disliked_ids(session.site_user_id, db)
@@ -2368,24 +2524,24 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         if existing_mode == "new_unseen":
             viewed_ids_set = set(_get_viewed_record_ids(session.site_user_id, db))
             excluded = excluded.union(viewed_ids_set)
-            seen_source_urls = _get_viewed_source_urls(session.site_user_id, db)
+            seen_proyecto_ids = _get_viewed_proyecto_ids(session.site_user_id, db)
 
-    matches = await find_matches(db, merged, top_n, excluded_ids=excluded, raw_description=full_desc)
-    if existing_mode == "new_unseen" and seen_source_urls:
-        matches = _exclude_seen_sources(db, matches, seen_source_urls)
+    matches = await find_matches(db, search_criteria, top_n, excluded_ids=excluded, raw_description=full_desc)
+    if existing_mode == "new_unseen" and seen_proyecto_ids:
+        matches = _exclude_seen_sources(db, matches, seen_proyecto_ids)
 
     # Build deferred alternatives (same location, different bedroom counts) to offer later.
     alt_ids: list[str] = []
     alt_bed_values: list[int] = []
-    if matches and merged.get("location") and merged.get("bedrooms"):
+    if matches and search_criteria.get("location") and search_criteria.get("bedrooms"):
         alt_ids, alt_bed_values = await _build_alternative_bedroom_pool(
             db,
-            merged,
+            search_criteria,
             top_n,
             excluded,
             full_desc,
             matches,
-            seen_source_urls if existing_mode == "new_unseen" else None,
+            seen_proyecto_ids if existing_mode == "new_unseen" else None,
         )
 
     if alt_ids:
@@ -2394,8 +2550,8 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
             "_result_mode": existing_mode,
             "_deferred_alt_ids": alt_ids,
             "_deferred_alt_count": len(alt_ids),
-            "_deferred_alt_beds": merged.get("bedrooms"),
-            "_deferred_alt_loc": merged.get("location"),
+            "_deferred_alt_beds": search_criteria.get("bedrooms"),
+            "_deferred_alt_loc": search_criteria.get("location"),
             "_deferred_alt_values": alt_bed_values,
         }
     else:
@@ -2406,14 +2562,14 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
     session.state = "presenting"
 
     if not matches:
-        loc = merged.get("location") or ""
-        beds = merged.get("bedrooms")
+        loc = search_criteria.get("location") or ""
+        beds = search_criteria.get("bedrooms")
         name_part = f", {session.name}" if session.name else ""
 
         if existing_mode == "new_unseen" and session.site_user_id:
             all_for_criteria = await find_matches(
                 db,
-                merged,
+                search_criteria,
                 max(top_n * 8, 20),
                 excluded_ids=disliked_excluded,
                 raw_description=full_desc,
@@ -2429,11 +2585,13 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
                     "_result_mode": existing_mode,
                     "_exhausted_unseen_ids": revisit_ids,
                 }
+                criteria_summary = _summarize_preferences(search_criteria)
+                exhausted_detail = (
+                    f" ({criteria_summary})" if criteria_summary and criteria_summary != "sin criterios guardados todavia" else ""
+                )
                 return _text(
-                    "Ya viste todas las propiedades disponibles con esas caracteristicas. "
-                    "Elige una opcion:\n"
-                    "1. Ajustar mis parametros de busqueda.\n"
-                    "2. Volver a ver las propiedades."
+                    f"Ya viste todas las propiedades disponibles{exhausted_detail}. "
+                    "¿Quieres ajustar los criterios o volver a ver las mismas opciones?"
                 )
 
         # â”€â”€ Relaxed search: find something close to offer proactively â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2444,10 +2602,10 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         if beds and loc:
             hab = "dormitorio" if beds == 1 else "dormitorios"
             # 1st try: same location, remove bedroom filter
-            _c1 = {k: v for k, v in merged.items() if k != "bedrooms"}
+            _c1 = {k: v for k, v in search_criteria.items() if k not in ("bedrooms", "bedrooms_mode")}
             relaxed_matches = await find_matches(db, _c1, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
-            if existing_mode == "new_unseen" and seen_source_urls:
-                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_source_urls)
+            if existing_mode == "new_unseen" and seen_proyecto_ids:
+                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
             if relaxed_matches:
                 relax_type = "loc_only"   # location has properties, just not matching beds
                 offer_msg = (
@@ -2458,10 +2616,10 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
                 )
             else:
                 # 2nd try: same bedrooms, remove location filter
-                _c2 = {k: v for k, v in merged.items() if k != "location"}
+                _c2 = {k: v for k, v in search_criteria.items() if k not in ("location", "location_mode")}
                 relaxed_matches = await find_matches(db, _c2, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
-                if existing_mode == "new_unseen" and seen_source_urls:
-                    relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_source_urls)
+                if existing_mode == "new_unseen" and seen_proyecto_ids:
+                    relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
                 if relaxed_matches:
                     relax_type = "beds_only"   # location truly has nothing; beds available elsewhere
                     offer_msg = (
@@ -2471,10 +2629,10 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
                     )
         elif beds:
             hab = "dormitorio" if beds == 1 else "dormitorios"
-            _c = {k: v for k, v in merged.items() if k != "bedrooms"}
+            _c = {k: v for k, v in search_criteria.items() if k not in ("bedrooms", "bedrooms_mode")}
             relaxed_matches = await find_matches(db, _c, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
-            if existing_mode == "new_unseen" and seen_source_urls:
-                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_source_urls)
+            if existing_mode == "new_unseen" and seen_proyecto_ids:
+                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
             if relaxed_matches:
                 relax_type = "no_beds"
                 offer_msg = (
@@ -2483,10 +2641,10 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
                     f"¿Te gustaría verlas{name_part}? 😊"
                 )
         elif loc:
-            _c = {k: v for k, v in merged.items() if k != "location"}
+            _c = {k: v for k, v in search_criteria.items() if k not in ("location", "location_mode")}
             relaxed_matches = await find_matches(db, _c, top_n * 2, excluded_ids=excluded, raw_description=full_desc)
-            if existing_mode == "new_unseen" and seen_source_urls:
-                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_source_urls)
+            if existing_mode == "new_unseen" and seen_proyecto_ids:
+                relaxed_matches = _exclude_seen_sources(db, relaxed_matches, seen_proyecto_ids)
             if relaxed_matches:
                 relax_type = "no_loc"
                 offer_msg = (
@@ -2513,18 +2671,14 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         # â”€â”€ Truly nothing found â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         session.state = "collecting_info"
         session.info_step = 4
-        if beds and loc:
-            hab = "habitación" if beds == 1 else "habitaciones"
-            msg = (
-                f"Lo siento{name_part}, no encontré propiedades de {beds} {hab} "
-                f"en {loc} 😕 ¿Quieres ajustar la búsqueda?"
-            )
-        elif beds:
-            hab = "habitación" if beds == 1 else "habitaciones"
-            msg = (
-                f"Lo siento{name_part}, no encontré propiedades de {beds} {hab} 😕 "
-                "¿Quieres intentar con otros criterios?"
-            )
+        criteria_summary = _summarize_preferences(search_criteria)
+        has_summary = criteria_summary and criteria_summary != "sin criterios guardados todavia"
+        if has_summary:
+            msg = "\n".join([
+                f"Lo siento{name_part}, no encontré propiedades que coincidan 😕",
+                f"Busqué con: {criteria_summary}",
+                "¿Quieres ajustar algún criterio para ampliar la búsqueda?",
+            ])
         elif loc:
             msg = (
                 f"Lo siento{name_part}, no encontré propiedades en {loc} 😕 "
@@ -2533,7 +2687,7 @@ async def _run_search(session: WebChatSession, description: str, db: Session) ->
         else:
             msg = (
                 f"Lo siento{name_part}, no encontré propiedades que coincidan 😕 "
-                "Descríbeme de nuevo lo que buscas y lo intento."
+                "Descíbeme de nuevo lo que buscas y lo intento."
             )
         return _text(msg)
 
@@ -2792,10 +2946,12 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
         return await _next_property(session, db)
 
     seen_by_user_before: bool | None = None
+    user_rating: int | None = None
 
     # Track that this user saw this property
     if session.site_user_id:
         seen_by_user_before = _seen_in_chat_before(session.site_user_id, record_id, db)
+        user_rating = _get_user_rating(session.site_user_id, record_id, db)
         _upsert_interaction(
             session.site_user_id, record_id, db,
             seen_in_chat=True,
@@ -2806,7 +2962,9 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
     idx = session.current_match_index + 1
     total = len(session.matched_record_ids)
     ctx = session.extracted_criteria or {}
-    if ctx.get("_list_mode") == "interested":
+    list_mode = ctx.get("_list_mode")
+
+    if list_mode == "interested":
         if idx == 1:
             msg = (
                 f"Aqui tienes tus propiedades de interes ({total} en total). "
@@ -2814,11 +2972,46 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
             )
         else:
             msg = "Aqui va la siguiente propiedad que marcaste con interes:"
+    elif list_mode == "filtered_by_rating":
+        label = ctx.get("_list_label", "calificadas")
+        if idx == 1:
+            msg = (
+                f"Busque las propiedades que calificaste con {label}. "
+                f"Encontre {total} propiedad{'es' if total != 1 else ''}. "
+                "Aqui va la primera:"
+            )
+        else:
+            msg = f"Aqui va la siguiente propiedad con {label}:"
+    elif list_mode == "filtered_no_price":
+        if idx == 1:
+            msg = (
+                f"Encontre {total} propiedad{'es' if total != 1 else ''} "
+                "sin precio conocido. Aqui va la primera:"
+            )
+        else:
+            msg = "Aqui va la siguiente propiedad sin precio conocido:"
+    elif list_mode == "by_id":
+        msg = "Aqui esta la propiedad que buscaste:"
     else:
-        msg = _compose_property_message(session, idx, total, data=data)
+        if idx == 1:
+            from app.services.claude_service import generate_search_intro
+            criteria = dict(session.extracted_criteria or {})
+            relax_type = str(criteria.get("_relax_type") or "").strip()
+            if relax_type:
+                # Relaxed search: use existing template (already handles this case well)
+                msg = _compose_property_message(session, idx, total, data=data)
+            else:
+                msg = await generate_search_intro(
+                    criteria=criteria,
+                    total=total,
+                    user_name=session.name or "",
+                )
+        else:
+            msg = _compose_property_message(session, idx, total, data=data)
         status_warning = _build_project_status_warning(data)
         if status_warning:
             msg = f"{msg}\n\n{status_warning}"
+
     return _property_card(
         msg,
         idx,
@@ -2827,6 +3020,7 @@ async def _show_property(session: WebChatSession, db: Session, record_id: str) -
         data,
         state="presenting",
         seen_by_user_before=seen_by_user_before,
+        user_rating=user_rating,
     )
 
 

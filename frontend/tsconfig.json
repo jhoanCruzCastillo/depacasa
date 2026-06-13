@@ -14,9 +14,8 @@
     "noFallthroughCasesInSwitch": true,
 
     "resolveJsonModule": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
+    "jsx": "react-jsx",
+    "noEmit": true,
     "moduleResolution": "bundler"
   },
   "include": ["src"],

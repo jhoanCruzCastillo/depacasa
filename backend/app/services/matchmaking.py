@@ -1,4 +1,4 @@
-"""Matchmaking service: scores scraped records against user criteria."""
+"""Matchmaking service: scores propiedades against user criteria."""
 
 import re
 import unicodedata
@@ -268,21 +268,37 @@ def _extract_price_values(data: dict) -> list[float]:
     return sorted({round(p, 2) for p in prices})
 
 
-# ── SQL (level-2 records + LATERAL JOIN for parent data) ─────────────────────
+# ── SQL — query propiedades joined with parent proyecto data ──────────────────
 
-_LATERAL_BASE = """
-SELECT sr.id, sr.data, COALESCE(pd.parent_text, '') AS parent_text
-FROM scraped_records sr
-JOIN url_nodes un ON sr.url_node_id = un.id
-LEFT JOIN LATERAL (
-    SELECT psr.data::text AS parent_text
-    FROM scraped_records psr
-    WHERE psr.url_node_id = un.parent_id
-    ORDER BY psr.scraped_at DESC
-    LIMIT 1
-) pd ON true
-WHERE un.parent_id IS NOT NULL
+_CANDIDATES_SQL = """
+SELECT p.id, p.dormitorios, p.m2, p.modelo, p.extra_data,
+       pr.precio_desde, pr.ubicacion, pr.nombre, pr.descripcion, pr.estado_del_proyecto,
+       COALESCE(pr.nombre, '') AS parent_nombre
+FROM propiedades p
+LEFT JOIN proyectos pr ON pr.id = p.proyecto_id
+ORDER BY p.scraped_at DESC
+LIMIT :lim
 """
+
+
+def _build_data_dict(row) -> tuple[str, dict, str]:
+    """Return (record_id, data_dict, parent_text) from a candidates SQL row."""
+    record_id = str(row[0])
+    data: dict = {
+        "dormitorios":        row[1],
+        "m2":                 row[2],
+        "modelo":             row[3],
+        "precio_desde":       row[5],
+        "ubicacion":          row[6],
+        "nombre":             row[7],
+        "descripcion":        row[8],
+        "estado_del_proyecto": row[9],
+    }
+    if row[4]:  # extra_data de propiedad
+        data.update(row[4])
+    data = {k: v for k, v in data.items() if v is not None}
+    parent_text = str(row[10] or "")
+    return record_id, data, parent_text
 
 
 # ── Main API ──────────────────────────────────────────────────────────────────
@@ -294,11 +310,7 @@ async def find_matches(
     excluded_ids: set[str] | None = None,
     raw_description: str = "",
 ) -> list[str]:
-    """Return ordered list of ScrapedRecord UUID strings matching criteria.
-
-    Returns [] when no records pass the strict location+bedroom filter so the
-    caller can show a specific "no results" message instead of wrong results.
-    """
+    """Return ordered list of Propiedad UUID strings matching criteria."""
     try:
         import json
 
@@ -331,56 +343,31 @@ async def find_matches(
         budget_mode = str(criteria.get("budget_mode") or "preferencia").lower()
         excluded = excluded_ids or set()
 
-        rows = db.execute(
-            text(_LATERAL_BASE + "ORDER BY sr.scraped_at DESC LIMIT :lim"),
-            {"lim": _CANDIDATE_LIMIT},
-        ).fetchall()
+        rows = db.execute(text(_CANDIDATES_SQL), {"lim": _CANDIDATE_LIMIT}).fetchall()
 
         logger.info(
             "matchmaking: location=%r(%s) bedrooms=%s(%s) baths=%s/%s-%s(%s) area=%s/%s-%s(%s) price=%s-%s(%s) keywords=%s candidates=%d",
-            location,
-            location_mode,
-            bedrooms,
-            bedrooms_mode,
-            bathrooms_exact,
-            bathrooms_min,
-            bathrooms_max,
-            bathrooms_mode,
-            area_exact,
-            area_min,
-            area_max,
-            area_mode,
-            min_price,
-            max_price,
-            budget_mode,
-            keywords[:5],
-            len(rows),
+            location, location_mode, bedrooms, bedrooms_mode,
+            bathrooms_exact, bathrooms_min, bathrooms_max, bathrooms_mode,
+            area_exact, area_min, area_max, area_mode,
+            min_price, max_price, budget_mode, keywords[:5], len(rows),
         )
 
         if not rows:
             return []
 
-        # Each entry: {id, loc_ok, bed_match, kw_score, total, data, parent}
-        # bed_match: 1=exact  0=unknown/adjacent  -1=mismatch
         entries: list[dict] = []
 
         for row in rows:
-            record_id = str(row[0])
+            record_id, data_dict, parent_text = _build_data_dict(row)
             if record_id in excluded:
                 continue
 
-            raw = row[1]
-            data_dict: dict = dict(raw) if isinstance(raw, dict) else {}
-            parent_text: str = row[2] or ""
-
             child_json = json.dumps(data_dict, ensure_ascii=False)
             child_norm = _normalize(child_json)
-            # parent_text is used only for Claude re-ranking context, NOT for location
-            # because all Lima projects share the same listing-page parent, making
-            # parent location data unreliable (it bleeds across unrelated projects).
-            kw_norm = child_norm   # keyword search on child only
+            kw_norm = child_norm
 
-            # Location score — child data only (each child embeds its own description)
+            # Location score
             loc_ok = False
             loc_score = 0
             if location:
@@ -393,22 +380,21 @@ async def find_matches(
             # Keyword score
             kw_score = sum(1 for kw in keywords if kw in kw_norm)
 
-            # Bedroom score + match category
-            # bed_match: 1=exact  0=unknown  -1=any mismatch (adjacent or far)
-            bed_match = 0   # unknown (no bedroom info in child data)
+            # Bedroom score
+            bed_match = 0
             bed_score = 0
             if bedrooms:
                 bed_counts = _extract_bedroom_counts(data_dict)
                 if bed_counts:
                     if bedrooms in bed_counts:
-                        bed_match, bed_score = 1, 10     # exact → shown first
+                        bed_match, bed_score = 1, 10
                     elif any(abs(b - bedrooms) == 1 for b in bed_counts):
                         bed_match, bed_score = -1, -5 if bedrooms_mode == "obligatorio" else -3
                     else:
                         bed_match, bed_score = -1, -20 if bedrooms_mode == "obligatorio" else -8
 
-            # Bathroom score + match category
-            bath_match = 0  # 1=match, 0=unknown, -1=mismatch
+            # Bathroom score
+            bath_match = 0
             bath_score = 0
             if has_bath_filter:
                 bath_counts = _extract_bathroom_counts(data_dict)
@@ -428,8 +414,8 @@ async def find_matches(
                     else:
                         bath_match, bath_score = -1, -10 if bathrooms_mode == "obligatorio" else -4
 
-            # Area score + match category
-            area_match = 0  # 1=match, 0=unknown, -1=mismatch
+            # Area score
+            area_match = 0
             area_score = 0
             if has_area_filter:
                 area_values = _extract_area_values(data_dict)
@@ -453,8 +439,7 @@ async def find_matches(
                         else:
                             area_match, area_score = -1, -8 if area_mode == "obligatorio" else -3
 
-            # Price score + strict match category
-            # price_match: 1=in range, 0=unknown price, -1=known out of range
+            # Price score
             price_match = 0
             price_score = 0
             best_price: float | None = None
@@ -485,7 +470,7 @@ async def find_matches(
         if not entries:
             return []
 
-        # Hard filters only for fields marked as obligatorio.
+        # Hard filters
         if location and location_mode == "obligatorio":
             loc_entries = [e for e in entries if e["loc_ok"]]
             if not loc_entries:
@@ -498,10 +483,7 @@ async def find_matches(
             if in_budget:
                 entries = in_budget
             else:
-                logger.info(
-                    "matchmaking: no records found in price range min=%s max=%s",
-                    min_price, max_price,
-                )
+                logger.info("matchmaking: no records found in price range min=%s max=%s", min_price, max_price)
                 return []
 
         if bedrooms and bedrooms_mode == "obligatorio":
@@ -509,10 +491,7 @@ async def find_matches(
             if good:
                 entries = good
             else:
-                logger.info(
-                    "matchmaking: all location-matched records have bedroom mismatch (want %d)",
-                    bedrooms,
-                )
+                logger.info("matchmaking: all location-matched records have bedroom mismatch (want %d)", bedrooms)
                 return []
 
         if has_bath_filter and bathrooms_mode == "obligatorio":
@@ -531,11 +510,9 @@ async def find_matches(
                 logger.info("matchmaking: no records satisfy obligatory area criteria")
                 return []
 
-        # ── Step 3: rank by total score ───────────────────────────────────────
         entries.sort(key=lambda e: e["total"], reverse=True)
         top_slice = entries[:_RERANK_LIMIT]
 
-        # ── Step 4: Claude re-ranking ─────────────────────────────────────────
         if top_slice and (location or bedrooms or has_bath_filter or has_area_filter or has_price_filter):
             try:
                 from app.services.claude_service import rerank_properties
@@ -558,46 +535,62 @@ async def find_matches(
 
 
 def get_record_data(db: Session, record_id: str) -> dict | None:
+    """Return merged property+project data for a given Propiedad ID."""
     try:
-        child = db.execute(
-            text(
-                """
-                SELECT sr.data, sr.source_url, un.parent_id
-                FROM scraped_records sr
-                JOIN url_nodes un ON sr.url_node_id = un.id
-                WHERE sr.id = :id
-                """
-            ),
+        row = db.execute(
+            text("""
+                SELECT p.imagen_modelo, p.dormitorios, p.m2, p.modelo, p.modelo_imagen,
+                       p.extra_data,
+                       pr.nombre, pr.estado_del_proyecto, pr.ubicacion, pr.precio_desde,
+                       pr.imagen, pr.descripcion,
+                       pr.areas_comunes_exterior_e_interior_img, pr.areas_comunes,
+                       pr.areas_comunes_imagenes, pr.lugares_cercanos,
+                       pr.extra_data AS parent_extra
+                FROM propiedades p
+                LEFT JOIN proyectos pr ON pr.id = p.proyecto_id
+                WHERE p.id = :id
+            """),
             {"id": record_id},
         ).fetchone()
-        if not child:
+
+        if not row:
             return None
 
-        child_data = dict(child[0]) if isinstance(child[0], dict) else {}
-        source_url = child[1]
-        parent_id = child[2]
+        # Propiedad fields
+        data: dict = {
+            "imagen_modelo": row[0],
+            "dormitorios":   row[1],
+            "m2":            row[2],
+            "modelo":        row[3],
+            "modelo_imagen": row[4],
+        }
+        if row[5]:  # propiedad.extra_data
+            data.update(row[5])
 
-        parent_data: dict = {}
-        if parent_id and source_url:
-            parent = db.execute(
-                text(
-                    """
-                    SELECT srp.data
-                    FROM scraped_records srp
-                    WHERE srp.url_node_id = :parent_id
-                      AND srp.data->>'url_propiedad' = :source_url
-                    ORDER BY srp.scraped_at DESC
-                    LIMIT 1
-                    """
-                ),
-                {"parent_id": parent_id, "source_url": source_url},
-            ).fetchone()
-            if parent and isinstance(parent[0], dict):
-                parent_data = dict(parent[0])
+        # Proyecto fields (always authoritative)
+        proyecto_fields = {
+            "nombre":                              row[6],
+            "estado_del_proyecto":                 row[7],
+            "ubicacion":                           row[8],
+            "precio_desde":                        row[9],
+            "imagen":                              row[10],
+            "descripcion":                         row[11],
+            "areas_comunes_exterior_e_interior_img": row[12],
+            "areas_comunes":                       row[13],
+            "areas_comunes_imagenes":              row[14],
+            "lugares_cercanos":                    row[15],
+        }
+        for k, v in proyecto_fields.items():
+            if v is not None:
+                data[k] = v
 
-        # Child values prevail over parent values when keys repeat.
-        merged = {**parent_data, **child_data}
-        return merged
+        if row[16]:  # parent_extra
+            for k, v in row[16].items():
+                if k not in data:
+                    data[k] = v
+
+        return {k: v for k, v in data.items() if v is not None}
+
     except Exception as e:
         logger.error("Error fetching record %s: %s", record_id, e)
         return None

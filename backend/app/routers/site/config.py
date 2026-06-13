@@ -1,14 +1,14 @@
 """Admin site configuration endpoints."""
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
-import json
 
 from database import get_db
 from app.models.site_config import SiteConfig, DEFAULT_SITE_CONFIG_ID, DEFAULT_CARD_FIELDS
+from app.models.proyecto import Proyecto
+from app.models.propiedad import Propiedad
 
 router = APIRouter()
 
@@ -82,15 +82,6 @@ def update_config(body: SiteConfigIn, db: Session = Depends(get_db)):
     return cfg
 
 
-def _level_condition(level: int, alias: str = "sr") -> str:
-    """Build JOIN + WHERE condition for record level filtering."""
-    if level == 1:
-        return f"JOIN url_nodes un ON {alias}.url_node_id = un.id WHERE un.parent_id IS NULL"
-    elif level == 2:
-        return f"JOIN url_nodes un ON {alias}.url_node_id = un.id WHERE un.parent_id IS NOT NULL"
-    return f"JOIN url_nodes un ON {alias}.url_node_id = un.id WHERE 1=1"
-
-
 @router.get("/records/browse")
 def browse_records(
     level: int = 2,
@@ -100,41 +91,45 @@ def browse_records(
     db: Session = Depends(get_db),
 ):
     """Return paginated records for admin record browser (to pick hero items)."""
-    join_where = _level_condition(level)
-    params: dict = {"lim": limit, "skip": skip}
-
-    if search:
-        sql = text(
-            f"SELECT sr.id, sr.data FROM scraped_records sr {join_where} "
-            "AND sr.data::text ILIKE :q ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
-        )
-        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr {join_where} AND sr.data::text ILIKE :q")
-        params["q"] = f"%{search}%"
+    if level == 1:
+        q = db.query(Proyecto)
+        if search:
+            q = q.filter(
+                Proyecto.nombre.ilike(f"%{search}%")
+                | Proyecto.ubicacion.ilike(f"%{search}%")
+            )
+        total = q.count()
+        items = q.order_by(Proyecto.scraped_at.desc()).offset(skip).limit(limit).all()
     else:
-        sql = text(
-            f"SELECT sr.id, sr.data FROM scraped_records sr {join_where} "
-            "ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
-        )
-        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr {join_where}")
+        q = db.query(Propiedad).join(Proyecto, Propiedad.proyecto_id == Proyecto.id)
+        if search:
+            q = q.filter(
+                Proyecto.nombre.ilike(f"%{search}%")
+                | Proyecto.ubicacion.ilike(f"%{search}%")
+                | Propiedad.dormitorios.ilike(f"%{search}%")
+            )
+        total = q.count()
+        items = q.order_by(Propiedad.scraped_at.desc()).offset(skip).limit(limit).all()
 
-    rows = db.execute(sql, params).fetchall()
-    total = db.execute(count_sql, {k: v for k, v in params.items() if k not in ("lim", "skip")}).scalar() or 0
-
-    items = [{"id": str(r[0]), "data": dict(r[1]) if r[1] else {}} for r in rows]
-    return {"total": int(total), "items": items}
+    return {
+        "total": int(total),
+        "items": [{"id": str(r.id), "data": r.to_data()} for r in items],
+    }
 
 
 @router.get("/fields/discover")
 def discover_fields(level: int = 2, db: Session = Depends(get_db)):
-    """Return unique field keys present in records at the given level (sample of 200 records)."""
-    join_where = _level_condition(level)
-    rows = db.execute(
-        text(f"SELECT sr.data FROM scraped_records sr {join_where} ORDER BY sr.scraped_at DESC LIMIT 200")
-    ).fetchall()
-
-    keys: set = set()
-    for (data,) in rows:
-        if data and isinstance(data, dict):
-            keys.update(data.keys())
-
-    return sorted(keys)
+    """Return the standardized field keys available at the given level."""
+    if level == 1:
+        return sorted([
+            "nombre", "estado_del_proyecto", "ubicacion", "precio_desde",
+            "imagen", "descripcion", "areas_comunes", "areas_comunes_imagenes",
+            "areas_comunes_exterior_e_interior_img", "lugares_cercanos",
+        ])
+    return sorted([
+        "imagen_modelo", "dormitorios", "m2", "modelo", "modelo_imagen",
+        # fields merged from proyecto:
+        "nombre", "estado_del_proyecto", "ubicacion", "precio_desde",
+        "imagen", "descripcion", "areas_comunes", "areas_comunes_imagenes",
+        "areas_comunes_exterior_e_interior_img", "lugares_cercanos",
+    ])

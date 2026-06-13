@@ -11,7 +11,9 @@ from pydantic import BaseModel
 
 from database import get_db
 from app.models.web_chat_session import WebChatSession
+from app.models.user_document import UserDocument
 from app.services.web_conversation import create_session, handle_message
+from app.services.notification_service import create_notification
 from app.routers.auth import get_optional_user
 
 router = APIRouter()
@@ -80,12 +82,23 @@ async def new_session(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/web/sessions/{session_id}/message")
-async def send_message(session_id: str, body: MessageIn, db: Session = Depends(get_db)):
+async def send_message(request: Request, session_id: str, body: MessageIn, db: Session = Depends(get_db)):
     try:
         sid = UUID(session_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid session_id")
     try:
+        # Link session to user if logged in but session was created anonymously
+        site_user = get_optional_user(request, db)
+        if site_user:
+            session_obj = db.query(WebChatSession).filter(WebChatSession.id == sid).first()
+            if session_obj and not session_obj.site_user_id:
+                session_obj.site_user_id = site_user.id
+                session_obj.email = site_user.email
+                session_obj.name = site_user.name or session_obj.name
+                session_obj.country = site_user.country or session_obj.country
+                session_obj.phone = site_user.phone or session_obj.phone
+
         content = (body.content or "").strip()
         extra_lines: list[str] = []
         for raw_url in body.attachment_urls or []:
@@ -158,12 +171,34 @@ async def upload_attachment(
     out_path.write_bytes(data)
 
     relative_url = f"/media/chat_uploads/{date_key}/{session.id}/{stored_name}"
+    kind = _attachment_kind(content_type, ext)
+
+    doc = UserDocument(
+        site_user_id=session.site_user_id or None,
+        session_id=session.id,
+        document_url=relative_url,
+        document_kind=kind,
+        original_filename=safe_name,
+        mime_type=content_type,
+    )
+    db.add(doc)
+    db.commit()
+
+    create_notification(
+        db,
+        type="document_uploaded",
+        title=f"Documento subido: {safe_name}",
+        body=f"Tipo: {kind}",
+        reference_id=doc.id,
+        reference_type="user_document",
+    )
+
     return {
         "attachment_url": relative_url,
         "file_name": safe_name,
         "mime_type": content_type,
         "size": len(data),
-        "kind": _attachment_kind(content_type, ext),
+        "kind": kind,
     }
 
 

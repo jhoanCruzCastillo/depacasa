@@ -1,12 +1,27 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  X, MousePointer2, Sparkles, RotateCcw, Check, Plus, Trash2, Eye,
-} from 'lucide-react'
-import Badge from '../ui/Badge'
+import { useEffect, useRef, useState } from 'react'
+import { X, Trash2, Check, RotateCcw, Navigation2, Tag, MousePointer2, Camera, Database } from 'lucide-react'
 
-type Mode = 'manual' | 'ai'
+// ── Types ─────────────────────────────────────────────────────────────────────
+type FieldType = 'container' | 'text' | 'url' | 'number' | 'image'
+type ActiveTab = 'listing' | 'detail'
 
-interface CapturedField {
+interface Annotation {
+  id: string
+  label: string
+  field_name: string
+  field_type: FieldType
+  selector: string
+  parent_id: string | null
+  is_nav_link: boolean
+  tab: ActiveTab
+  scroll_y: number
+  viewport_rect: { x1: number; y1: number; x2: number; y2: number }
+  matches: number
+  preview: string
+  inferring: boolean
+}
+
+export interface CapturedField {
   id: string
   name: string
   selector: string
@@ -17,82 +32,135 @@ interface CapturedField {
   enabled: boolean
 }
 
-interface ValidationResult {
-  card_count: number
-  results: Array<{
-    name: string
-    selector: string
-    found: number
-    missing: number
-    total: number
-  }>
-  preview: Array<Record<string, string | null>>
+export interface VisualSelectorPayload {
+  cardSelector?: string
+  fields: CapturedField[]
+  detailContainerSelector?: string
+  detailFields?: CapturedField[]
 }
 
-interface VisualSelectorModalProps {
+interface Props {
   open: boolean
   url: string
   onClose: () => void
-  onConfirm: (payload: { cardSelector?: string; fields: CapturedField[] }) => void
+  onConfirm: (payload: VisualSelectorPayload) => void
 }
 
+interface Popup {
+  annotationId: string
+  label: string
+  hoverEnabled: boolean
+  popupX: number
+  popupY: number
+}
+
+interface PendingInference {
+  annotationId: string
+  label: string
+  parentLabel?: string
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
 let _id = 0
 const uid = () => `vs_${++_id}`
 
 const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 const wsUrl = apiUrl.replace(/\/api\/?$/, '').replace(/^http/, 'ws') + '/ws/visual-selector'
 
-const confidenceColor = (value?: number) => {
-  if (value == null) return 'gray'
-  if (value >= 0.9) return 'green'
-  if (value >= 0.7) return 'yellow'
-  return 'red'
+const TYPE_COLOR: Record<FieldType, string> = {
+  container: '#3b82f6',
+  text: '#16a34a',
+  url: '#9333ea',
+  number: '#ea580c',
+  image: '#db2777',
 }
 
-export default function VisualSelectorModal({ open, url, onClose, onConfirm }: VisualSelectorModalProps) {
+// ── Component ─────────────────────────────────────────────────────────────────
+export default function VisualSelectorModal({ open, url, onClose, onConfirm }: Props) {
   const wsRef = useRef<WebSocket | null>(null)
   const sessionRef = useRef<string | null>(null)
-  const imageRef = useRef<HTMLImageElement | null>(null)
-  const lastHoverRef = useRef(0)
+  const overlayRef = useRef<HTMLDivElement>(null)
   const scrollYRef = useRef(0)
   const scrollDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingRef = useRef<PendingInference | null>(null)
+  const popupInputRef = useRef<HTMLInputElement>(null)
+  const annotationsRef = useRef<Annotation[]>([])
+  const activeTabRef = useRef<ActiveTab>('listing')
+  const viewportRef = useRef<{ width: number; height: number } | null>(null)
 
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [viewport, setViewport] = useState<{ width: number; height: number } | null>(null)
   const [screenshot, setScreenshot] = useState<string | null>(null)
-  const [mode, setMode] = useState<Mode>('manual')
-  const [selectionEnabled, setSelectionEnabled] = useState(true)
-  const [fields, setFields] = useState<CapturedField[]>([])
-  const [cardSelector, setCardSelector] = useState('')
-  const [validation, setValidation] = useState<ValidationResult | null>(null)
-  const [errors, setErrors] = useState<string | null>(null)
-  const [loadingAI, setLoadingAI] = useState(false)
-  const [validating, setValidating] = useState(false)
   const [wsConnecting, setWsConnecting] = useState(true)
+  const [wsError, setWsError] = useState<string | null>(null)
   const [scrolling, setScrolling] = useState(false)
 
-  const enabledFields = useMemo(() => fields.filter(f => f.enabled && f.selector.trim()), [fields])
+  const [annotations, setAnnotations] = useState<Annotation[]>([])
+  const [drawRect, setDrawRect] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
+  const [popup, setPopup] = useState<Popup | null>(null)
+  const [activeTab, setActiveTab] = useState<ActiveTab>('listing')
+  const [navigateMode, setNavigateMode] = useState(false)
+  const [detailPageOpened, setDetailPageOpened] = useState(false)
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [interactionMode, setInteractionMode] = useState(false)
 
+  const [aiModel, setAiModel] = useState('claude-sonnet-4-6')
+  const [capturing, setCapturing] = useState(false)
+  const [rawDataResult, setRawDataResult] = useState<Record<string, unknown> | null>(null)
+  const [showRawData, setShowRawData] = useState(false)
+  const captureAnnIdRef = useRef<string | null>(null)
+
+  // Keep refs in sync
+  const syncedSetAnnotations = (updater: ((prev: Annotation[]) => Annotation[]) | Annotation[]) => {
+    setAnnotations(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      annotationsRef.current = next
+      return next
+    })
+  }
+
+  const send = (msg: Record<string, unknown>) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(msg))
+    }
+  }
+
+  // ── WS lifecycle ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!open) return
-    setFields([])
-    setCardSelector('')
-    setValidation(null)
-    setErrors(null)
+    syncedSetAnnotations([])
+    setDrawRect(null)
+    setPopup(null)
     setScreenshot(null)
     setSessionId(null)
     sessionRef.current = null
     setViewport(null)
-    setMode('manual')
-    setSelectionEnabled(true)
+    viewportRef.current = null
     setWsConnecting(true)
+    setWsError(null)
+    setActiveTab('listing')
+    activeTabRef.current = 'listing'
+    setNavigateMode(false)
+    setDetailPageOpened(false)
+    setLoadingDetail(false)
+    setInteractionMode(false)
+    setCapturing(false)
+    setRawDataResult(null)
+    setShowRawData(false)
+    captureAnnIdRef.current = null
     scrollYRef.current = 0
+    pendingRef.current = null
+    annotationsRef.current = []
 
-    // Timeout: si en 50s no llega session_started, mostrar error accionable
-    const loadTimeout = setTimeout(() => {
-      setWsConnecting(false)
+    fetch(`${apiUrl}/chat/config`)
+      .then(r => r.json())
+      .then((d: { ai_model?: string }) => setAiModel(d.ai_model || 'claude-sonnet-4-6'))
+      .catch(() => {})
+
+    const timeout = setTimeout(() => {
       if (!sessionRef.current) {
-        setErrors('No se pudo conectar al backend. Verifica que el servidor está activo e inténtalo de nuevo.')
+        setWsConnecting(false)
+        setWsError('No se pudo conectar. Verifica que el servidor esté activo.')
       }
     }, 50_000)
 
@@ -100,282 +168,641 @@ export default function VisualSelectorModal({ open, url, onClose, onConfirm }: V
     wsRef.current = ws
 
     ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({
-        type: 'start_session',
-        url,
-        viewport: { width: 1280, height: 720 },
-      }))
+      ws.send(JSON.stringify({ type: 'start_session', url, viewport: { width: 1280, height: 720 } }))
     })
-
     ws.addEventListener('error', () => {
       setWsConnecting(false)
-      setErrors('Error de conexión con el backend. Asegúrate de que el servidor está corriendo en localhost:8000.')
+      setWsError('Error de conexión. Asegúrate de que el servidor está corriendo.')
     })
-
-    ws.addEventListener('close', (event) => {
+    ws.addEventListener('close', (ev) => {
       setWsConnecting(false)
-      if (!sessionRef.current && event.code !== 1000) {
-        setErrors('La conexión con el backend se cerró inesperadamente. Intenta abrir el selector de nuevo.')
+      if (!sessionRef.current && ev.code !== 1000) {
+        setWsError('Conexión cerrada inesperadamente. Intenta de nuevo.')
       }
     })
+    ws.addEventListener('message', (ev) => {
+      const msg = JSON.parse(ev.data)
+      switch (msg.type) {
+        case 'session_started':
+          clearTimeout(timeout)
+          setWsConnecting(false)
+          sessionRef.current = msg.session_id
+          setSessionId(msg.session_id)
+          setViewport(msg.viewport)
+          viewportRef.current = msg.viewport
+          setScreenshot(msg.screenshot)
+          break
 
-    ws.addEventListener('message', (event) => {
-      const payload = JSON.parse(event.data)
-      if (payload.type === 'session_started') {
-        clearTimeout(loadTimeout)
-        setWsConnecting(false)
-        setSessionId(payload.session_id)
-        sessionRef.current = payload.session_id
-        setViewport(payload.viewport)
-        setScreenshot(payload.screenshot)
-        return
-      }
-      if (payload.type === 'snapshot') {
-        setScreenshot(payload.screenshot)
-        return
-      }
-      if (payload.type === 'selection') {
-        if (payload.screenshot) setScreenshot(payload.screenshot)
-        const data = payload.data
-        const preview = data.preview || data.text || ''
-        const inferredType = data.tag_name === 'a' || /^https?:\/\//i.test(preview) ? 'url' : 'text'
-        setFields(prev => ([
-          ...prev,
-          {
-            id: uid(),
-            name: '',
-            selector: data.selector || '',
-            preview: preview || '',
-            matches: data.matches ?? 0,
-            type: inferredType,
-            enabled: true,
-          },
-        ]))
-        return
-      }
-      if (payload.type === 'ai_result') {
-        setLoadingAI(false)
-        const data = payload.data || {}
-        setCardSelector(data.card_selector || '')
-        setFields((data.fields || []).map((field: any) => ({
-          id: uid(),
-          name: field.name || '',
-          selector: field.selector || '',
-          preview: '',
-          matches: 0,
-          type: field.type || 'text',
-          confidence: field.confidence,
-          enabled: true,
-        })))
-        return
-      }
-      if (payload.type === 'validation_result') {
-        setValidating(false)
-        setValidation(payload.data || null)
-        if (payload.errors?.length) {
-          setErrors(payload.errors.join(' '))
-        } else {
-          setErrors(null)
+        case 'snapshot':
+          setScreenshot(msg.screenshot)
+          setScrolling(false)
+          break
+
+        case 'rect_selected': {
+          if (!pendingRef.current) break
+          const { annotationId, label, parentLabel } = pendingRef.current
+          const selector: string = msg.data?.selector || ''
+          const preview: string = msg.data?.preview || ''
+          // Show post-hover screenshot if backend sent one
+          if (msg.screenshot) setScreenshot(msg.screenshot)
+          syncedSetAnnotations(prev =>
+            prev.map(a => a.id === annotationId ? { ...a, selector, preview } : a)
+          )
+          send({
+            type: 'infer_field',
+            session_id: sessionRef.current,
+            selector,
+            label,
+            parent_label: parentLabel ?? null,
+          })
+          break
         }
-        return
-      }
-      if (payload.type === 'error') {
-        setLoadingAI(false)
-        setValidating(false)
-        setErrors(payload.message || 'Error inesperado')
-        return
+
+        case 'field_inferred': {
+          if (!pendingRef.current) break
+          const { annotationId } = pendingRef.current
+          const { field_name, field_type } = msg.data || {}
+          syncedSetAnnotations(prev =>
+            prev.map(a =>
+              a.id === annotationId
+                ? { ...a, field_name: field_name || a.label, field_type: field_type || 'text', inferring: false }
+                : a
+            )
+          )
+          pendingRef.current = null
+          break
+        }
+
+        case 'card_url':
+          if (msg.url) {
+            send({ type: 'open_detail', session_id: sessionRef.current, url: msg.url })
+          } else {
+            setNavigateMode(false)
+            setLoadingDetail(false)
+          }
+          break
+
+        case 'detail_opened':
+          setLoadingDetail(false)
+          setNavigateMode(false)
+          setDetailPageOpened(true)
+          setActiveTab('detail')
+          activeTabRef.current = 'detail'
+          scrollYRef.current = 0
+          setScreenshot(msg.screenshot)
+          break
+
+        case 'tab_switched':
+          setScrolling(false)
+          setScreenshot(msg.screenshot)
+          break
+
+        case 'capture_result': {
+          setCapturing(false)
+          const captureId = captureAnnIdRef.current
+          captureAnnIdRef.current = null
+          setPopup(null)
+          if (msg.screenshot) setScreenshot(msg.screenshot)
+
+          const d = msg.data || {}
+          const cardSel: string = d.card_selector || ''
+          const aiFields: Array<{ name: string; selector: string; type: string; is_image: boolean; is_child_url: boolean; is_list: boolean; extract_attr: string | null }> = d.fields || []
+
+          if (captureId) {
+            // Update the drawn-rect annotation as the container
+            syncedSetAnnotations(prev => prev.map(a =>
+              a.id === captureId
+                ? { ...a, label: d.catalog_type || 'catalog', field_name: 'card', field_type: 'container', selector: cardSel, preview: cardSel, inferring: false }
+                : a
+            ))
+            // Create child field annotations
+            const containerAnn = annotationsRef.current.find(a => a.id === captureId)
+            if (containerAnn && aiFields.length > 0) {
+              const fieldAnns: Annotation[] = aiFields.map(f => ({
+                id: uid(),
+                label: f.name,
+                field_name: f.name,
+                field_type: (f.is_image ? 'image' : f.is_child_url ? 'url' : (f.type as FieldType)) || 'text',
+                selector: f.selector || '',
+                parent_id: captureId,
+                is_nav_link: f.is_child_url && f.name === 'url_propiedad',
+                tab: containerAnn.tab,
+                scroll_y: containerAnn.scroll_y,
+                viewport_rect: containerAnn.viewport_rect,
+                matches: 0,
+                preview: f.selector || '',
+                inferring: false,
+              }))
+              syncedSetAnnotations(prev => [...prev, ...fieldAnns])
+            }
+          }
+          break
+        }
+
+        case 'raw_data':
+          setRawDataResult(msg.data || {})
+          setShowRawData(true)
+          break
+
+        case 'error':
+          setWsError(msg.message || 'Error inesperado')
+          setCapturing(false)
+          if (captureAnnIdRef.current) {
+            const id = captureAnnIdRef.current
+            captureAnnIdRef.current = null
+            syncedSetAnnotations(prev => prev.map(a => a.id === id ? { ...a, inferring: false } : a))
+          }
+          if (pendingRef.current) {
+            const id = pendingRef.current.annotationId
+            syncedSetAnnotations(prev => prev.map(a => a.id === id ? { ...a, inferring: false } : a))
+            pendingRef.current = null
+          }
+          setLoadingDetail(false)
+          break
       }
     })
 
     return () => {
-      clearTimeout(loadTimeout)
+      clearTimeout(timeout)
       if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current)
       if (wsRef.current) {
-        if (sessionRef.current) {
-          wsRef.current.send(JSON.stringify({ type: 'end_session', session_id: sessionRef.current }))
-        }
+        try {
+          if (sessionRef.current) wsRef.current.send(JSON.stringify({ type: 'end_session', session_id: sessionRef.current }))
+        } catch { /* ok */ }
         wsRef.current.close()
       }
     }
   }, [open, url])
 
-  const toViewportCoords = (event: React.MouseEvent) => {
-    if (!viewport || !imageRef.current) return null
-    const rect = imageRef.current.getBoundingClientRect()
-    const x = (event.clientX - rect.left) * (viewport.width / rect.width)
-    const y = (event.clientY - rect.top) * (viewport.height / rect.height)
-    return {
-      x: Math.max(0, Math.min(viewport.width, Math.round(x))),
-      y: Math.max(0, Math.min(viewport.height, Math.round(y))),
+  // Focus popup input on open
+  useEffect(() => {
+    if (popup) setTimeout(() => popupInputRef.current?.focus(), 40)
+  }, [popup?.annotationId])
+
+  // Switch browser tab when activeTab changes (skip initial render)
+  const isFirstTabRender = useRef(true)
+  useEffect(() => {
+    if (isFirstTabRender.current) { isFirstTabRender.current = false; return }
+    if (!sessionRef.current) return
+    scrollYRef.current = 0
+    send({ type: 'switch_tab', session_id: sessionRef.current, tab: activeTab })
+  }, [activeTab])
+
+  // ── Drawing ───────────────────────────────────────────────────────────────
+  const findParent = (rx1: number, ry1: number, rx2: number, ry2: number, cW: number, cH: number): string | null => {
+    const vp = viewportRef.current
+    if (!vp) return null
+    const cx = (rx1 + rx2) / 2
+    const cy = (ry1 + ry2) / 2
+    let bestId: string | null = null
+    let bestArea = Infinity
+    for (const ann of annotationsRef.current) {
+      if (ann.field_type !== 'container' || ann.tab !== activeTabRef.current) continue
+      const scrollDiff = ann.scroll_y - scrollYRef.current
+      const dX1 = (ann.viewport_rect.x1 / vp.width) * cW
+      const dY1 = ((ann.viewport_rect.y1 + scrollDiff) / vp.height) * cH
+      const dX2 = (ann.viewport_rect.x2 / vp.width) * cW
+      const dY2 = ((ann.viewport_rect.y2 + scrollDiff) / vp.height) * cH
+      if (cx >= dX1 && cx <= dX2 && cy >= dY1 && cy <= dY2) {
+        const area = (dX2 - dX1) * (dY2 - dY1)
+        if (area < bestArea) { bestArea = area; bestId = ann.id }
+      }
     }
+    return bestId
   }
 
-  const send = (payload: Record<string, any>) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-    wsRef.current.send(JSON.stringify(payload))
+  const handleFreeClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!sessionRef.current || !viewportRef.current) return
+    const container = overlayRef.current!
+    const bounds = container.getBoundingClientRect()
+    const vp = viewportRef.current
+    const x = Math.round(((e.clientX - bounds.left) / container.offsetWidth) * vp.width)
+    const y = Math.round(((e.clientY - bounds.top) / container.offsetHeight) * vp.height)
+    send({ type: 'free_click', session_id: sessionRef.current, x, y })
   }
 
-  const handleWheel = (event: React.WheelEvent) => {
-    if (!sessionId) return
-    event.preventDefault()
-    scrollYRef.current = Math.max(0, scrollYRef.current + event.deltaY)
-    setScrolling(true)
-    if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current)
-    scrollDebounceRef.current = setTimeout(() => {
-      send({ type: 'scroll', session_id: sessionId, scroll_y: Math.round(scrollYRef.current) })
-      setScrolling(false)
-    }, 80)
-  }
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!sessionRef.current || !viewportRef.current || popup) return
+    if (interactionMode) { handleFreeClick(e); return }
+    e.preventDefault()
+    const container = overlayRef.current!
+    const bounds = container.getBoundingClientRect()
+    const startX = e.clientX - bounds.left
+    const startY = e.clientY - bounds.top
 
-  const handleMouseMove = (event: React.MouseEvent) => {
-    if (!selectionEnabled || mode !== 'manual') return
-    const now = Date.now()
-    if (now - lastHoverRef.current < 250) return  // 250ms: menos frecuente, JPEG compensa
-    lastHoverRef.current = now
-    const coords = toViewportCoords(event)
-    if (!coords) return
-    send({ type: 'hover', session_id: sessionId, ...coords })
-  }
+    setDrawRect({ x1: startX, y1: startY, x2: startX, y2: startY })
 
-  const handleClick = (event: React.MouseEvent) => {
-    const coords = toViewportCoords(event)
-    if (!coords) return
-    if (!selectionEnabled || mode !== 'manual') {
-      // Modo interacción: clic real en la página (cookies, modales, etc.)
-      send({ type: 'free_click', session_id: sessionId, ...coords })
-      return
+    const onMove = (me: MouseEvent) => {
+      setDrawRect({ x1: startX, y1: startY, x2: me.clientX - bounds.left, y2: me.clientY - bounds.top })
     }
-    send({ type: 'select', session_id: sessionId, ...coords })
+
+    const onUp = (me: MouseEvent) => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+
+      const endX = me.clientX - bounds.left
+      const endY = me.clientY - bounds.top
+      const rx1 = Math.min(startX, endX)
+      const ry1 = Math.min(startY, endY)
+      const rx2 = Math.max(startX, endX)
+      const ry2 = Math.max(startY, endY)
+      setDrawRect(null)
+      if (rx2 - rx1 < 15 || ry2 - ry1 < 15) return
+
+      const cW = container.offsetWidth
+      const cH = container.offsetHeight
+      const vp = viewportRef.current!
+      const vx1 = Math.round((rx1 / cW) * vp.width)
+      const vy1 = Math.round((ry1 / cH) * vp.height)
+      const vx2 = Math.round((rx2 / cW) * vp.width)
+      const vy2 = Math.round((ry2 / cH) * vp.height)
+      const parent_id = findParent(rx1, ry1, rx2, ry2, cW, cH)
+      const newId = uid()
+
+      syncedSetAnnotations(prev => [...prev, {
+        id: newId, label: '', field_name: '', field_type: 'text',
+        selector: '', parent_id, is_nav_link: false,
+        tab: activeTabRef.current, scroll_y: scrollYRef.current,
+        viewport_rect: { x1: vx1, y1: vy1, x2: vx2, y2: vy2 },
+        matches: 0, preview: '', inferring: false,
+      }])
+
+      const px = Math.min(rx2 + 10, cW - 268)
+      const py = Math.max(ry1, 0)
+      setPopup({ annotationId: newId, label: '', hoverEnabled: false, popupX: px, popupY: py })
+    }
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
   }
 
-  const handleValidate = () => {
-    if (!sessionId || enabledFields.length === 0) return
-    setValidating(true)
+  const handleNavigateClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!sessionRef.current || !viewportRef.current) return
+    const container = overlayRef.current!
+    const bounds = container.getBoundingClientRect()
+    const vp = viewportRef.current
+    const x = Math.round(((e.clientX - bounds.left) / container.offsetWidth) * vp.width)
+    const y = Math.round(((e.clientY - bounds.top) / container.offsetHeight) * vp.height)
+    setLoadingDetail(true)
+    send({ type: 'get_card_url', session_id: sessionRef.current, x, y })
+  }
+
+  // ── Popup ─────────────────────────────────────────────────────────────────
+  const submitCapture = () => {
+    if (!popup) return
+    const ann = annotationsRef.current.find(a => a.id === popup.annotationId)
+    if (!ann) { setPopup(null); return }
+    captureAnnIdRef.current = popup.annotationId
+    setCapturing(true)
+    syncedSetAnnotations(prev => prev.map(a =>
+      a.id === popup.annotationId ? { ...a, label: popup.label || 'captura', inferring: true } : a
+    ))
     send({
-      type: 'validate',
-      session_id: sessionId,
-      card_selector: cardSelector.trim() || null,
-      fields: enabledFields.map(field => ({
-        name: field.name || 'campo',
-        selector: field.selector,
-        type: field.type,
+      type: 'capture_rect',
+      session_id: sessionRef.current,
+      x1: ann.viewport_rect.x1, y1: ann.viewport_rect.y1,
+      x2: ann.viewport_rect.x2, y2: ann.viewport_rect.y2,
+      hover: popup.hoverEnabled,
+      context: popup.label.trim(),
+      ai_model: aiModel,
+    })
+    // Keep popup open with loading state
+  }
+
+  const dismissPopup = () => {
+    if (!popup) return
+    syncedSetAnnotations(prev => prev.filter(a => a.id !== popup.annotationId))
+    captureAnnIdRef.current = null
+    setCapturing(false)
+    setPopup(null)
+  }
+
+  const handleExtractData = () => {
+    const anns = annotationsRef.current.filter(a => a.tab === activeTabRef.current && a.selector)
+    const containerAnn = anns.find(a => a.field_type === 'container')
+    const fieldAnns = anns.filter(a => a.field_type !== 'container')
+    send({
+      type: 'extract_raw_data',
+      session_id: sessionRef.current,
+      card_selector: containerAnn?.selector || null,
+      fields: fieldAnns.map(a => ({
+        name: a.field_name || a.label || 'campo',
+        selector: a.selector,
+        type: a.field_type,
       })),
     })
   }
 
-  const handleGenerateAI = () => {
+  // ── Scroll ────────────────────────────────────────────────────────────────
+  const handleWheel = (e: React.WheelEvent) => {
     if (!sessionId) return
-    setLoadingAI(true)
-    setErrors(null)
-    send({ type: 'ai_generate', session_id: sessionId })
+    e.preventDefault()
+    scrollYRef.current = Math.max(0, scrollYRef.current + e.deltaY)
+    setScrolling(true)
+    if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current)
+    scrollDebounceRef.current = setTimeout(() => {
+      send({ type: 'scroll', session_id: sessionId, scroll_y: Math.round(scrollYRef.current) })
+    }, 80)
   }
 
+  // ── Annotation helpers ────────────────────────────────────────────────────
+  const deleteAnnotation = (id: string) => {
+    syncedSetAnnotations(prev => prev.filter(a => a.id !== id && a.parent_id !== id))
+  }
+
+  const updateAnnotation = (id: string, patch: Partial<Annotation>) => {
+    syncedSetAnnotations(prev => prev.map(a => a.id === id ? { ...a, ...patch } : a))
+  }
+
+  const undoLast = () => {
+    syncedSetAnnotations(prev => {
+      const last = [...prev].reverse().find(a => a.tab === activeTab)
+      return last ? prev.filter(a => a.id !== last.id) : prev
+    })
+  }
+
+  // ── Annotation overlay positioning ────────────────────────────────────────
+  const getOverlayStyle = (ann: Annotation): React.CSSProperties | null => {
+    if (!viewport) return null
+    const scrollDiff = ann.scroll_y - scrollYRef.current
+    const adjY1 = ann.viewport_rect.y1 + scrollDiff
+    const adjY2 = ann.viewport_rect.y2 + scrollDiff
+    if (adjY2 < 0 || adjY1 > viewport.height) return null
+    return {
+      left: `${(ann.viewport_rect.x1 / viewport.width) * 100}%`,
+      top: `${(adjY1 / viewport.height) * 100}%`,
+      width: `${((ann.viewport_rect.x2 - ann.viewport_rect.x1) / viewport.width) * 100}%`,
+      height: `${((adjY2 - adjY1) / viewport.height) * 100}%`,
+      borderColor: TYPE_COLOR[ann.field_type],
+      backgroundColor: TYPE_COLOR[ann.field_type] + '18',
+    }
+  }
+
+  // ── Confirm ───────────────────────────────────────────────────────────────
   const handleConfirm = () => {
+    const toField = (a: Annotation): CapturedField => ({
+      id: a.id,
+      name: a.field_name || a.label || 'campo',
+      selector: a.selector,
+      preview: a.preview,
+      matches: a.matches,
+      type: (a.field_type === 'container' ? 'text' : a.field_type) as CapturedField['type'],
+      enabled: true,
+    })
+
+    const listAnns = annotations.filter(a => a.tab === 'listing' && a.selector)
+    const detAnns = annotations.filter(a => a.tab === 'detail' && a.selector)
+    const containerAnn = listAnns.find(a => a.field_type === 'container')
+    const detContainerAnn = detAnns.find(a => a.field_type === 'container')
+
     onConfirm({
-      cardSelector: cardSelector.trim() || undefined,
-      fields: enabledFields,
+      cardSelector: containerAnn?.selector,
+      fields: listAnns.filter(a => a.field_type !== 'container').map(toField),
+      detailContainerSelector: detContainerAnn?.selector,
+      detailFields: detAnns.length ? detAnns.filter(a => a.field_type !== 'container').map(toField) : undefined,
     })
     onClose()
   }
 
-  const handleUndo = () => {
-    setFields(prev => prev.slice(0, -1))
-  }
-
-  const updateField = (id: string, patch: Partial<CapturedField>) => {
-    setFields(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f))
-  }
-
   if (!open) return null
+
+  const tabAnnotations = annotations.filter(a => a.tab === activeTab)
+  const hasNavLink = annotations.some(a => a.tab === 'listing' && a.is_nav_link && a.field_type === 'url')
+  const canConfirm = annotations.some(a => a.selector && !a.inferring)
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm">
       <div className="absolute inset-4 bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden">
-        {/* Toolbar */}
-        <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-4">
+
+        {/* ── Toolbar ── */}
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-3 flex-shrink-0">
           <div className="flex-1 min-w-0">
-            <p className="text-xs text-gray-500">URL activa</p>
+            <p className="text-[10px] text-gray-400 uppercase tracking-wide">URL activa</p>
             <p className="text-sm font-semibold text-gray-900 truncate">{url}</p>
           </div>
-          <div className="flex items-center gap-2">
+
+          {/* Page tab switcher */}
+          <div className="flex bg-gray-100 rounded-xl p-1 gap-1">
             <button
-              onClick={() => setMode('manual')}
-              className={`px-3.5 py-2 rounded-xl text-sm font-medium border transition ${
-                mode === 'manual' ? 'border-blue-500 text-blue-600 bg-blue-50' : 'border-gray-200 text-gray-600'
+              onClick={() => { setActiveTab('listing'); activeTabRef.current = 'listing' }}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${
+                activeTab === 'listing' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              <MousePointer2 className="w-4 h-4 inline-block mr-1.5" />
-              Manual
+              Listado
             </button>
             <button
-              onClick={() => setMode('ai')}
-              className={`px-3.5 py-2 rounded-xl text-sm font-medium border transition ${
-                mode === 'ai' ? 'border-purple-500 text-purple-600 bg-purple-50' : 'border-gray-200 text-gray-600'
-              }`}
+              onClick={() => {
+                if (detailPageOpened) { setActiveTab('detail'); activeTabRef.current = 'detail' }
+              }}
+              disabled={!detailPageOpened && !hasNavLink}
+              title={!detailPageOpened && !hasNavLink ? 'Marca un enlace de navegación primero' : ''}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${
+                activeTab === 'detail' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              } ${!detailPageOpened && !hasNavLink ? 'opacity-40 cursor-not-allowed' : ''}`}
             >
-              <Sparkles className="w-4 h-4 inline-block mr-1.5" />
-              Asistido por IA
+              Detalle
+              {hasNavLink && !detailPageOpened && (
+                <span className="ml-1 text-[10px] text-purple-500">↗</span>
+              )}
             </button>
           </div>
+
+          {/* Navigate to detail button */}
+          {hasNavLink && !detailPageOpened && activeTab === 'listing' && (
+            <button
+              onClick={() => setNavigateMode(v => !v)}
+              disabled={loadingDetail}
+              className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
+                navigateMode
+                  ? 'bg-purple-600 text-white'
+                  : 'border border-purple-300 text-purple-600 hover:bg-purple-50'
+              }`}
+            >
+              <Navigation2 className="w-3.5 h-3.5" />
+              {loadingDetail ? 'Abriendo…' : navigateMode ? 'Clic en un card →' : 'Navegar al detalle'}
+            </button>
+          )}
+
           <button onClick={onClose} className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="flex-1 grid grid-cols-[1.2fr_0.8fr] gap-0">
-          {/* Left panel */}
-          <div className="border-r border-gray-100 bg-gray-50 flex flex-col">
-            <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm text-gray-600">
-                <Eye className="w-4 h-4" />
-                {mode === 'manual' ? 'Selector visual activo' : 'Vista de la página'}
+        <div className="flex-1 grid grid-cols-[1.2fr_0.8fr] overflow-hidden">
+
+          {/* ── Left: Browser preview ── */}
+          <div className="border-r border-gray-100 bg-gray-50 flex flex-col overflow-hidden">
+            <div className="px-4 py-2 border-b border-gray-100 flex items-center justify-between gap-2 flex-shrink-0">
+              <div className="flex items-center gap-2 text-xs text-gray-500">
+                {wsConnecting ? (
+                  <><div className="w-3 h-3 border border-gray-300 border-t-blue-500 rounded-full animate-spin" /> Conectando…</>
+                ) : screenshot ? (
+                  navigateMode ? (
+                    <><span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse inline-block" /> Haz clic en un card para abrir el detalle</>
+                  ) : interactionMode ? (
+                    <><span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse inline-block" /> Modo interacción: haz clic en la página normalmente</>
+                  ) : (
+                    <><span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> Arrastra para marcar un área</>
+                  )
+                ) : null}
               </div>
-              {mode === 'manual' && (
+              {screenshot && !navigateMode && (
                 <button
-                  onClick={() => setSelectionEnabled(v => !v)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                    selectionEnabled
-                      ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                      : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                  onClick={() => setInteractionMode(v => !v)}
+                  title={interactionMode ? 'Cambiar a modo selección (dibujar rectángulos)' : 'Cambiar a modo interacción (aceptar cookies, cerrar modales, etc.)'}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition flex-shrink-0 ${
+                    interactionMode
+                      ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                   }`}
-                  title={selectionEnabled ? 'Haz clic sobre elementos para capturar selectores' : 'Modo libre: haz clic en la página para interactuar (aceptar cookies, cerrar modales, etc.)'}
                 >
-                  {selectionEnabled ? '🟢 Selección ON' : '🔵 Interacción'}
+                  <MousePointer2 className="w-3 h-3" />
+                  {interactionMode ? 'Interacción' : 'Selección'}
                 </button>
               )}
             </div>
+
             <div className="flex-1 overflow-auto p-4">
               {screenshot ? (
                 <div className="relative">
-                  <img
-                    ref={imageRef}
-                    src={screenshot}
-                    alt="Visual selector"
-                    className={`w-full rounded-xl shadow-sm border border-gray-200 bg-white select-none transition-opacity duration-100 ${
-                      scrolling ? 'opacity-70' : 'opacity-100'
-                    }`}
-                    draggable={false}
+                  <div
+                    ref={overlayRef}
+                    className="relative select-none"
+                    onMouseDown={navigateMode ? undefined : handleMouseDown}
+                    onClick={navigateMode ? handleNavigateClick : undefined}
                     onWheel={handleWheel}
-                    onMouseMove={handleMouseMove}
-                    onClick={handleClick}
-                    style={{ cursor: selectionEnabled && mode === 'manual' ? 'crosshair' : 'default' }}
-                  />
+                    style={{ cursor: navigateMode ? 'pointer' : interactionMode ? 'default' : 'crosshair' }}
+                  >
+                    <img
+                      src={screenshot}
+                      alt="Visual selector"
+                      className="w-full rounded-xl shadow-sm border border-gray-200 block"
+                      draggable={false}
+                    />
+
+                    {/* Annotation overlays */}
+                    {annotations.filter(a => a.tab === activeTab).map(ann => {
+                      const style = getOverlayStyle(ann)
+                      if (!style) return null
+                      return (
+                        <div
+                          key={ann.id}
+                          style={{ position: 'absolute', border: '2px solid', borderRadius: 4, pointerEvents: 'none', ...style }}
+                        >
+                          <span style={{
+                            position: 'absolute', top: -22, left: 0,
+                            background: TYPE_COLOR[ann.field_type], color: '#fff',
+                            fontSize: 10, padding: '2px 6px', borderRadius: 3, whiteSpace: 'nowrap',
+                            maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', display: 'block',
+                          }}>
+                            {ann.inferring ? '⏳ Infiriendo…' : (ann.field_name || ann.label || '…')}
+                          </span>
+                        </div>
+                      )
+                    })}
+
+                    {/* Live drawing rect */}
+                    {drawRect && (
+                      <div style={{
+                        position: 'absolute',
+                        left: Math.min(drawRect.x1, drawRect.x2),
+                        top: Math.min(drawRect.y1, drawRect.y2),
+                        width: Math.abs(drawRect.x2 - drawRect.x1),
+                        height: Math.abs(drawRect.y2 - drawRect.y1),
+                        border: '2px dashed #3b82f6',
+                        backgroundColor: '#3b82f615',
+                        borderRadius: 4,
+                        pointerEvents: 'none',
+                      }} />
+                    )}
+
+                    {/* Label popup */}
+                    {popup && (
+                      <div
+                        style={{ position: 'absolute', left: popup.popupX, top: popup.popupY, zIndex: 50, width: 272 }}
+                        className="bg-white rounded-xl shadow-xl border border-gray-200 p-3"
+                        onMouseDown={e => e.stopPropagation()}
+                      >
+                        {capturing ? (
+                          <div className="flex flex-col items-center gap-2 py-3">
+                            <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                            <p className="text-xs text-gray-500 text-center">Analizando con IA…<br /><span className="text-gray-400">({aiModel})</span></p>
+                          </div>
+                        ) : (
+                          <>
+                            <p className="text-xs font-semibold text-gray-700 mb-2">Contexto (opcional)</p>
+                            <input
+                              ref={popupInputRef}
+                              value={popup.label}
+                              onChange={e => setPopup(prev => prev ? { ...prev, label: e.target.value } : prev)}
+                              onKeyDown={e => { if (e.key === 'Enter') submitCapture(); if (e.key === 'Escape') dismissPopup() }}
+                              placeholder='Ej: "Catálogo de proyectos", "Card de inmueble"'
+                              className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-xs mb-2 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                            />
+                            {/* Hover toggle */}
+                            <label className="flex items-center gap-2 mb-2.5 cursor-pointer select-none group">
+                              <div
+                                onClick={() => {
+                                  const ann = annotationsRef.current.find(a => a.id === popup.annotationId)
+                                  const next = !popup.hoverEnabled
+                                  setPopup(prev => prev ? { ...prev, hoverEnabled: next } : prev)
+                                  if (!ann) return
+                                  if (next) {
+                                    send({
+                                      type: 'hover_scan',
+                                      session_id: sessionRef.current,
+                                      x1: ann.viewport_rect.x1,
+                                      y1: ann.viewport_rect.y1,
+                                      x2: ann.viewport_rect.x2,
+                                      y2: ann.viewport_rect.y2,
+                                    })
+                                  } else {
+                                    send({ type: 'hover_reset', session_id: sessionRef.current })
+                                  }
+                                }}
+                                className={`w-8 h-4 rounded-full transition-colors flex-shrink-0 relative ${popup.hoverEnabled ? 'bg-amber-400' : 'bg-gray-200'}`}
+                              >
+                                <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${popup.hoverEnabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                              </div>
+                              <span className="text-[11px] text-gray-500 group-hover:text-gray-700 leading-tight">
+                                Activar hover <span className="text-gray-400">(para cards con contenido oculto)</span>
+                              </span>
+                            </label>
+                            <div className="flex gap-1.5">
+                              <button
+                                onClick={submitCapture}
+                                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-blue-600 text-white text-xs rounded-lg font-medium hover:bg-blue-700 transition"
+                              >
+                                <Camera className="w-3.5 h-3.5" />
+                                Capturar
+                              </button>
+                              <button
+                                onClick={dismissPopup}
+                                className="px-2 py-1.5 text-xs text-gray-400 hover:text-red-500 rounded-lg hover:bg-gray-50 transition"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   {scrolling && (
-                    <div className="absolute top-2 right-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-md">
+                    <div className="absolute top-2 right-6 bg-black/50 text-white text-[10px] px-2 py-1 rounded-md pointer-events-none">
                       Cargando...
                     </div>
                   )}
                   <p className="mt-2 text-center text-[10px] text-gray-400">
-                    🖱 Usa la rueda del mouse para hacer scroll en la página
+                    🖱 Rueda del mouse para scroll · Arrastra para marcar un área
                   </p>
                 </div>
-              ) : errors ? (
+              ) : wsError ? (
                 <div className="h-full flex flex-col items-center justify-center gap-3 text-sm">
-                  <p className="text-red-500 text-center max-w-xs">{errors}</p>
-                  <button
-                    onClick={onClose}
-                    className="px-4 py-2 rounded-lg bg-gray-900 text-white text-xs hover:bg-gray-700"
-                  >
+                  <p className="text-red-500 text-center max-w-xs">{wsError}</p>
+                  <button onClick={onClose} className="px-4 py-2 rounded-lg bg-gray-900 text-white text-xs hover:bg-gray-700">
                     Cerrar e intentar de nuevo
                   </button>
                 </div>
@@ -389,174 +816,125 @@ export default function VisualSelectorModal({ open, url, onClose, onConfirm }: V
             </div>
           </div>
 
-          {/* Right panel */}
-          <div className="flex flex-col h-full">
-            <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          {/* ── Right: Annotations list ── */}
+          <div className="flex flex-col overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
               <div>
                 <p className="text-xs text-gray-500">
-                  {mode === 'manual' ? 'Campos capturados' : 'Campos detectados por IA'}
+                  {activeTab === 'listing' ? 'Marcas del listado' : 'Marcas del detalle'}
                 </p>
-                <p className="text-sm font-semibold text-gray-900">{fields.length} campo{fields.length !== 1 ? 's' : ''}</p>
+                <p className="text-sm font-semibold text-gray-900">
+                  {tabAnnotations.length} anotación{tabAnnotations.length !== 1 ? 'es' : ''}
+                </p>
               </div>
-              <div className="flex items-center gap-2">
-                {mode === 'ai' && (
-                  <button
-                    onClick={handleGenerateAI}
-                    className="px-3 py-2 rounded-lg text-xs font-semibold bg-purple-600 text-white hover:bg-purple-700"
-                  >
-                    {loadingAI ? 'Generando...' : fields.length ? 'Regenerar' : 'Generar con IA'}
-                  </button>
-                )}
+              {tabAnnotations.length > 0 && (
                 <button
-                  onClick={handleValidate}
-                  className="px-3 py-2 rounded-lg text-xs font-semibold bg-gray-900 text-white hover:bg-gray-800"
-                  disabled={validating || enabledFields.length === 0}
+                  onClick={() => syncedSetAnnotations(prev => prev.filter(a => a.tab !== activeTab))}
+                  className="text-xs text-gray-400 hover:text-red-500 flex items-center gap-1 transition"
                 >
-                  {validating ? 'Validando...' : 'Validar selectores'}
+                  <Trash2 className="w-3.5 h-3.5" /> Limpiar
                 </button>
-              </div>
+              )}
             </div>
 
-            <div className="flex-1 overflow-auto p-5 space-y-4">
-              <div className={`border rounded-xl p-3 ${mode === 'ai' ? 'bg-purple-50 border-purple-100' : 'bg-blue-50 border-blue-100'}`}>
-                <label className={`text-xs font-medium ${mode === 'ai' ? 'text-purple-700' : 'text-blue-700'}`}>
-                  Selector del contenedor (card)
-                </label>
-                <p className={`text-xs mt-0.5 mb-2 ${mode === 'ai' ? 'text-purple-500' : 'text-blue-500'}`}>
-                  CSS del elemento repetido que agrupa cada card. Ej: <code className="font-mono">div.listing-card</code>
-                </p>
-                <input
-                  value={cardSelector}
-                  onChange={e => setCardSelector(e.target.value)}
-                  className={`w-full border rounded-lg px-3 py-2 text-xs font-mono bg-white ${mode === 'ai' ? 'border-purple-100' : 'border-blue-200'}`}
-                  placeholder="div.card, article.proyecto, li.item..."
-                />
-              </div>
-
-              {fields.length === 0 && (
-                <div className="text-sm text-gray-400 text-center py-10">
-                  {mode === 'manual'
-                    ? 'Haz clic sobre la página para capturar un campo.'
-                    : 'Genera los campos con IA para continuar.'}
+            <div className="flex-1 overflow-auto p-4 space-y-3">
+              {tabAnnotations.length === 0 && (
+                <div className="text-sm text-gray-400 text-center py-12">
+                  <Tag className="w-8 h-8 mx-auto mb-3 text-gray-200" />
+                  <p className="font-medium text-gray-500 mb-1">Sin anotaciones</p>
+                  <p className="text-xs">Arrastra un rectángulo sobre la página para marcar un área.</p>
                 </div>
               )}
 
-              {fields.map(field => (
-                <div key={field.id} className="rounded-xl border border-gray-200 bg-white p-3 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={field.enabled}
-                      onChange={e => updateField(field.id, { enabled: e.target.checked })}
+              {tabAnnotations.map(ann => (
+                <div key={ann.id} className="rounded-xl border border-gray-100 bg-white p-3 space-y-2 shadow-sm">
+                  <div className="flex items-start gap-2">
+                    <span
+                      className="w-2.5 h-2.5 rounded-full flex-shrink-0 mt-[5px]"
+                      style={{ background: TYPE_COLOR[ann.field_type] }}
                     />
-                    <input
-                      value={field.name}
-                      onChange={e => updateField(field.id, { name: e.target.value })}
-                      placeholder="nombre_campo"
-                      className="flex-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs"
-                    />
-                    {field.confidence != null && (
-                      <Badge variant={confidenceColor(field.confidence)}>
-                        {Math.round(field.confidence * 100)}%
-                      </Badge>
-                    )}
-                    <select
-                      value={field.type}
-                      onChange={e => updateField(field.id, { type: e.target.value as CapturedField['type'] })}
-                      className="border border-gray-200 rounded-lg px-2 py-1 text-xs"
-                    >
-                      <option value="text">text</option>
-                      <option value="url">url</option>
-                      <option value="number">number</option>
-                      <option value="image">image</option>
-                    </select>
-                    <button
-                      onClick={() => setFields(prev => prev.filter(f => f.id !== field.id))}
-                      className="text-gray-400 hover:text-red-500"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                  <input
-                    value={field.selector}
-                    onChange={e => updateField(field.id, { selector: e.target.value })}
-                    placeholder=".card .price"
-                    className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs font-mono"
-                  />
-                  <div className="flex items-center justify-between text-xs text-gray-400">
-                    <span>Preview: {field.preview || '—'}</span>
-                    <span>{field.matches ? `${field.matches} coincidencias` : 'sin coincidencias'}</span>
+                    <div className="flex-1 min-w-0 space-y-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <input
+                          value={ann.field_name}
+                          onChange={e => updateAnnotation(ann.id, { field_name: e.target.value })}
+                          placeholder={ann.label || 'nombre_campo'}
+                          className="border border-gray-200 rounded-lg px-2 py-1 text-xs flex-1 min-w-0 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                        />
+                        <select
+                          value={ann.field_type}
+                          onChange={e => updateAnnotation(ann.id, { field_type: e.target.value as FieldType })}
+                          className="border border-gray-200 rounded-lg px-1.5 py-1 text-xs flex-shrink-0 focus:outline-none"
+                        >
+                          <option value="container">Contenedor</option>
+                          <option value="text">Texto</option>
+                          <option value="url">URL</option>
+                          <option value="number">Número</option>
+                          <option value="image">Imagen</option>
+                        </select>
+                        <button onClick={() => deleteAnnotation(ann.id)} className="text-gray-300 hover:text-red-500 flex-shrink-0 transition">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {/* Nav link toggle — only for URL fields on listing tab */}
+                      {ann.field_type === 'url' && ann.tab === 'listing' && (
+                        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={ann.is_nav_link}
+                            onChange={e => updateAnnotation(ann.id, { is_nav_link: e.target.checked })}
+                            className="rounded"
+                          />
+                          <span className="text-xs text-purple-600 font-medium">Enlace de navegación al detalle</span>
+                        </label>
+                      )}
+
+                      {/* Selector / inferring */}
+                      {ann.inferring ? (
+                        <div className="flex items-center gap-1.5 text-xs text-blue-500 py-1">
+                          <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                          Infiriendo con IA...
+                        </div>
+                      ) : (
+                        <>
+                          <input
+                            value={ann.selector}
+                            onChange={e => updateAnnotation(ann.id, { selector: e.target.value })}
+                            placeholder=".card .titulo"
+                            className="w-full border border-gray-100 bg-gray-50 rounded-lg px-2 py-1 text-[11px] font-mono text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-200"
+                          />
+                          {ann.label && (
+                            <p className="text-[10px] text-gray-400 italic truncate">"{ann.label}"</p>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
-
-              {mode === 'manual' && (
-                <button
-                  onClick={() => setFields(prev => ([
-                    ...prev,
-                    {
-                      id: uid(),
-                      name: '',
-                      selector: '',
-                      preview: '',
-                      matches: 0,
-                      type: 'text',
-                      enabled: true,
-                    },
-                  ]))}
-                  className="flex items-center gap-2 text-xs text-blue-600 hover:underline"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Agregar campo
-                </button>
-              )}
-
-              {validation && (
-                <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-xs space-y-2">
-                  <p className="font-semibold text-gray-700">Resultado de validación</p>
-                  {validation.results.map((item, idx) => (
-                    <div key={`${item.selector}-${idx}`} className="flex justify-between">
-                      <span className="text-gray-600">{item.name}</span>
-                      <span className="text-gray-500">
-                        {item.found}/{item.total} encontrados
-                      </span>
-                    </div>
-                  ))}
-                  {validation.preview.length > 0 && (
-                    <pre className="bg-white border border-gray-200 rounded-lg p-2 overflow-auto text-[10px] text-gray-600">
-                      {JSON.stringify(validation.preview, null, 2)}
-                    </pre>
-                  )}
-                </div>
-              )}
-
-              {errors && (
-                <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
-                  {errors}
-                </div>
-              )}
             </div>
 
-            <div className="px-5 py-4 border-t border-gray-100 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                {mode === 'manual' && fields.length > 0 && (
-                  <button
-                    onClick={handleUndo}
-                    className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" /> Deshacer
-                  </button>
-                )}
-                <button
-                  onClick={() => setFields([])}
-                  className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1"
-                >
-                  <Trash2 className="w-3.5 h-3.5" /> Limpiar todo
-                </button>
-              </div>
+            <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between flex-shrink-0 gap-2">
+              <button
+                onClick={undoLast}
+                disabled={tabAnnotations.length === 0}
+                className="text-xs text-gray-400 hover:text-gray-700 flex items-center gap-1 transition disabled:opacity-30 flex-shrink-0"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> Deshacer
+              </button>
+              <button
+                onClick={handleExtractData}
+                disabled={!canConfirm}
+                title="Extraer datos según la plantilla y ver JSON crudo"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-emerald-300 text-emerald-700 text-xs font-medium hover:bg-emerald-50 disabled:opacity-30 transition"
+              >
+                <Database className="w-3.5 h-3.5" /> Extraer datos
+              </button>
               <button
                 onClick={handleConfirm}
-                className="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 flex items-center gap-1.5"
-                disabled={enabledFields.length === 0}
+                disabled={!canConfirm}
+                className="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 flex items-center gap-1.5 disabled:opacity-40 transition"
               >
                 <Check className="w-4 h-4" /> Confirmar →
               </button>
@@ -564,6 +942,35 @@ export default function VisualSelectorModal({ open, url, onClose, onConfirm }: V
           </div>
         </div>
       </div>
+
+      {/* ── JSON raw data viewer ── */}
+      {showRawData && rawDataResult && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-6">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
+              <div>
+                <p className="font-semibold text-gray-900 text-sm">Datos extraídos (JSON crudo)</p>
+                {'card_count' in rawDataResult && (
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {(rawDataResult as any).card_count} cards encontrados
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => setShowRawData(false)}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              <pre className="text-[11px] text-gray-700 bg-gray-50 rounded-xl p-4 whitespace-pre-wrap font-mono leading-relaxed">
+                {JSON.stringify(rawDataResult, null, 2)}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

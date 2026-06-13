@@ -7,12 +7,28 @@ from uuid import UUID
 
 from database import get_db
 from app.models.site_config import SiteConfig, DEFAULT_SITE_CONFIG_ID, DEFAULT_CARD_FIELDS
-from app.models.developer import Developer
-from app.models.url_node import UrlNode
-from app.models.scraped_record import ScrapedRecord
-from app.models.field import Field
+from app.models.proyecto import Proyecto
+from app.models.propiedad import Propiedad
 
 router = APIRouter()
+
+
+def _proyecto_display_name(proy: "Proyecto") -> str:
+    """Best available display name for a project (falls back to URL slug)."""
+    if proy.nombre:
+        return proy.nombre
+    url = (proy.extra_data or {}).get("url_propiedad", "") or ""
+    if url:
+        try:
+            from urllib.parse import urlparse
+            SKIP = {"proyecto", "projects", "propiedad", "property", "venta", "sale", "en-venta", "departamentos"}
+            parts = [p for p in urlparse(url).path.split("/") if p and p.lower() not in SKIP]
+            if parts:
+                return " ".join(w.capitalize() for w in parts[-1].split("-"))
+        except Exception:
+            pass
+    return ""
+
 
 _DEFAULTS = {
     "site_name": "Mi Portal Inmobiliario",
@@ -48,14 +64,6 @@ def _get_cfg(db: Session) -> SiteConfig | None:
     return db.query(SiteConfig).filter(SiteConfig.id == DEFAULT_SITE_CONFIG_ID).first()
 
 
-def _level_join(level: int) -> str:
-    if level == 1:
-        return "JOIN url_nodes un ON sr.url_node_id = un.id WHERE un.parent_id IS NULL"
-    elif level == 2:
-        return "JOIN url_nodes un ON sr.url_node_id = un.id WHERE un.parent_id IS NOT NULL"
-    return "JOIN url_nodes un ON sr.url_node_id = un.id WHERE 1=1"
-
-
 @router.get("/config")
 def public_config(db: Session = Depends(get_db)):
     cfg = _get_cfg(db)
@@ -76,37 +84,44 @@ def public_records(
     level: int = 2,
     db: Session = Depends(get_db),
 ):
-    join_where = _level_join(level)
-    params: dict = {"lim": limit, "skip": skip}
-
-    if search:
-        sql = text(
-            f"SELECT sr.id, sr.developer_id, sr.data, sr.scraped_at FROM scraped_records sr "
-            f"{join_where} AND sr.data::text ILIKE :q ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
-        )
-        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr {join_where} AND sr.data::text ILIKE :q")
-        params["q"] = f"%{search}%"
-    else:
-        sql = text(
-            f"SELECT sr.id, sr.developer_id, sr.data, sr.scraped_at FROM scraped_records sr "
-            f"{join_where} ORDER BY sr.scraped_at DESC LIMIT :lim OFFSET :skip"
-        )
-        count_sql = text(f"SELECT COUNT(*) FROM scraped_records sr {join_where}")
-
-    rows = db.execute(sql, params).fetchall()
-    count_params = {k: v for k, v in params.items() if k not in ("lim", "skip")}
-    total = db.execute(count_sql, count_params).scalar() or 0
-
-    items = [
-        {
-            "id": str(r[0]),
-            "developer_id": str(r[1]),
-            "data": dict(r[2]) if r[2] else {},
-            "scraped_at": r[3].isoformat() if r[3] else None,
+    if level == 1:
+        q = db.query(Proyecto)
+        if search:
+            q = q.filter(
+                Proyecto.nombre.ilike(f"%{search}%")
+                | Proyecto.ubicacion.ilike(f"%{search}%")
+                | Proyecto.estado_del_proyecto.ilike(f"%{search}%")
+            )
+        total = q.count()
+        items = q.order_by(Proyecto.scraped_at.desc()).offset(skip).limit(limit).all()
+        return {
+            "total": total,
+            "items": [
+                {"id": str(r.id), "developer_id": str(r.developer_id), "data": r.to_data(), "scraped_at": r.scraped_at.isoformat()}
+                for r in items
+            ],
         }
-        for r in rows
-    ]
-    return {"total": int(total), "items": items}
+    else:
+        q = (
+            db.query(Propiedad)
+            .join(Proyecto, Propiedad.proyecto_id == Proyecto.id)
+        )
+        if search:
+            q = q.filter(
+                Proyecto.nombre.ilike(f"%{search}%")
+                | Proyecto.ubicacion.ilike(f"%{search}%")
+                | Propiedad.dormitorios.ilike(f"%{search}%")
+                | Proyecto.precio_desde.ilike(f"%{search}%")
+            )
+        total = q.count()
+        items = q.order_by(Propiedad.scraped_at.desc()).offset(skip).limit(limit).all()
+        return {
+            "total": total,
+            "items": [
+                {"id": str(r.id), "proyecto_id": str(r.proyecto_id) if r.proyecto_id else None, "data": r.to_data(), "scraped_at": r.scraped_at.isoformat()}
+                for r in items
+            ],
+        }
 
 
 @router.get("/records/grouped")
@@ -114,108 +129,50 @@ def public_records_grouped(
     search: str = "",
     db: Session = Depends(get_db),
 ):
-    """Return records grouped by developer and project (parent url_node), with inherited parent fields."""
-    from app.models.field import Field
-    
-    # Get all developers
-    developers = db.query(Developer).all()
-    result_developers = []
-    
-    for dev in developers:
-        # Get all url_nodes for this developer
-        root_nodes = db.query(UrlNode).filter(
-            UrlNode.developer_id == dev.id,
-            UrlNode.parent_id == None
-        ).order_by(UrlNode.order).all()
-        
-        dev_result = {
-            "id": str(dev.id),
-            "name": dev.name,
-            "projects": [],
-            "loose_properties": []
-        }
-        
-        # For each root node (project), get its child nodes' records and merge with parent data
-        for project_node in root_nodes:
-            project_obj = {
-                "id": str(project_node.id),
-                "name": project_node.name,
-                "records": []
-            }
-            
-            # Get child nodes of this project
-            child_nodes = db.query(UrlNode).filter(
-                UrlNode.parent_id == project_node.id
-            ).all()
-            
-            # Get shared fields from project ONCE (not per child_node)
-            shared_fields = db.query(Field).filter(
-                Field.url_node_id == project_node.id,
-                Field.is_shared == True
-            ).all()
-            shared_field_names = {f.name for f in shared_fields}
-            
-            # Get parent records ONCE for this project
-            parent_records = db.query(ScrapedRecord).filter(
-                ScrapedRecord.url_node_id == project_node.id
-            ).order_by(ScrapedRecord.scraped_at.desc()).all()
-            
-            # For each child node, get its records and merge with parent record data
-            for child_node in child_nodes:
-                child_records = db.query(ScrapedRecord).filter(
-                    ScrapedRecord.url_node_id == child_node.id
-                ).order_by(ScrapedRecord.scraped_at.desc()).all()
-                
-                # For each child record, merge with parent records (match by checking all parents)
-                for child_rec in child_records:
-                    if search and search.lower() not in str(child_rec.data).lower():
-                        continue
-                        
-                    child_data = dict(child_rec.data) if child_rec.data else {}
-                    
-                    # Merge shared fields from ALL parent records (use most complete parent)
-                    if parent_records and shared_field_names:
-                        for parent_rec in parent_records:
-                            parent_data = dict(parent_rec.data) if parent_rec.data else {}
-                            for fname in shared_field_names:
-                                # Only add if not already in child and exists in parent
-                                if fname in parent_data and fname not in child_data:
-                                    child_data[fname] = parent_data[fname]
-                                    break  # Use first parent that has this field
-                    
-                    # Use the most recent parent record
-                    most_recent_parent = parent_records[0] if parent_records else None
-                    
-                    project_obj["records"].append({
-                        "id": str(child_rec.id),
-                        "data": child_data,
-                        "parent_data": dict(most_recent_parent.data) if most_recent_parent and most_recent_parent.data else {},
-                        "scraped_at": child_rec.scraped_at.isoformat() if child_rec.scraped_at else None
-                    })
-            
-            # Only add project if it has records
-            if project_obj["records"]:
-                dev_result["projects"].append(project_obj)
-            
-            # Also get direct records from root node (loose properties under this project)
-            root_records = db.query(ScrapedRecord).filter(
-                ScrapedRecord.url_node_id == project_node.id
-            ).order_by(ScrapedRecord.scraped_at.desc()).all()
-            
-            for rec in root_records:
-                if search and search.lower() not in str(rec.data).lower():
-                    continue
-                dev_result["loose_properties"].append({
-                    "id": str(rec.id),
-                    "data": dict(rec.data) if rec.data else {},
-                    "scraped_at": rec.scraped_at.isoformat() if rec.scraped_at else None
-                })
-        
-        # Only add developer if it has projects or properties
-        if dev_result["projects"] or dev_result["loose_properties"]:
-            result_developers.append(dev_result)
-    
-    return {"developers": result_developers}
+    """Return propiedades grouped by proyecto."""
+    proyectos = db.query(Proyecto).order_by(Proyecto.scraped_at.desc()).all()
+    result = []
+
+    for proy in proyectos:
+        propiedades = (
+            db.query(Propiedad)
+            .filter(Propiedad.proyecto_id == proy.id)
+            .order_by(Propiedad.scraped_at.desc())
+            .all()
+        )
+        records = []
+        for prop in propiedades:
+            if search and search.lower() not in str(prop.to_data()).lower():
+                continue
+            merged = proy.to_data()
+            merged.update(prop.to_data())
+            records.append({
+                "id": str(prop.id),
+                "data": merged,
+                "parent_data": proy.to_data(),
+                "scraped_at": prop.scraped_at.isoformat() if prop.scraped_at else None,
+            })
+        if records or not search:
+            result.append({
+                "proyecto_id": str(proy.id),
+                "proyecto_name": proy.nombre,
+                "records": records,
+                "proyecto_data": proy.to_data(),
+            })
+
+    return {"proyectos": result}
+
+
+def _extract_numeric(val) -> float | None:
+    """Extract a numeric value from various formats."""
+    if val is None:
+        return None
+    import re
+    s = re.sub(r"[^\d.]", "", str(val).replace(",", "."))
+    try:
+        return float(s) if s else None
+    except ValueError:
+        return None
 
 
 @router.get("/catalog")
@@ -225,119 +182,110 @@ def public_catalog(
     search: str = "",
     location: str = "",
     project_id: str = "",
+    bedrooms: str = "",       # "1" | "2" | "3" | "4+"
+    project_status: str = "", # e.g. "ENTREGA INMEDIATA"
+    price_range: str = "",    # "0-200000" | "200000-400000" | … | "800000+"
     db: Session = Depends(get_db),
 ):
-    """Paginated child records with parent data merged. Returns filter options too."""
+    """Paginated propiedades with parent proyecto data merged."""
     import json
-    from collections import defaultdict
 
-    child_nodes = db.query(UrlNode).filter(UrlNode.parent_id.isnot(None)).all()
-    if not child_nodes:
-        return {"total": 0, "items": [], "locations": [], "projects": []}
+    propiedades = db.query(Propiedad).order_by(Propiedad.scraped_at.desc()).all()
 
-    parent_node_ids = list({n.parent_id for n in child_nodes})
+    all_locations: set  = set()
+    all_projects: dict  = {}
+    all_statuses: set   = set()
+    all_items: list     = []
 
-    parent_nodes_map = {
-        n.id: n
-        for n in db.query(UrlNode).filter(UrlNode.id.in_(parent_node_ids)).all()
-    }
+    for prop in propiedades:
+        proy = prop.proyecto_obj
+        child_data = prop.to_data()
 
-    # Template fields per parent node — these always override child values
-    parent_field_names: dict = defaultdict(set)
-    for f in db.query(Field).filter(Field.url_node_id.in_(parent_node_ids)).all():
-        parent_field_names[f.url_node_id].add(f.name)
-
-    # Most recent parent record per parent node
-    parent_records_map: dict = {}
-    for pid in parent_node_ids:
-        rec = (
-            db.query(ScrapedRecord)
-            .filter(ScrapedRecord.url_node_id == pid)
-            .order_by(ScrapedRecord.scraped_at.desc())
-            .first()
-        )
-        if rec:
-            parent_records_map[pid] = rec
-
-    all_items: list = []
-    all_locations: set = set()
-    all_projects: dict = {}  # parent_id_str -> name
-
-    for child_node in child_nodes:
-        parent_id = child_node.parent_id
-        parent_node = parent_nodes_map.get(parent_id)
-        if not parent_node:
-            continue
-
-        pfields = parent_field_names.get(parent_id, set())
-        parent_rec = parent_records_map.get(parent_id)
-        parent_data = dict(parent_rec.data) if parent_rec and parent_rec.data else {}
-
-        all_projects[str(parent_id)] = parent_node.name
-
-        child_recs = (
-            db.query(ScrapedRecord)
-            .filter(ScrapedRecord.url_node_id == child_node.id)
-            .order_by(ScrapedRecord.scraped_at.desc())
-            .all()
-        )
-
-        for child_rec in child_recs:
-            child_data = dict(child_rec.data) if child_rec.data else {}
-
-            # Merge: parent-template fields always win; others fill only if child is empty
-            merged = {**child_data}
-            for fname, fval in parent_data.items():
-                if fval is None:
+        if proy:
+            parent_data = proy.to_data()
+            for k, v in parent_data.items():
+                if v is None:
                     continue
-                if pfields and fname in pfields:
-                    merged[fname] = fval
-                else:
-                    cv = merged.get(fname)
-                    empty = (
-                        cv is None
-                        or (isinstance(cv, list) and not cv)
-                        or (isinstance(cv, str) and not cv.strip())
-                    )
-                    if empty:
-                        merged[fname] = fval
+                cv = child_data.get(k)
+                empty = cv is None or (isinstance(cv, list) and not cv) or (isinstance(cv, str) and not cv.strip())
+                if empty:
+                    child_data[k] = v
+            all_projects[str(proy.id)] = _proyecto_display_name(proy)
 
-            # Extract location for filtering/facets
-            loc = ""
-            for k in ("ubicacion", "ubicación", "location", "distrito", "ciudad", "zona"):
-                v = merged.get(k)
-                if v and isinstance(v, str) and v.strip():
-                    loc = v.strip()
-                    break
-            if loc:
-                all_locations.add(loc)
+        loc = child_data.get("ubicacion") or ""
+        if isinstance(loc, str) and loc.strip():
+            all_locations.add(loc.split("\n")[0].strip())
 
-            all_items.append({
-                "id": str(child_rec.id),
-                "data": merged,
-                "project_id": str(parent_id),
-                "project_name": parent_node.name,
-                "developer_id": str(child_rec.developer_id) if child_rec.developer_id else None,
-                "scraped_at": child_rec.scraped_at.isoformat() if child_rec.scraped_at else None,
-                "_loc": loc,
-            })
+        estado = str(child_data.get("estado_del_proyecto") or "").strip()
+        if estado:
+            all_statuses.add(estado)
 
-    # Apply filters
+        beds_raw = child_data.get("dormitorios")
+        beds: int | None = None
+        if beds_raw:
+            try:
+                beds = int(float(str(beds_raw)))
+            except (ValueError, TypeError):
+                pass
+
+        price_raw = child_data.get("precio_desde") or child_data.get("precio") or ""
+        price_num = _extract_numeric(price_raw)
+
+        all_items.append({
+            "id": str(prop.id),
+            "data": child_data,
+            "project_id": str(proy.id) if proy else None,
+            "project_name": _proyecto_display_name(proy) if proy else None,
+            "proyecto_id": str(prop.proyecto_id) if prop.proyecto_id else None,
+            "scraped_at": prop.scraped_at.isoformat() if prop.scraped_at else None,
+            "_loc":    loc.strip().lower() if isinstance(loc, str) else "",
+            "_status": estado.lower(),
+            "_beds":   beds,
+            "_price":  price_num,
+        })
+
     filtered = all_items
     if location:
-        filtered = [i for i in filtered if location.lower() in i["_loc"].lower()]
+        filtered = [i for i in filtered if location.lower() in i["_loc"] or i["_loc"] in location.lower()]
     if project_id:
         filtered = [i for i in filtered if i["project_id"] == project_id]
+    if bedrooms:
+        if bedrooms == "4+":
+            filtered = [i for i in filtered if i["_beds"] is not None and i["_beds"] >= 4]
+        else:
+            try:
+                b = int(bedrooms)
+                filtered = [i for i in filtered if i["_beds"] == b]
+            except ValueError:
+                pass
+    if project_status:
+        ps = project_status.lower()
+        filtered = [i for i in filtered if ps in i["_status"]]
+    if price_range:
+        if price_range.endswith("+"):
+            try:
+                min_p = float(price_range[:-1])
+                filtered = [i for i in filtered if i["_price"] is not None and i["_price"] >= min_p]
+            except ValueError:
+                pass
+        elif "-" in price_range:
+            parts = price_range.split("-", 1)
+            try:
+                lo, hi = float(parts[0]), float(parts[1])
+                filtered = [i for i in filtered if i["_price"] is not None and lo <= i["_price"] <= hi]
+            except ValueError:
+                pass
     if search:
         s = search.lower()
         filtered = [
             i for i in filtered
             if s in json.dumps(i["data"], ensure_ascii=False).lower()
-            or s in i["project_name"].lower()
+            or (i["project_name"] and s in i["project_name"].lower())
         ]
 
     for item in all_items + filtered:
-        item.pop("_loc", None)
+        for k in ("_loc", "_status", "_beds", "_price"):
+            item.pop(k, None)
 
     total = len(filtered)
     paginated = filtered[skip: skip + limit]
@@ -346,6 +294,7 @@ def public_catalog(
         "total": total,
         "items": paginated,
         "locations": sorted(all_locations),
+        "project_statuses": sorted(all_statuses),
         "projects": sorted(
             [{"id": pid, "name": name} for pid, name in all_projects.items()],
             key=lambda x: x["name"],
@@ -355,60 +304,53 @@ def public_catalog(
 
 @router.get("/hero")
 def public_hero(db: Session = Depends(get_db)):
-    """Return records to show in the hero carousel."""
+    """Return records for the hero carousel."""
     cfg = _get_cfg(db)
     record_ids = (cfg.hero_record_ids if cfg else None) or []
 
     if record_ids:
-        from uuid import UUID
-        from app.models.scraped_record import ScrapedRecord
-
         try:
             uuids = [UUID(rid) for rid in record_ids if rid]
         except ValueError:
             uuids = []
 
-        records = db.query(ScrapedRecord).filter(ScrapedRecord.id.in_(uuids)).all() if uuids else []
-        # Preserve the admin-defined order
-        order_map = {str(r.id): i for i, r in enumerate(records)}
-        records.sort(key=lambda r: order_map.get(str(r.id), 999))
-        return [{"id": str(r.id), "data": dict(r.data) if r.data else {}} for r in records]
+        if uuids:
+            props = db.query(Propiedad).filter(Propiedad.id.in_(uuids)).all()
+            prop_map = {str(p.id): p for p in props}
+            proyects = db.query(Proyecto).filter(Proyecto.id.in_(uuids)).all()
+            proy_map = {str(p.id): p for p in proyects}
 
-    # Fallback: return parent-level (project) records — they have the richest images/data
-    rows = db.execute(
-        text(
-            "SELECT sr.id, sr.data FROM scraped_records sr "
-            "JOIN url_nodes un ON sr.url_node_id = un.id "
-            "WHERE un.parent_id IS NULL "
-            "ORDER BY sr.scraped_at DESC LIMIT :lim"
-        ),
-        {"lim": 6},
-    ).fetchall()
-    return [{"id": str(r[0]), "data": dict(r[1]) if r[1] else {}} for r in rows]
+            result = []
+            for uid in [str(u) for u in uuids]:
+                if uid in prop_map:
+                    result.append({"id": uid, "data": prop_map[uid].to_data()})
+                elif uid in proy_map:
+                    result.append({"id": uid, "data": proy_map[uid].to_data()})
+            return result
+
+    # Fallback: top 6 proyectos
+    proyectos = db.query(Proyecto).order_by(Proyecto.scraped_at.desc()).limit(6).all()
+    return [{"id": str(p.id), "data": p.to_data()} for p in proyectos]
 
 
 @router.get("/featured")
 def public_featured(db: Session = Depends(get_db)):
-    """Return featured section records (limited count, configured level)."""
+    """Return featured section records."""
     cfg = _get_cfg(db)
     level = (cfg.featured_level if cfg else None) or 2
     limit = (cfg.featured_limit if cfg else None) or 6
-    join_where = _level_join(level)
 
-    rows = db.execute(
-        text(
-            f"SELECT sr.id, sr.developer_id, sr.data, sr.scraped_at FROM scraped_records sr "
-            f"{join_where} ORDER BY sr.scraped_at DESC LIMIT :lim"
-        ),
-        {"lim": limit},
-    ).fetchall()
+    if level == 1:
+        items = db.query(Proyecto).order_by(Proyecto.scraped_at.desc()).limit(limit).all()
+    else:
+        items = db.query(Propiedad).order_by(Propiedad.scraped_at.desc()).limit(limit).all()
 
     return [
         {
-            "id": str(r[0]),
-            "developer_id": str(r[1]),
-            "data": dict(r[2]) if r[2] else {},
-            "scraped_at": r[3].isoformat() if r[3] else None,
+            "id": str(r.id),
+            "developer_id": str(r.developer_id) if hasattr(r, "developer_id") else None,
+            "data": r.to_data(),
+            "scraped_at": r.scraped_at.isoformat(),
         }
-        for r in rows
+        for r in items
     ]

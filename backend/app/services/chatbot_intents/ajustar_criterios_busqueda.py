@@ -75,6 +75,18 @@ async def handle(runtime: IntentRuntime) -> IntentResult | None:
             )
         )
 
+    if step == 13:
+        if runtime.call("is_generic_adjust_request", text):
+            session.info_step = 11
+            return IntentResult(
+                response=runtime.call(
+                    "text_response",
+                    "Claro. Indicame los parametros que quieres ajustar "
+                    "(zona/ciudad, dormitorios, presupuesto, etc.).",
+                )
+            )
+        return None
+
     if step != 11:
         return None
 

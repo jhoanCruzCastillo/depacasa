@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -X POST http://localhost:8000/api/scrape/field/run -H 'Content-Type: application/json' -d '{ *)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d,indent=2,ensure_ascii=False\\)\\)\")",
+      "Bash(git -C \"c:/Users/anton/Documents/DEV/Depacasa/dron\" diff --stat HEAD)",
+      "Bash(git -C \"c:/Users/anton/Documents/DEV/Depacasa/dron\" diff HEAD -- backend/app/workers/tasks.py)",
+      "Bash(git -C \"c:/Users/anton/Documents/DEV/Depacasa/dron\" diff HEAD -- backend/app/models/proyecto.py backend/app/schemas/proyecto.py backend/config.py frontend/src/pages/TemplateEditorPage.tsx \"frontend/src/pages/developers/components/ProjectDetailPanel.tsx\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}

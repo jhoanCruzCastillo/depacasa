@@ -4,7 +4,25 @@ export interface Developer {
   description: string | null
   base_url: string
   logo_url: string | null
+  proyectos_url: string | null
   source: 'tavily' | 'manual'
+  created_at: string
+  // Stats enriched by API
+  proyectos_count?: number
+  propiedades_count?: number
+  last_sync_at?: string | null
+  last_sync_status?: 'pending' | 'running' | 'completed' | 'failed' | null
+}
+
+export interface AdminNotification {
+  id: string
+  type: string
+  title: string
+  body: string | null
+  reference_id: string | null
+  reference_type: string | null
+  is_read: boolean
+  read_at: string | null
   created_at: string
 }
 
@@ -36,13 +54,14 @@ export interface Selector {
   created_at: string
 }
 
+export type PropiedadStatus = 'success' | 'partial' | 'failed' | 'pending_review' | 'public'
+
 export interface ScrapedRecord {
   id: string
-  developer_id: string
-  url_node_id: string
-  source_url: string
+  type: 'proyecto' | 'propiedad'
+  proyecto_id: string | null
   data: Record<string, any>
-  status: 'success' | 'partial' | 'failed'
+  status: PropiedadStatus
   scraped_at: string
 }
 
