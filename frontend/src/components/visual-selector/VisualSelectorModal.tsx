@@ -589,39 +589,27 @@ export default function VisualSelectorModal({ open, url, onClose, onConfirm }: P
                 activeTab === 'listing' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              Listado
+              Level 1
             </button>
             <button
               onClick={() => {
                 if (detailPageOpened) { setActiveTab('detail'); activeTabRef.current = 'detail' }
               }}
-              disabled={!detailPageOpened && !hasNavLink}
-              title={!detailPageOpened && !hasNavLink ? 'Marca un enlace de navegación primero' : ''}
+              disabled={!detailPageOpened}
+              title={!detailPageOpened ? 'Usa "Navegar al detalle" en una anotación de URL primero' : ''}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${
                 activeTab === 'detail' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              } ${!detailPageOpened && !hasNavLink ? 'opacity-40 cursor-not-allowed' : ''}`}
+              } ${!detailPageOpened ? 'opacity-40 cursor-not-allowed' : ''}`}
             >
-              Detalle
-              {hasNavLink && !detailPageOpened && (
-                <span className="ml-1 text-[10px] text-purple-500">↗</span>
-              )}
+              Level 2
             </button>
           </div>
 
-          {/* Navigate to detail button */}
-          {hasNavLink && !detailPageOpened && activeTab === 'listing' && (
-            <button
-              onClick={() => setNavigateMode(v => !v)}
-              disabled={loadingDetail}
-              className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-                navigateMode
-                  ? 'bg-purple-600 text-white'
-                  : 'border border-purple-300 text-purple-600 hover:bg-purple-50'
-              }`}
-            >
-              <Navigation2 className="w-3.5 h-3.5" />
-              {loadingDetail ? 'Abriendo…' : navigateMode ? 'Clic en un card →' : 'Navegar al detalle'}
-            </button>
+          {loadingDetail && (
+            <div className="flex items-center gap-1.5 text-xs text-purple-600 animate-pulse">
+              <div className="w-3 h-3 border border-purple-400 border-t-transparent rounded-full animate-spin" />
+              Abriendo Level 2…
+            </div>
           )}
 
           <button onClick={onClose} className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100">
@@ -879,15 +867,33 @@ export default function VisualSelectorModal({ open, url, onClose, onConfirm }: P
 
                       {/* Nav link toggle — only for URL fields on listing tab */}
                       {ann.field_type === 'url' && ann.tab === 'listing' && (
-                        <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            checked={ann.is_nav_link}
-                            onChange={e => updateAnnotation(ann.id, { is_nav_link: e.target.checked })}
-                            className="rounded"
-                          />
-                          <span className="text-xs text-purple-600 font-medium">Enlace de navegación al detalle</span>
-                        </label>
+                        <div className="space-y-1.5">
+                          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={ann.is_nav_link}
+                              onChange={e => updateAnnotation(ann.id, { is_nav_link: e.target.checked })}
+                              className="rounded"
+                            />
+                            <span className="text-xs text-purple-600 font-medium">Enlace de navegación al detalle</span>
+                          </label>
+                          {ann.is_nav_link && ann.selector && !detailPageOpened && (
+                            <button
+                              onClick={() => {
+                                setLoadingDetail(true)
+                                send({ type: 'navigate_from_selector', session_id: sessionRef.current, selector: ann.selector })
+                              }}
+                              disabled={loadingDetail}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-semibold hover:bg-purple-700 disabled:opacity-50 transition w-full justify-center"
+                            >
+                              <Navigation2 className="w-3.5 h-3.5" />
+                              {loadingDetail ? 'Abriendo…' : 'Navegar al detalle →'}
+                            </button>
+                          )}
+                          {ann.is_nav_link && detailPageOpened && (
+                            <p className="text-[10px] text-emerald-600 font-medium">✓ Level 2 abierto</p>
+                          )}
+                        </div>
                       )}
 
                       {/* Selector / inferring */}

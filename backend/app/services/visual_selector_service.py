@@ -547,6 +547,25 @@ class VisualSelectorManager:
         )
         return url or None
 
+    async def get_url_from_selector(self, session_id: str, selector: str) -> Optional[str]:
+        """Extract the href of the first element matching selector on the listing page."""
+        session = self.get_session(session_id)
+        url = await session.page.evaluate(
+            """
+            (sel) => {
+                try {
+                    const el = document.querySelector(sel);
+                    if (!el) return null;
+                    if (el.tagName === 'A') return el.href || null;
+                    const a = el.querySelector('a');
+                    return a ? (a.href || null) : null;
+                } catch (e) { return null; }
+            }
+            """,
+            selector,
+        )
+        return url or None
+
     # ── Validation (unchanged) ────────────────────────────────────────────────
 
     async def validate_selectors(
@@ -581,7 +600,7 @@ class VisualSelectorManager:
                         });
                         output.results.push({ name: field.name, selector: field.selector, found, missing, total: cards.length });
                     });
-                    output.preview = cards.slice(0, 3).map((card) => {
+                    output.preview = cards.map((card) => {
                         const item = {};
                         fields.forEach((field) => {
                             const el = card.querySelector(field.selector);

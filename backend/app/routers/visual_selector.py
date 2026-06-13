@@ -142,6 +142,17 @@ async def visual_selector_ws(websocket: WebSocket):
                     tab = message.get("tab", "listing")
                     screenshot = await visual_selector_manager.switch_tab(session, tab)
                     await websocket.send_json({"type": "tab_switched", "tab": tab, "screenshot": screenshot})
+                elif msg_type == "navigate_from_selector":
+                    session = message.get("session_id") or session_id
+                    if not session:
+                        raise RuntimeError("Sesión no inicializada")
+                    selector = message.get("selector", "")
+                    url = await visual_selector_manager.get_url_from_selector(session, selector)
+                    if url:
+                        screenshot = await visual_selector_manager.open_detail_tab(session, url)
+                        await websocket.send_json({"type": "detail_opened", "screenshot": screenshot, "url": url})
+                    else:
+                        await websocket.send_json({"type": "error", "message": f"No se encontró URL con el selector: {selector}"})
                 elif msg_type == "get_card_url":
                     session = message.get("session_id") or session_id
                     if not session:
