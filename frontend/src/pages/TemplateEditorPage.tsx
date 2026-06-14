@@ -171,40 +171,63 @@ export default function TemplateEditorPage() {
       .map((f, index) => ({
         id: uid(),
         name: (f.name?.trim() || `campo_${index + 1}`).toLowerCase(),
-        is_child_url: f.type === 'url',
-        plain_text: false,
-        is_shared: false,
-        is_list: false,
+        is_child_url: f.is_child_url,
+        plain_text:   f.plain_text,
+        is_shared:    f.is_shared,
+        is_list:      f.is_list,
         list_container: '',
-        is_image: f.type === 'image',
-        extract_attr: '',
+        is_image:     f.is_image,
+        extract_attr: f.extract_attr || '',
         order: index,
         selectors: [f.selector.trim()].map((value, order) => ({ id: uid(), value, order })),
       }))
 
+  const mergeFields = (existing: FieldDraft[], incoming: FieldDraft[]): FieldDraft[] => {
+    const byName = new Map(existing.map(f => [f.name.toLowerCase(), f]))
+    const result = [...existing]
+    for (const f of incoming) {
+      const key = f.name.toLowerCase()
+      if (byName.has(key)) {
+        const idx = result.findIndex(r => r.name.toLowerCase() === key)
+        if (idx >= 0) result[idx] = { ...f, id: result[idx].id, order: result[idx].order }
+      } else {
+        result.push({ ...f, order: result.length })
+      }
+    }
+    return result
+  }
+
   const applyVisualFields = (payload: VisualSelectorPayload) => {
     if (!selectorNodeId) return
 
-    // Apply listing fields to the selected node
+    const currentNode = nodes.find(n => n.client_id === selectorNodeId)
+    const newListingFields = toNodeFields(payload.fields)
     updateNode(selectorNodeId, {
-      container_selector: payload.cardSelector?.trim() || '',
-      fields: toNodeFields(payload.fields),
+      ...(payload.cardSelector?.trim() ? { container_selector: payload.cardSelector.trim() } : {}),
+      fields: mergeFields(currentNode?.fields ?? [], newListingFields),
     })
 
-    // If detail fields were defined, create a child node for them
     if (payload.detailFields?.length) {
-      const childId = uid()
-      const siblings = nodes.filter(n => n.parent_client_id === selectorNodeId)
-      const newChild: NodeDraft = {
-        client_id: childId,
-        parent_client_id: selectorNodeId,
-        name: 'Detalle',
-        url: '',
-        container_selector: payload.detailContainerSelector?.trim() || '',
-        order: siblings.length,
-        fields: toNodeFields(payload.detailFields),
+      const newDetailFields = toNodeFields(payload.detailFields)
+      const existingChild = nodes.find(n => n.parent_client_id === selectorNodeId)
+      if (existingChild) {
+        updateNode(existingChild.client_id, {
+          ...(payload.detailContainerSelector?.trim() ? { container_selector: payload.detailContainerSelector.trim() } : {}),
+          fields: mergeFields(existingChild.fields, newDetailFields),
+        })
+      } else {
+        const childId = uid()
+        const siblings = nodes.filter(n => n.parent_client_id === selectorNodeId)
+        setNodes(prev => [...prev, {
+          client_id: childId,
+          parent_client_id: selectorNodeId,
+          name: 'Detalle',
+          url: '',
+          container_selector: payload.detailContainerSelector?.trim() || '',
+          order: siblings.length,
+          fields: newDetailFields,
+        }])
       }
-      setNodes(prev => [...prev, newChild])
     }
   }
 
@@ -391,6 +414,15 @@ export default function TemplateEditorPage() {
       <VisualSelectorModal
         open={selectorOpen}
         url={selectorUrl}
+        existingFields={(() => {
+          if (!selectorNodeId) return []
+          const node = nodes.find(n => n.client_id === selectorNodeId)
+          const child = nodes.find(n => n.parent_client_id === selectorNodeId)
+          return [
+            ...(node?.fields ?? []).map(f => ({ name: f.name, tab: 'listing' as const })),
+            ...(child?.fields ?? []).map(f => ({ name: f.name, tab: 'detail' as const })),
+          ]
+        })()}
         onClose={() => {
           setSelectorOpen(false)
           setSelectorNodeId(null)
@@ -752,6 +784,12 @@ function UrlNodeEditor({
   const removeField = (fid: string) =>
     onUpdate(node.client_id, { fields: node.fields.filter(f => f.id !== fid) })
 
+  const duplicateNames = new Set(
+    node.fields
+      .map(f => f.name.trim().toLowerCase())
+      .filter((n, i, arr) => n && arr.indexOf(n) !== i)
+  )
+
   return (
     <div
       className={`bg-white rounded-2xl border border-gray-200 shadow-sm border-l-4 ${depthColors[depth % depthColors.length]} overflow-hidden`}
@@ -845,6 +883,7 @@ function UrlNodeEditor({
                   nodeUrl={node.url}
                   containerSelector={node.container_selector}
                   isChild={isChild}
+                  isDuplicate={duplicateNames.has(field.name.trim().toLowerCase())}
                   onUpdate={updateField}
                   onRemove={removeField}
                 />
@@ -948,7 +987,7 @@ function ColumnSelect({
 // ─── FieldEditor ──────────────────────────────────────────────────────────────
 
 function FieldEditor({
-  developerId, field, nodeId, nodeUrl, containerSelector, isChild, onUpdate, onRemove,
+  developerId, field, nodeId, nodeUrl, containerSelector, isChild, isDuplicate, onUpdate, onRemove,
 }: {
   developerId: string
   field: FieldDraft
@@ -956,6 +995,7 @@ function FieldEditor({
   nodeUrl: string
   containerSelector: string
   isChild: boolean
+  isDuplicate: boolean
   onUpdate: (id: string, p: Partial<FieldDraft>) => void
   onRemove: (id: string) => void
 }) {
@@ -970,7 +1010,13 @@ function FieldEditor({
     onUpdate(field.id, { selectors: field.selectors.filter(s => s.id !== sid) })
 
   return (
-    <div className="rounded-xl border border-gray-100 bg-gray-50 p-3.5">
+    <div className={`rounded-xl border p-3.5 ${isDuplicate ? 'border-red-400 bg-red-50' : 'border-gray-100 bg-gray-50'}`}>
+      {isDuplicate && (
+        <p className="text-[11px] text-red-600 font-semibold mb-2 flex items-center gap-1">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+          Campo duplicado — existe otro campo con el mismo nombre en esta sección
+        </p>
+      )}
       <div className="flex items-start gap-3">
         <div className="flex-1 space-y-2.5">
 

@@ -179,6 +179,19 @@ async def visual_selector_ws(websocket: WebSocket):
                     )
                     screenshot = await visual_selector_manager.screenshot(session)
                     await websocket.send_json({"type": "capture_result", "data": result, "screenshot": screenshot})
+                elif msg_type == "capture_color_group":
+                    session = message.get("session_id") or session_id
+                    if not session:
+                        raise RuntimeError("Sesión no inicializada")
+                    result = await visual_selector_manager.capture_color_group(
+                        session,
+                        rects=message.get("rects") or [],
+                        context=str(message.get("context", "")),
+                        hover=bool(message.get("hover", False)),
+                        ai_model=str(message.get("ai_model", "")),
+                    )
+                    screenshot = await visual_selector_manager.screenshot(session)
+                    await websocket.send_json({"type": "capture_result", "data": result, "screenshot": screenshot})
                 elif msg_type == "extract_raw_data":
                     session = message.get("session_id") or session_id
                     if not session:
