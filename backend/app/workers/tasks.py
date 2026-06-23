@@ -10,6 +10,24 @@ from pathlib import Path
 if '/app' not in sys.path:
     sys.path.insert(0, '/app')
 
+# ── Browser config — must match visual_selector_service.py exactly so that
+#    the same CSS selectors work (both render the same HTML from the server). ──
+_SCRAPER_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+]
+_SCRAPER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+_SCRAPER_STEALTH = (
+    "Object.defineProperty(navigator,'webdriver',{get:()=>false});"
+    "if(!window.chrome)window.chrome={};"
+    "if(!window.chrome.runtime)window.chrome.runtime={};"
+    "Object.defineProperty(navigator,'languages',{get:()=>['es-ES','es','en-US','en']});"
+)
+
 from celery import Celery
 from config import settings
 
@@ -275,16 +293,29 @@ def scrape_single_field_task(payload: dict):
 
         async def _run_one():
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                browser = await p.chromium.launch(headless=True, args=_SCRAPER_LAUNCH_ARGS)
+                ctx = await _new_scraper_context(browser)
                 try:
-                    return await _scrape_single_field(browser, node_snapshot, developer_id=str(developer_id))
+                    return await _scrape_single_field(ctx, node_snapshot, developer_id=str(developer_id))
                 finally:
+                    await ctx.close()
                     await browser.close()
 
         total = asyncio.run(_run_one())
         logger.info(f"Field scrape completed: {total} items for node={url_node_id}")
     except Exception as e:
         logger.error(f"Field scrape error for node={url_node_id}: {e}", exc_info=True)
+
+
+async def _new_scraper_context(browser):
+    """Create a browser context that matches the visual selector setup exactly."""
+    from playwright.async_api import Browser
+    ctx = await browser.new_context(
+        viewport={"width": 1280, "height": 720},
+        user_agent=_SCRAPER_UA,
+    )
+    await ctx.add_init_script(_SCRAPER_STEALTH)
+    return ctx
 
 
 async def _run_scrape(developer_id, job_id) -> int:
@@ -301,13 +332,15 @@ async def _run_scrape(developer_id, job_id) -> int:
         from playwright.async_api import async_playwright
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=True, args=_SCRAPER_LAUNCH_ARGS)
+            ctx = await _new_scraper_context(browser)
             try:
-                    for root in nodes_data:
-                        if root["parent_id"] is None:
-                            count = await _scrape_node(browser, root, nodes_data, developer_id, job_id)
-                            total += count
+                for root in nodes_data:
+                    if root["parent_id"] is None:
+                        count = await _scrape_node(ctx, root, nodes_data, developer_id, job_id)
+                        total += count
             finally:
+                await ctx.close()
                 await browser.close()
     except Exception as e:
         logger.error(f"Playwright error: {e}", exc_info=True)
@@ -316,7 +349,7 @@ async def _run_scrape(developer_id, job_id) -> int:
     return total
 
 
-async def _scrape_single_field(browser, node: dict, developer_id: str) -> int:
+async def _scrape_single_field(ctx, node: dict, developer_id: str) -> int:
     """Preview scrape for a single field in the template editor (always a parent-level node)."""
     from database import get_db_context
     from app.models.proyecto import Proyecto
@@ -324,7 +357,7 @@ async def _scrape_single_field(browser, node: dict, developer_id: str) -> int:
     from uuid import UUID
 
     total = 0
-    page = await browser.new_page()
+    page = await ctx.new_page()
     try:
         await page.goto(node["url"], wait_until="networkidle", timeout=30000)
         await page.mouse.move(400, 300)
@@ -368,7 +401,7 @@ def _snapshot_nodes(db, developer_id) -> list:
 
 
 async def _scrape_node(
-    browser, node: dict, all_nodes: list, developer_id, job_id,
+    ctx, node: dict, all_nodes: list, developer_id, job_id,
     parent_url: str = None,
     proyecto_id=None,
 ) -> int:
@@ -388,7 +421,7 @@ async def _scrape_node(
 
     total = 0
     try:
-        page = await browser.new_page()
+        page = await ctx.new_page()
         await page.goto(target_url, wait_until="networkidle", timeout=30000)
         await page.mouse.move(400, 300)
         await page.mouse.wheel(0, 500)
@@ -478,7 +511,7 @@ async def _scrape_node(
                         child_url = item_data[field["name"]]
                         for child_node in child_nodes:
                             count = await _scrape_node(
-                                browser, child_node, all_nodes, developer_id, job_id,
+                                ctx, child_node, all_nodes, developer_id, job_id,
                                 child_url,
                                 proyecto_id=item_proyecto_id,
                             )
@@ -580,6 +613,14 @@ async def _extract_items(page, fields: list, container_selector: str = None, dev
                                 item[field["name"]] = []
                         else:
                             el = await container.query_selector(css)
+                            if el is None:
+                                # Fallback: the container itself may match the selector
+                                # (e.g. container IS the <a> and field selector is also <a>)
+                                try:
+                                    if await container.evaluate("(el, sel) => el.matches(sel)", css):
+                                        el = container
+                                except Exception:
+                                    pass
                             item[field["name"]] = await _get_element_value(page, el, field) if el else None
                     except Exception as e:
                         logger.warning(f"Container field error for {field['name']}: {e}")

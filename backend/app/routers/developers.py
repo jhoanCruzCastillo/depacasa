@@ -58,6 +58,7 @@ class TemplateNodeIn(BaseModel):
 
 class TemplateSave(BaseModel):
     nodes: List[TemplateNodeIn]
+    capture_config: Optional[dict] = None
 
 
 @router.post("", response_model=DeveloperResponse, status_code=status.HTTP_201_CREATED)
@@ -367,7 +368,11 @@ async def get_developer_template(developer_id: UUID, db: Session = Depends(get_d
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Developer not found")
     tmpl = db.query(ExtractionTemplate).filter(ExtractionTemplate.developer_id == developer_id).first()
     nodes = _nodes_with_inherited_fields(tmpl.nodes if tmpl else [])
-    return {"developer_id": str(developer_id), "nodes": nodes}
+    return {
+        "developer_id": str(developer_id),
+        "nodes": nodes,
+        "capture_config": tmpl.capture_config if tmpl else None,
+    }
 
 
 @router.post("/{developer_id}/template")
@@ -419,8 +424,14 @@ async def save_developer_template(
     tmpl = db.query(ExtractionTemplate).filter(ExtractionTemplate.developer_id == developer_id).first()
     if tmpl:
         tmpl.nodes      = nodes_json
+        if template.capture_config is not None:
+            tmpl.capture_config = template.capture_config
         tmpl.updated_at = datetime.utcnow()
     else:
-        db.add(ExtractionTemplate(developer_id=developer_id, nodes=nodes_json))
+        db.add(ExtractionTemplate(
+            developer_id=developer_id,
+            nodes=nodes_json,
+            capture_config=template.capture_config,
+        ))
     db.commit()
     return {"status": "saved", "developer_id": str(developer_id)}

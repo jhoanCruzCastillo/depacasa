@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, Trash2, Check, RotateCcw, Navigation2, Tag, MousePointer2, Camera, Database } from 'lucide-react'
+import { X, Trash2, Check, RotateCcw, Navigation2, Tag, MousePointer2, Camera, Database, Plus, AlertCircle, Code2, Loader2 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type FieldType = 'container' | 'text' | 'url' | 'number' | 'image'
@@ -19,7 +19,8 @@ export interface Annotation {
   label: string
   field_name: string
   field_type: FieldType
-  selector: string
+  selector: string           // derived: selectors_chain.filter(Boolean).join(' ')
+  selectors_chain: string[]  // multi-level CSS selectors (externo → específico)
   parent_id: string | null
   is_nav_link: boolean
   tab: ActiveTab
@@ -36,6 +37,10 @@ export interface Annotation {
   is_shared: boolean
   plain_text: boolean
   extract_attr: string
+  is_image: boolean
+  is_child_url: boolean
+  list_container: string
+  rect_screenshot: string  // base64 screenshot of the drawn rect; empty if none
 }
 
 export interface CapturedField {
@@ -53,6 +58,7 @@ export interface CapturedField {
   is_shared: boolean
   plain_text: boolean
   extract_attr: string
+  list_container: string
 }
 
 export interface VisualSelectorPayload {
@@ -129,7 +135,7 @@ const STANDARD_FIELDS: { value: string; label: string; group: string; autoToggle
   { value: 'm2',               label: 'Metros cuadrados (m²)', group: 'Propiedad' },
   { value: 'modelo',           label: 'Modelo', group: 'Propiedad' },
   { value: 'modelo_imagen',    label: 'Imagen adicional del modelo', group: 'Propiedad', autoToggles: { is_image: true } },
-  { value: 'descripcion',      label: 'Descripción (→ proyecto)', group: 'Propiedad', autoToggles: { is_shared: true } },
+  { value: 'descripcion',      label: 'Descripción (→ proyecto)', group: 'Propiedad', autoToggles: { is_shared: true, plain_text: true } },
   { value: 'ubicacion',        label: 'Ubicación (→ proyecto)', group: 'Propiedad', autoToggles: { is_shared: true } },
   { value: 'lugares_cercanos', label: 'Lugares cercanos (→ proyecto)', group: 'Propiedad', autoToggles: { is_shared: true, is_list: true } },
   { value: 'areas_comunes',    label: 'Áreas comunes (→ proyecto)', group: 'Propiedad', autoToggles: { is_shared: true, is_list: true } },
@@ -141,6 +147,11 @@ const STANDARD_FIELDS: { value: string; label: string; group: string; autoToggle
 
 const getAutoToggles = (fieldName: string): Partial<FieldToggles> =>
   STANDARD_FIELDS.find(f => f.value === fieldName)?.autoToggles ?? {}
+
+const getAutoTogglesByGroup = (fieldName: string, group: string): Partial<FieldToggles> =>
+  STANDARD_FIELDS.find(f => f.value === fieldName && f.group === group)?.autoToggles
+  ?? STANDARD_FIELDS.find(f => f.value === fieldName)?.autoToggles
+  ?? {}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function VisualSelectorModal({ open, url, existingFields, onClose, onConfirm }: Props) {
@@ -160,7 +171,19 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
     tab: ActiveTab
     firstRect: Annotation['viewport_rect']
     allRects: Annotation['viewport_rect'][]
+    isNested?: boolean
   } | null>(null)
+
+  // Returns true if `outer` fully (±margin) contains `inner`
+  const rectContains = (
+    outer: Annotation['viewport_rect'],
+    inner: Annotation['viewport_rect'],
+    margin = 12,
+  ) =>
+    outer.x1 <= inner.x1 + margin &&
+    outer.y1 <= inner.y1 + margin &&
+    outer.x2 >= inner.x2 - margin &&
+    outer.y2 >= inner.y2 - margin
 
   const [, setSessionId] = useState<string | null>(null)
   const [, setViewport] = useState<{ width: number; height: number } | null>(null)
@@ -183,6 +206,12 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
   const [capturing, setCapturing] = useState(false)
   const [rawDataResult, setRawDataResult] = useState<Record<string, unknown> | null>(null)
   const [showRawData, setShowRawData] = useState(false)
+  const [rawDataIsDetail, setRawDataIsDetail] = useState(false)
+  const [htmlModalAnn, setHtmlModalAnn] = useState<Annotation | null>(null)
+  const [detailHtmlData, setDetailHtmlData] = useState<{ html: string; element_html: string | null; url: string; error?: string } | null>(null)
+  const [htmlLoading, setHtmlLoading] = useState(false)
+  const [errorToast, setErrorToast] = useState<string | null>(null)
+  const [previewImage, setPreviewImage] = useState<string | null>(null)
 
   const setActiveColorSync = (c: string) => {
     setActiveColor(c)
@@ -274,7 +303,15 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
           try {
             const raw = localStorage.getItem(`vs_anns_${url}`)
             if (raw) {
-              const parsed: Annotation[] = JSON.parse(raw).map((a: Annotation) => ({ ...a, inferring: false }))
+              const parsed: Annotation[] = JSON.parse(raw).map((a: Annotation) => ({
+                ...a,
+                inferring: false,
+                selectors_chain: a.selectors_chain?.length ? a.selectors_chain : (a.selector ? [a.selector] : []),
+                is_image:       a.is_image       ?? false,
+                is_child_url:   a.is_child_url   ?? false,
+                rect_screenshot: '',  // screenshots not persisted to localStorage
+                list_container: a.list_container ?? '',
+              }))
               if (parsed.length) syncedSetAnnotations(parsed)
             }
           } catch { /* ok */ }
@@ -355,6 +392,7 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
 
           const d = msg.data || {}
           const cardSel: string = d.card_selector || ''
+          const rectScreenshots: string[] = d.rect_screenshots || (d.rect_screenshot ? [d.rect_screenshot] : [])
           const aiFields: Array<{
             name: string; selector: string; type: string
             is_image: boolean; is_child_url: boolean; is_list: boolean; extract_attr: string | null
@@ -368,54 +406,96 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
           )
           syncedSetAnnotations(prev => prev.filter(a => !inferringIds.has(a.id)))
 
-          if (cardSel && aiFields.length > 0) {
+          // AI couldn't identify the field → show error toast, no annotation created
+          if (d.field_not_found) {
+            setErrorToast('LA IA NO PUDO ENCONTRAR ESTE CAMPO')
+            setTimeout(() => setErrorToast(null), 4000)
+            break
+          }
+
+          if (d.is_nested_result && d.container_selector && aiFields.length > 0) {
+            // Nested capture: outer rect = scope, inner rect = element → 1 annotation, 2-level selector chain
+            const f = aiFields[0]
+            const at = getAutoToggles(f.name)
+            const chain = [d.container_selector, f.selector || ''].filter(Boolean)
+            const combinedSel = chain.join(' ')
+            const isImg = !!(at.is_image || f.is_image)
+            const isChildUrl = !!(at.is_child_url || f.is_child_url)
+            syncedSetAnnotations(prev => [...prev, {
+              id: uid(), label: f.name, field_name: f.name,
+              field_type: (isImg ? 'image' : isChildUrl ? 'url' : (f.type as FieldType)) || 'text',
+              selector: combinedSel, selectors_chain: chain, parent_id: null, is_nav_link: false,
+              tab: captureInfo.tab, scroll_y: scrollYRef.current,
+              viewport_rect: captureInfo.firstRect,
+              matches: 0, preview: combinedSel, inferring: false,
+              color: captureInfo.color, context: '', fieldHint: f.name, hoverEnabled: false,
+              is_list: at.is_list ?? f.is_list ?? false,
+              is_shared: at.is_shared ?? false,
+              plain_text: at.plain_text ?? false,
+              extract_attr: at.extract_attr ?? f.extract_attr ?? '',
+              is_image: isImg, is_child_url: isChildUrl, list_container: '',
+              rect_screenshot: rectScreenshots[1] ?? rectScreenshots[0] ?? '',
+            }])
+          } else if (cardSel && aiFields.length > 0) {
             // Catalog result: container + field children
             const containerAnn: Annotation = {
               id: uid(), label: d.catalog_type || 'catalog',
               field_name: 'card', field_type: 'container',
-              selector: cardSel, parent_id: null, is_nav_link: false,
+              selector: cardSel, selectors_chain: [cardSel], parent_id: null, is_nav_link: false,
               tab: captureInfo.tab, scroll_y: scrollYRef.current,
               viewport_rect: captureInfo.firstRect,
               matches: 0, preview: cardSel, inferring: false,
               color: captureInfo.color, context: '', fieldHint: '', hoverEnabled: false,
               is_list: false, is_shared: false, plain_text: false, extract_attr: '',
+              is_image: false, is_child_url: false, list_container: '', rect_screenshot: rectScreenshots[0] ?? '',
             }
             const fieldAnns: Annotation[] = aiFields.map((f, i) => {
               const at = getAutoToggles(f.name)
               const rectPos = captureInfo.allRects?.[i] ?? captureInfo.firstRect
+              const isImg = !!(at.is_image || f.is_image)
+              const isChildUrl = !!(at.is_child_url || f.is_child_url)
+              const sel = f.selector || ''
               return {
                 id: uid(), label: f.name, field_name: f.name,
-                field_type: (at.is_image || f.is_image ? 'image' : at.is_child_url || f.is_child_url ? 'url' : (f.type as FieldType)) || 'text',
-                selector: f.selector || '', parent_id: containerAnn.id,
-                is_nav_link: (at.is_child_url || f.is_child_url) && f.name === 'url_propiedad',
+                field_type: (isImg ? 'image' : isChildUrl ? 'url' : (f.type as FieldType)) || 'text',
+                selector: sel, selectors_chain: sel ? [sel] : [], parent_id: containerAnn.id,
+                is_nav_link: isChildUrl && f.name === 'url_propiedad',
                 tab: captureInfo.tab, scroll_y: scrollYRef.current,
                 viewport_rect: rectPos,
-                matches: 0, preview: f.selector || '', inferring: false,
+                matches: 0, preview: sel, inferring: false,
                 color: captureInfo.color, context: '', fieldHint: f.name, hoverEnabled: false,
                 is_list: at.is_list ?? f.is_list ?? false,
                 is_shared: at.is_shared ?? false,
                 plain_text: at.plain_text ?? false,
                 extract_attr: at.extract_attr ?? f.extract_attr ?? '',
+                is_image: isImg, is_child_url: isChildUrl, list_container: '',
+                rect_screenshot: rectScreenshots[i] ?? rectScreenshots[0] ?? '',
               }
             })
             syncedSetAnnotations(prev => [...prev, containerAnn, ...fieldAnns])
           } else if (aiFields.length > 0) {
             // Single fields (Level 2 detail page)
             const fieldAnns: Annotation[] = aiFields.map((f, i) => {
-              const at = getAutoToggles(f.name)
+              const group = captureInfo.tab === 'detail' ? 'Propiedad' : 'Proyecto'
+              const at = getAutoTogglesByGroup(f.name, group)
               const rectPos = captureInfo.allRects?.[i] ?? captureInfo.firstRect
+              const isImg = !!(at.is_image || f.is_image)
+              const isChildUrl = !!(at.is_child_url || f.is_child_url)
+              const sel = f.selector || ''
               return {
                 id: uid(), label: f.name, field_name: f.name,
-                field_type: (at.is_image || f.is_image ? 'image' : at.is_child_url || f.is_child_url ? 'url' : (f.type as FieldType)) || 'text',
-                selector: f.selector || '', parent_id: null, is_nav_link: false,
+                field_type: (isImg ? 'image' : isChildUrl ? 'url' : (f.type as FieldType)) || 'text',
+                selector: sel, selectors_chain: sel ? [sel] : [], parent_id: null, is_nav_link: false,
                 tab: captureInfo.tab, scroll_y: scrollYRef.current,
                 viewport_rect: rectPos,
-                matches: 0, preview: f.selector || '', inferring: false,
+                matches: 0, preview: sel, inferring: false,
                 color: captureInfo.color, context: '', fieldHint: f.name, hoverEnabled: false,
                 is_list: at.is_list ?? f.is_list ?? false,
                 is_shared: at.is_shared ?? false,
                 plain_text: at.plain_text ?? false,
                 extract_attr: at.extract_attr ?? f.extract_attr ?? '',
+                is_image: isImg, is_child_url: isChildUrl, list_container: '',
+                rect_screenshot: rectScreenshots[i] ?? rectScreenshots[0] ?? '',
               }
             })
             syncedSetAnnotations(prev => [...prev, ...fieldAnns])
@@ -425,7 +505,13 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
 
         case 'raw_data':
           setRawDataResult(msg.data || {})
+          setRawDataIsDetail(activeTabRef.current === 'detail')
           setShowRawData(true)
+          break
+
+        case 'detail_html':
+          setDetailHtmlData(msg.data || {})
+          setHtmlLoading(false)
           break
 
         case 'error':
@@ -454,6 +540,7 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
       // Persist non-inferring annotations to localStorage so they survive re-opens
       try {
         const toSave = annotationsRef.current.filter(a => !a.inferring)
+          .map(a => ({ ...a, rect_screenshot: '' }))
         if (toSave.length > 0) {
           localStorage.setItem(`vs_anns_${url}`, JSON.stringify(toSave))
         } else {
@@ -480,6 +567,14 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
     scrollYRef.current = 0
     send({ type: 'switch_tab', session_id: sessionRef.current, tab: activeTab })
   }, [activeTab])
+
+  useEffect(() => {
+    if (detailHtmlData?.element_html && !htmlLoading) {
+      setTimeout(() => {
+        document.getElementById('html-highlight')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 80)
+    }
+  }, [detailHtmlData, htmlLoading])
 
   // ── Drawing ───────────────────────────────────────────────────────────────
   const findParent = (rx1: number, ry1: number, rx2: number, ry2: number, cW: number, cH: number): string | null => {
@@ -555,12 +650,13 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
 
       syncedSetAnnotations(prev => [...prev, {
         id: newId, label: '', field_name: '', field_type: 'text',
-        selector: '', parent_id, is_nav_link: false,
+        selector: '', selectors_chain: [], parent_id, is_nav_link: false,
         tab: activeTabRef.current, scroll_y: scrollYRef.current,
         viewport_rect: { x1: vx1, y1: vy1, x2: vx2, y2: vy2 },
         matches: 0, preview: '', inferring: false,
         color, context: '', fieldHint: '', hoverEnabled: false,
         is_list: false, is_shared: false, plain_text: false, extract_attr: '',
+        is_image: false, is_child_url: false, list_container: '', rect_screenshot: '',
       }])
 
       const px = Math.min(rx2 + 10, cW - 290)
@@ -596,7 +692,14 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const updateAnnotation = (id: string, patch: Partial<Annotation>) => {
-    syncedSetAnnotations(prev => prev.map(a => a.id === id ? { ...a, ...patch } : a))
+    syncedSetAnnotations(prev => prev.map(a => {
+      if (a.id !== id) return a
+      const next = { ...a, ...patch }
+      if (patch.selectors_chain !== undefined) {
+        next.selector = patch.selectors_chain.filter(s => s.trim()).join(' ')
+      }
+      return next
+    }))
   }
 
   const deleteAnnotation = (id: string) => {
@@ -609,6 +712,13 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
     if (tabAnns.length === 0) return
     const last = tabAnns[tabAnns.length - 1]
     deleteAnnotation(last.id)
+  }
+
+  const openHtmlModal = (ann: Annotation) => {
+    setHtmlModalAnn(ann)
+    setDetailHtmlData(null)
+    setHtmlLoading(true)
+    send({ type: 'get_detail_html', session_id: sessionRef.current, selector: ann.selector })
   }
 
   const submitCapture = () => {
@@ -627,14 +737,30 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
         : a
     ))
 
+    // Detect nesting: exactly 2 rects where one fully contains the other
+    let orderedAnns = groupAnns
+    let isNested = false
+    if (groupAnns.length === 2) {
+      const [a, b] = groupAnns
+      if (rectContains(a.viewport_rect, b.viewport_rect)) {
+        orderedAnns = [a, b]  // a=outer, b=inner
+        isNested = true
+      } else if (rectContains(b.viewport_rect, a.viewport_rect)) {
+        orderedAnns = [b, a]  // b=outer, a=inner
+        isNested = true
+      }
+    }
+
     captureColorRef.current = {
       color,
       tab: activeTabRef.current,
-      firstRect: groupAnns[0].viewport_rect,
-      allRects: groupAnns.map(a => a.viewport_rect),
+      // For nested: use inner rect position for the resulting annotation overlay
+      firstRect: isNested ? orderedAnns[1].viewport_rect : orderedAnns[0].viewport_rect,
+      allRects: orderedAnns.map(a => a.viewport_rect),
+      isNested,
     }
 
-    const rects = groupAnns.map(a => ({
+    const rects = orderedAnns.map(a => ({
       x1: a.viewport_rect.x1, y1: a.viewport_rect.y1,
       x2: a.viewport_rect.x2, y2: a.viewport_rect.y2,
       field_hint: a.id === popup.annotationId ? popup.fieldHint : a.fieldHint,
@@ -648,6 +774,7 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
       context: popup.label,
       hover: popup.hoverEnabled,
       ai_model: aiModel,
+      is_nested: isNested,
     })
 
     setCapturing(true)
@@ -724,26 +851,23 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
 
   // ── Confirm ───────────────────────────────────────────────────────────────
   const handleConfirm = () => {
-    const toField = (ann: Annotation): CapturedField => {
-      // autoToggles from standard field definition take precedence over AI inference
-      const at = getAutoToggles(ann.field_name || ann.fieldHint)
-      return {
-        id: ann.id,
-        name: ann.field_name || ann.label || 'campo',
-        selector: ann.selector,
-        preview: ann.preview,
-        matches: ann.matches,
-        type: ann.field_type as 'text' | 'url' | 'number' | 'image',
-        confidence: 1.0,
-        enabled: true,
-        is_child_url: at.is_child_url ?? (ann.field_type === 'url'),
-        is_list:      at.is_list      ?? ann.is_list,
-        is_image:     at.is_image     ?? (ann.field_type === 'image'),
-        is_shared:    at.is_shared    ?? ann.is_shared,
-        plain_text:   at.plain_text   ?? ann.plain_text,
-        extract_attr: at.extract_attr ?? ann.extract_attr,
-      }
-    }
+    const toField = (ann: Annotation): CapturedField => ({
+      id: ann.id,
+      name: ann.field_name || ann.label || 'campo',
+      selector: ann.selector,
+      preview: ann.preview,
+      matches: ann.matches,
+      type: (ann.is_image ? 'image' : ann.is_child_url ? 'url' : ann.field_type) as 'text' | 'url' | 'number' | 'image',
+      confidence: 1.0,
+      enabled: true,
+      is_child_url: ann.is_child_url,
+      is_list:      ann.is_list,
+      is_image:     ann.is_image,
+      is_shared:    ann.is_shared,
+      plain_text:   ann.plain_text,
+      extract_attr: ann.extract_attr,
+      list_container: ann.list_container,
+    })
     const listAnns = annotations.filter(a => a.tab === 'listing' && !a.inferring && a.selector)
     const listContainerAnn = listAnns.find(a => a.field_type === 'container')
     const detAnns = annotations.filter(a => a.tab === 'detail' && !a.inferring && a.selector)
@@ -765,6 +889,31 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm">
+      {previewImage && (
+        <div
+          className="fixed inset-0 z-[100] bg-black/85 flex items-center justify-center cursor-zoom-out"
+          onClick={() => setPreviewImage(null)}
+        >
+          <img
+            src={previewImage}
+            alt="Captura del campo"
+            className="max-w-3xl max-h-[85vh] rounded-xl shadow-2xl object-contain"
+            onClick={e => e.stopPropagation()}
+          />
+          <button
+            onClick={() => setPreviewImage(null)}
+            className="absolute top-4 right-4 text-white/70 hover:text-white bg-black/40 rounded-full p-1.5 transition"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+      )}
+      {errorToast && (
+        <div className="absolute top-8 left-1/2 -translate-x-1/2 z-[60] bg-red-600 text-white text-sm font-bold px-6 py-3.5 rounded-xl shadow-2xl flex items-center gap-2.5 pointer-events-none">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          {errorToast}
+        </div>
+      )}
       <div className="absolute inset-4 bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden">
 
         {/* ── Toolbar ── */}
@@ -1148,118 +1297,292 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
                 </div>
               )}
 
-              {tabAnnotations.map(ann => (
-                <div
-                  key={ann.id}
-                  className="rounded-xl border bg-white p-3 space-y-2 shadow-sm"
-                  style={{ borderColor: ann.color ? `${ann.color}44` : '#f3f4f6' }}
-                >
-                  <div className="flex items-start gap-2">
-                    <span
-                      className="w-2.5 h-2.5 rounded-full flex-shrink-0 mt-[5px]"
-                      style={{ background: ann.color || TYPE_COLOR[ann.field_type] }}
-                    />
-                    <div className="flex-1 min-w-0 space-y-1.5">
-                      <div className="flex items-center gap-1.5 flex-wrap">
+              {tabAnnotations.map(ann => {
+                const isContainer = ann.field_type === 'container'
+                const tabGroup = ann.tab === 'listing' ? 'Proyecto' : 'Propiedad'
+                const fieldsForTab = STANDARD_FIELDS.filter(f => f.group === tabGroup)
+
+                return (
+                  <div
+                    key={ann.id}
+                    className="rounded-xl border bg-white p-3 shadow-sm"
+                    style={{ borderColor: ann.color ? `${ann.color}44` : '#f3f4f6' }}
+                  >
+                    {/* ── Container annotation: simple display ── */}
+                    {isContainer ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-blue-600 flex-shrink-0">contenedor</span>
                         <input
-                          value={ann.field_name}
-                          onChange={e => updateAnnotation(ann.id, { field_name: e.target.value })}
-                          placeholder={ann.label || 'nombre_campo'}
-                          className="border border-gray-200 rounded-lg px-2 py-1 text-xs flex-1 min-w-0 font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                          value={ann.selector}
+                          onChange={e => updateAnnotation(ann.id, { selector: e.target.value, selectors_chain: [e.target.value] })}
+                          placeholder="div.card"
+                          className="flex-1 border border-gray-100 bg-gray-50 rounded-lg px-2 py-1 text-[11px] font-mono text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-200"
                         />
-                        <select
-                          value={ann.field_type}
-                          onChange={e => updateAnnotation(ann.id, { field_type: e.target.value as FieldType })}
-                          className="border border-gray-200 rounded-lg px-1.5 py-1 text-xs flex-shrink-0 focus:outline-none"
-                        >
-                          <option value="container">Contenedor</option>
-                          <option value="text">Texto</option>
-                          <option value="url">URL</option>
-                          <option value="number">Número</option>
-                          <option value="image">Imagen</option>
-                        </select>
                         <button onClick={() => deleteAnnotation(ann.id)} className="text-gray-300 hover:text-red-500 flex-shrink-0 transition">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
-
-                      {/* Nav link toggle */}
-                      {ann.field_type === 'url' && ann.tab === 'listing' && (
-                        <div className="space-y-1.5">
-                          <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={ann.is_nav_link}
-                              onChange={e => updateAnnotation(ann.id, { is_nav_link: e.target.checked })}
-                              className="rounded"
-                            />
-                            <span className="text-xs text-purple-600 font-medium">Enlace de navegación al detalle</span>
-                          </label>
-                          {ann.is_nav_link && ann.selector && !detailPageOpened && (
+                    ) : (
+                      <div className="space-y-2.5">
+                        {/* Field name dropdown + badges + delete */}
+                        <div className="flex items-center gap-2">
+                          {ann.rect_screenshot && (
                             <button
-                              onClick={() => {
-                                setLoadingDetail(true)
-                                send({ type: 'navigate_from_selector', session_id: sessionRef.current, selector: ann.selector })
-                              }}
-                              disabled={loadingDetail}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-semibold hover:bg-purple-700 disabled:opacity-50 transition w-full justify-center"
+                              onClick={() => setPreviewImage(ann.rect_screenshot)}
+                              title="Ver captura"
+                              className="w-8 h-8 rounded-lg overflow-hidden border border-gray-200 flex-shrink-0 hover:ring-2 hover:ring-blue-400 transition"
                             >
-                              <Navigation2 className="w-3.5 h-3.5" />
-                              {loadingDetail ? 'Abriendo…' : 'Navegar al detalle →'}
+                              <img src={ann.rect_screenshot} alt="" className="w-full h-full object-cover" />
                             </button>
                           )}
-                          {ann.is_nav_link && detailPageOpened && (
-                            <p className="text-[10px] text-emerald-600 font-medium">✓ Level 2 abierto</p>
+                          {ann.tab === 'detail' && ann.selector && (
+                            <button
+                              onClick={() => openHtmlModal(ann)}
+                              title="Ver HTML del detalle"
+                              className="w-8 h-8 rounded-lg border border-gray-200 flex-shrink-0 flex items-center justify-center text-gray-400 hover:text-blue-600 hover:border-blue-400 hover:bg-blue-50 transition"
+                            >
+                              <Code2 className="w-4 h-4" />
+                            </button>
                           )}
-                        </div>
-                      )}
-
-                      {/* Selector / pending / inferring */}
-                      {ann.inferring ? (
-                        <div className="flex items-center gap-1.5 text-xs text-blue-500 py-1">
-                          <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-                          Analizando con IA...
-                        </div>
-                      ) : ann.selector ? (
-                        <>
-                          <input
-                            value={ann.selector}
-                            onChange={e => updateAnnotation(ann.id, { selector: e.target.value })}
-                            placeholder=".card .titulo"
-                            className="w-full border border-gray-100 bg-gray-50 rounded-lg px-2 py-1 text-[11px] font-mono text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-200"
-                          />
-                          {ann.label && (
-                            <p className="text-[10px] text-gray-400 italic truncate">"{ann.label}"</p>
-                          )}
-                          {ann.field_type !== 'container' && (
-                            <label className="flex items-center gap-1.5 cursor-pointer select-none mt-0.5">
-                              <input
-                                type="checkbox"
-                                checked={ann.is_list}
-                                onChange={e => updateAnnotation(ann.id, { is_list: e.target.checked })}
-                                className="rounded"
-                              />
-                              <span className={`text-[11px] font-medium ${ann.is_list ? 'text-blue-600' : 'text-gray-400'}`}>
-                                Lista de valores (guarda como JSON array)
-                              </span>
-                            </label>
-                          )}
-                        </>
-                      ) : (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-gray-400 italic">Pendiente — haz clic en ⚙ para capturar</span>
-                          <button
-                            onClick={() => reopenPopup(ann)}
-                            className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 text-gray-500 hover:border-blue-300 hover:text-blue-600 transition"
+                          <select
+                            value={fieldsForTab.some(f => f.value === ann.field_name) ? ann.field_name : ''}
+                            onChange={e => {
+                              const name = e.target.value
+                              const at = getAutoToggles(name)
+                              updateAnnotation(ann.id, {
+                                field_name: name,
+                                is_child_url: at.is_child_url ?? false,
+                                is_list:      at.is_list      ?? false,
+                                is_image:     at.is_image     ?? false,
+                                is_shared:    at.is_shared    ?? false,
+                                plain_text:   at.plain_text   ?? false,
+                                extract_attr: at.extract_attr ?? '',
+                              })
+                            }}
+                            className="flex-1 border border-gray-200 bg-white rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
                           >
-                            ⚙
+                            <option value="">— Selecciona una columna —</option>
+                            {fieldsForTab.map(f => (
+                              <option key={f.value} value={f.value}>{f.label}  ·  {f.value}</option>
+                            ))}
+                          </select>
+                          {ann.is_list && (
+                            <span className="flex-shrink-0 text-xs bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded font-medium border border-indigo-200">lista [ ]</span>
+                          )}
+                          {ann.is_image && (
+                            <span className="flex-shrink-0 text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-medium border border-emerald-200">imagen</span>
+                          )}
+                          <button onClick={() => deleteAnnotation(ann.id)} className="text-gray-300 hover:text-red-500 flex-shrink-0 transition">
+                            <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
-                      )}
-                    </div>
+
+                        {/* Selector chain / inferring / pending */}
+                        {ann.inferring ? (
+                          <div className="flex items-center gap-1.5 text-xs text-blue-500 py-1">
+                            <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                            Analizando con IA…
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-xs font-medium text-gray-500">Selectores CSS</p>
+                              <span className="text-xs text-gray-400">— de más general a más específico</span>
+                            </div>
+                            {(ann.selectors_chain.length > 0 ? ann.selectors_chain : ann.selector ? [ann.selector] : []).map((sel, idx, arr) => (
+                              <div key={idx} className="flex items-center gap-2 pl-1">
+                                <span className="text-xs text-gray-400 w-14 flex-shrink-0 text-right">
+                                  {idx === 0 ? 'externo' : idx === arr.length - 1 && arr.length > 1 ? 'específico' : '↓'}
+                                </span>
+                                <input
+                                  value={sel}
+                                  onChange={e => {
+                                    const chain = [...(ann.selectors_chain.length > 0 ? ann.selectors_chain : [ann.selector])]
+                                    chain[idx] = e.target.value
+                                    updateAnnotation(ann.id, { selectors_chain: chain })
+                                  }}
+                                  placeholder={idx === 0 ? 'Ej: div.card' : 'Ej: span.precio'}
+                                  className="flex-1 border border-gray-200 bg-white rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                />
+                                <button
+                                  onClick={() => {
+                                    const chain = (ann.selectors_chain.length > 0 ? ann.selectors_chain : [ann.selector]).filter((_, i) => i !== idx)
+                                    updateAnnotation(ann.id, { selectors_chain: chain })
+                                  }}
+                                  className="text-gray-300 hover:text-red-400 transition flex-shrink-0"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ))}
+                            {ann.selectors_chain.length === 0 && !ann.selector && (
+                              <p className="text-[10px] text-gray-400 italic ml-16">
+                                Pendiente — haz clic en ⚙ para capturar con IA
+                                {' '}
+                                <button onClick={() => reopenPopup(ann)} className="text-blue-500 hover:underline">⚙</button>
+                              </p>
+                            )}
+                            <button
+                              onClick={() => {
+                                const chain = ann.selectors_chain.length > 0 ? ann.selectors_chain : (ann.selector ? [ann.selector] : [])
+                                updateAnnotation(ann.id, { selectors_chain: [...chain, ''] })
+                              }}
+                              className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-600 hover:underline ml-16 mt-0.5"
+                            >
+                              <Plus className="w-3 h-3" />
+                              {ann.selectors_chain.length === 0 && !ann.selector ? 'Agregar selector CSS' : 'Agregar nivel descendente'}
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Toggles row */}
+                        {!ann.inferring && (
+                          <div className="flex items-center gap-3 pt-0.5 flex-wrap">
+                            {/* URL hija */}
+                            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                              <div onClick={() => updateAnnotation(ann.id, { is_child_url: !ann.is_child_url, plain_text: false })}
+                                className={`relative w-7 h-3.5 rounded-full transition-colors cursor-pointer ${ann.is_child_url ? 'bg-violet-500' : 'bg-gray-200'}`}>
+                                <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${ann.is_child_url ? 'translate-x-3' : ''}`} />
+                              </div>
+                              <span className="text-xs text-gray-600 whitespace-nowrap">URL hija</span>
+                            </label>
+                            {/* Texto plano */}
+                            <label className={`flex items-center gap-1.5 select-none ${ann.is_child_url ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
+                              <div onClick={() => !ann.is_child_url && updateAnnotation(ann.id, { plain_text: !ann.plain_text })}
+                                className={`relative w-7 h-3.5 rounded-full transition-colors ${ann.plain_text ? 'bg-amber-500' : 'bg-gray-200'} ${ann.is_child_url ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                                <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${ann.plain_text ? 'translate-x-3' : ''}`} />
+                              </div>
+                              <span className="text-xs text-gray-600 whitespace-nowrap">Texto plano</span>
+                            </label>
+                            {/* Campo compartido */}
+                            <label className={`flex items-center gap-1.5 select-none ${ann.is_child_url ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
+                              <div onClick={() => !ann.is_child_url && updateAnnotation(ann.id, { is_shared: !ann.is_shared })}
+                                className={`relative w-7 h-3.5 rounded-full transition-colors ${ann.is_shared ? 'bg-teal-500' : 'bg-gray-200'} ${ann.is_child_url ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                                <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${ann.is_shared ? 'translate-x-3' : ''}`} />
+                              </div>
+                              <span className="text-xs text-gray-600 whitespace-nowrap">Campo compartido</span>
+                            </label>
+                            {/* Extraer atributo */}
+                            <label className={`flex items-center gap-1.5 select-none ${ann.is_child_url ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
+                              <div onClick={() => !ann.is_child_url && updateAnnotation(ann.id, { extract_attr: ann.extract_attr ? '' : '_' })}
+                                className={`relative w-7 h-3.5 rounded-full transition-colors ${ann.extract_attr ? 'bg-rose-500' : 'bg-gray-200'} ${ann.is_child_url ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                                <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${ann.extract_attr ? 'translate-x-3' : ''}`} />
+                              </div>
+                              <span className="text-xs text-gray-600 whitespace-nowrap">Extraer atributo</span>
+                            </label>
+                            {/* Lista */}
+                            <label className={`flex items-center gap-1.5 select-none ${ann.is_child_url ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
+                              <div onClick={() => !ann.is_child_url && updateAnnotation(ann.id, { is_list: !ann.is_list })}
+                                className={`relative w-7 h-3.5 rounded-full transition-colors ${ann.is_list ? 'bg-indigo-500' : 'bg-gray-200'} ${ann.is_child_url ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                                <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${ann.is_list ? 'translate-x-3' : ''}`} />
+                              </div>
+                              <span className="text-xs text-gray-600 whitespace-nowrap">Lista</span>
+                            </label>
+                            {/* Imagen */}
+                            <label className={`flex items-center gap-1.5 select-none ${ann.is_child_url ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
+                              <div onClick={() => !ann.is_child_url && updateAnnotation(ann.id, { is_image: !ann.is_image })}
+                                className={`relative w-7 h-3.5 rounded-full transition-colors ${ann.is_image ? 'bg-emerald-500' : 'bg-gray-200'} ${ann.is_child_url ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                                <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${ann.is_image ? 'translate-x-3' : ''}`} />
+                              </div>
+                              <span className="text-xs text-gray-600 whitespace-nowrap">Imagen</span>
+                            </label>
+                          </div>
+                        )}
+
+                        {/* Atributo name input */}
+                        {ann.extract_attr !== '' && !ann.is_child_url && !ann.inferring && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-500 whitespace-nowrap">Nombre del atributo:</span>
+                            <input
+                              value={ann.extract_attr === '_' ? '' : ann.extract_attr}
+                              onChange={e => updateAnnotation(ann.id, { extract_attr: e.target.value || '_' })}
+                              placeholder="ej: src, href, data-price"
+                              className="flex-1 border border-rose-200 bg-white rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-rose-400"
+                            />
+                          </div>
+                        )}
+
+                        {/* Info banners */}
+                        {!ann.inferring && (<>
+                          {ann.is_child_url && (
+                            <div className="flex items-start gap-1.5 p-2 bg-violet-50 rounded-lg border border-violet-100">
+                              <AlertCircle className="w-3 h-3 text-violet-400 mt-0.5 flex-shrink-0" />
+                              <p className="text-[11px] text-violet-600 leading-relaxed">
+                                El valor extraído se usará como URL para navegar a la sección hija.
+                              </p>
+                            </div>
+                          )}
+                          {ann.plain_text && !ann.is_child_url && (
+                            <div className="flex items-start gap-1.5 p-2 bg-amber-50 rounded-lg border border-amber-100">
+                              <AlertCircle className="w-3 h-3 text-amber-400 mt-0.5 flex-shrink-0" />
+                              <p className="text-[11px] text-amber-700 leading-relaxed">Extrae todo el texto visible del elemento y sus hijos, ignorando las etiquetas HTML.</p>
+                            </div>
+                          )}
+                          {ann.is_shared && !ann.is_child_url && (
+                            <div className="flex items-start gap-1.5 p-2 bg-teal-50 rounded-lg border border-teal-100">
+                              <AlertCircle className="w-3 h-3 text-teal-400 mt-0.5 flex-shrink-0" />
+                              <p className="text-[11px] text-teal-700 leading-relaxed">Se extrae una sola vez de la página y se agrega a todos los registros del catálogo.</p>
+                            </div>
+                          )}
+                          {ann.extract_attr && ann.extract_attr !== '_' && !ann.is_child_url && (
+                            <div className="flex items-start gap-1.5 p-2 bg-rose-50 rounded-lg border border-rose-100">
+                              <AlertCircle className="w-3 h-3 text-rose-400 mt-0.5 flex-shrink-0" />
+                              <p className="text-[11px] text-rose-700 leading-relaxed">Extrae el valor del atributo <code className="bg-rose-100 px-0.5 rounded font-mono">{ann.extract_attr}</code> del elemento.</p>
+                            </div>
+                          )}
+                          {ann.is_image && !ann.is_child_url && (
+                            <div className="flex items-start gap-1.5 p-2 bg-emerald-50 rounded-lg border border-emerald-100">
+                              <AlertCircle className="w-3 h-3 text-emerald-400 mt-0.5 flex-shrink-0" />
+                              <p className="text-[11px] text-emerald-700 leading-relaxed">Las imágenes se <strong>descargarán y guardarán localmente</strong> al ejecutar el scraping. Usa con <span className="font-medium">Extraer atributo</span> (<code className="bg-emerald-100 px-0.5 rounded font-mono">src</code>, <code className="bg-emerald-100 px-0.5 rounded font-mono">href</code>).</p>
+                            </div>
+                          )}
+                          {ann.is_list && !ann.is_child_url && (
+                            <div className="space-y-1.5 p-2 bg-indigo-50 rounded-lg border border-indigo-100">
+                              <div className="flex items-start gap-1.5">
+                                <AlertCircle className="w-3 h-3 text-indigo-400 mt-0.5 flex-shrink-0" />
+                                <p className="text-[11px] text-indigo-700 leading-relaxed">Extrae <strong>múltiples elementos</strong> y los guarda como array. Define un <strong>contenedor de lista</strong> para acotar la búsqueda.</p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] text-indigo-600 font-medium whitespace-nowrap flex-shrink-0">Contenedor de lista:</span>
+                                <input
+                                  value={ann.list_container}
+                                  onChange={e => updateAnnotation(ann.id, { list_container: e.target.value })}
+                                  placeholder="Ej: div.galeria  (vacío = todo el card)"
+                                  className="flex-1 border border-indigo-200 bg-white rounded-lg px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                                />
+                              </div>
+                            </div>
+                          )}
+                          {/* Nav link */}
+                          {ann.is_child_url && ann.tab === 'listing' && (
+                            <div className="space-y-1.5">
+                              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                <input type="checkbox" checked={ann.is_nav_link}
+                                  onChange={e => updateAnnotation(ann.id, { is_nav_link: e.target.checked })}
+                                  className="rounded" />
+                                <span className="text-xs text-purple-600 font-medium">Enlace de navegación al detalle</span>
+                              </label>
+                              {ann.is_nav_link && ann.selector && !detailPageOpened && (
+                                <button
+                                  onClick={() => { setLoadingDetail(true); send({ type: 'navigate_from_selector', session_id: sessionRef.current, selector: ann.selector }) }}
+                                  disabled={loadingDetail}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-semibold hover:bg-purple-700 disabled:opacity-50 transition w-full justify-center"
+                                >
+                                  <Navigation2 className="w-3.5 h-3.5" />
+                                  {loadingDetail ? 'Abriendo…' : 'Navegar al detalle →'}
+                                </button>
+                              )}
+                              {ann.is_nav_link && detailPageOpened && (
+                                <p className="text-[10px] text-emerald-600 font-medium">✓ Level 2 abierto</p>
+                              )}
+                            </div>
+                          )}
+                        </>)}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
 
             <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between flex-shrink-0 gap-2">
@@ -1298,7 +1621,13 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
               <div>
                 <p className="font-semibold text-gray-900 text-sm">Datos extraídos (JSON crudo)</p>
-                {'card_count' in rawDataResult && (
+                {rawDataIsDetail ? (
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Página de detalle · {((rawDataResult as any).preview?.length ?? 0) > 0
+                      ? `${(rawDataResult as any).preview.length} campo(s) encontrado(s)`
+                      : 'sin resultados'}
+                  </p>
+                ) : 'card_count' in rawDataResult && (
                   <p className="text-xs text-gray-400 mt-0.5">
                     {(rawDataResult as any).card_count} cards encontrados
                   </p>
@@ -1315,6 +1644,62 @@ export default function VisualSelectorModal({ open, url, existingFields, onClose
               <pre className="text-[11px] text-gray-700 bg-gray-50 rounded-xl p-4 whitespace-pre-wrap font-mono leading-relaxed">
                 {JSON.stringify(rawDataResult, null, 2)}
               </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── HTML detail viewer ── */}
+      {htmlModalAnn && (
+        <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-6">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[88vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
+              <div className="min-w-0">
+                <p className="font-semibold text-gray-900 text-sm">HTML de la página de detalle</p>
+                {detailHtmlData?.url && (
+                  <p className="text-xs text-gray-400 mt-0.5 truncate max-w-lg">{detailHtmlData.url}</p>
+                )}
+              </div>
+              <button
+                onClick={() => { setHtmlModalAnn(null); setDetailHtmlData(null) }}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 flex-shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {/* Tab bar */}
+            <div className="flex border-b border-gray-100 px-5 flex-shrink-0">
+              <div className="flex items-center gap-1.5 py-2.5 border-b-2 border-blue-500 text-blue-600">
+                <Code2 className="w-3.5 h-3.5" />
+                <span className="text-xs font-semibold">HTML</span>
+              </div>
+            </div>
+            {/* Content */}
+            <div className="flex-1 overflow-auto p-4">
+              {htmlLoading ? (
+                <div className="flex items-center justify-center h-40 gap-2 text-gray-400">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span className="text-sm">Cargando HTML...</span>
+                </div>
+              ) : detailHtmlData?.error ? (
+                <p className="text-sm text-red-500 text-center py-8">{detailHtmlData.error}</p>
+              ) : detailHtmlData?.html ? (
+                <pre className="text-[11px] text-gray-700 bg-gray-50 rounded-xl p-4 whitespace-pre-wrap font-mono leading-relaxed">
+                  {(() => {
+                    const { html, element_html } = detailHtmlData
+                    if (!element_html || !html.includes(element_html)) return html
+                    const idx = html.indexOf(element_html)
+                    return (
+                      <>
+                        {html.slice(0, idx)}
+                        <mark id="html-highlight" className="bg-yellow-200 text-gray-900 rounded">{element_html}</mark>
+                        {html.slice(idx + element_html.length)}
+                      </>
+                    )
+                  })()}
+                </pre>
+              ) : null}
             </div>
           </div>
         </div>

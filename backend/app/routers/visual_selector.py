@@ -189,6 +189,7 @@ async def visual_selector_ws(websocket: WebSocket):
                         context=str(message.get("context", "")),
                         hover=bool(message.get("hover", False)),
                         ai_model=str(message.get("ai_model", "")),
+                        is_nested=bool(message.get("is_nested", False)),
                     )
                     screenshot = await visual_selector_manager.screenshot(session)
                     await websocket.send_json({"type": "capture_result", "data": result, "screenshot": screenshot})
@@ -202,6 +203,15 @@ async def visual_selector_ws(websocket: WebSocket):
                         message.get("fields") or [],
                     )
                     await websocket.send_json({"type": "raw_data", "data": result})
+                elif msg_type == "get_detail_html":
+                    session = message.get("session_id") or session_id
+                    if not session:
+                        raise RuntimeError("Sesión no inicializada")
+                    result = await visual_selector_manager.get_detail_html(
+                        session,
+                        selector=message.get("selector", ""),
+                    )
+                    await websocket.send_json({"type": "detail_html", "data": result})
                 elif msg_type == "ai_generate":
                     session = message.get("session_id") or session_id
                     if not session:
@@ -214,6 +224,34 @@ async def visual_selector_ws(websocket: WebSocket):
                         raise RuntimeError("Sesión no inicializada")
                     screenshot = await visual_selector_manager.screenshot(session)
                     await websocket.send_json({"type": "snapshot", "screenshot": screenshot})
+                elif msg_type == "activate_hovers":
+                    session = message.get("session_id") or session_id
+                    if not session:
+                        raise RuntimeError("Sesión no inicializada")
+                    screenshot = await visual_selector_manager.activate_all_hovers(session)
+                    await websocket.send_json({"type": "snapshot", "screenshot": screenshot})
+                elif msg_type == "deactivate_hovers":
+                    session = message.get("session_id") or session_id
+                    if not session:
+                        raise RuntimeError("Sesión no inicializada")
+                    screenshot = await visual_selector_manager.deactivate_all_hovers(session)
+                    await websocket.send_json({"type": "snapshot", "screenshot": screenshot})
+                elif msg_type == "full_page_screenshot":
+                    session = message.get("session_id") or session_id
+                    if not session:
+                        raise RuntimeError("Sesión no inicializada")
+                    screenshot = await visual_selector_manager.full_page_screenshot(session)
+                    await websocket.send_json({"type": "full_page_screenshot", "screenshot": screenshot})
+                elif msg_type == "extract_from_capture":
+                    full_b64 = message.get("full_page_b64", "")
+                    item_b64 = message.get("item_crop_b64", "")
+                    fields = message.get("fields", [])
+                    context = message.get("context", "")
+                    sess = message.get("session_id") or session_id
+                    result = await visual_selector_manager.extract_from_capture(
+                        full_b64, item_b64, fields, context, session_id=sess or "",
+                    )
+                    await websocket.send_json({"type": "extract_result", "data": result})
                 elif msg_type == "end_session":
                     session = message.get("session_id") or session_id
                     if session:

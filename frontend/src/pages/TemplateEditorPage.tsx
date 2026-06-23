@@ -20,6 +20,7 @@ import Modal from '../components/ui/Modal'
 import ScrapeProgress from '../components/scrape/ScrapeProgress'
 import Badge from '../components/ui/Badge'
 import VisualSelectorModal, { type VisualSelectorPayload } from '../components/visual-selector/VisualSelectorModal'
+// import CaptureMode, { type CaptureModeHandle } from '../components/capture-mode/CaptureMode'
 import { Developer, ScrapeJob, ScrapedRecord } from '../types'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -175,7 +176,7 @@ export default function TemplateEditorPage() {
         plain_text:   f.plain_text,
         is_shared:    f.is_shared,
         is_list:      f.is_list,
-        list_container: '',
+        list_container: f.list_container || '',
         is_image:     f.is_image,
         extract_attr: f.extract_attr || '',
         order: index,
@@ -506,6 +507,10 @@ function TabTemplate({
         </button>
       </div>
 
+      {/* Mode subtabs: "Por capturas" hidden — re-enable when ready */}
+      {/* {modeTab === 'capturas' && <CaptureMode ... />} */}
+
+      {/* ── Modo: Por selectores (comportamiento actual) ──────────────── */}
       {subTab === 'proyectos' && (
         <>
           {rootNodes.map(node => (
