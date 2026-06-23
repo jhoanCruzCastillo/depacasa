@@ -40,7 +40,11 @@ const FIELD_LABELS: Record<string, string> = {
   lugares_cercanos:       'Lugares cercanos',
 }
 
-function InfoTab({ d }: { d: Record<string, unknown> }) {
+function InfoTab({ d, recordId, onUpdated }: { d: Record<string, unknown>; recordId: string; onUpdated: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [draft, setDraft] = useState<Record<string, unknown>>({})
+
   const desc = extractDesc(d)
 
   const textFields = Object.entries(d).filter(([k, v]) => {
@@ -60,47 +64,131 @@ function InfoTab({ d }: { d: Record<string, unknown> }) {
 
   const hasExtras = textFields.length > 0 || listFields.length > 0
 
+  const startEdit = () => {
+    const initial: Record<string, unknown> = {}
+    if (desc) initial.descripcion = desc
+    listFields.forEach(([k, items]) => { initial[k] = (items as string[]).join(', ') })
+    textFields.forEach(([k, v]) => { initial[k] = String(v ?? '') })
+    setDraft(initial)
+    setEditing(true)
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const payload: Record<string, unknown> = {}
+      if ('descripcion' in draft) payload.descripcion = draft.descripcion
+      listFields.forEach(([k]) => {
+        if (k in draft) {
+          payload[k] = String(draft[k] ?? '').split(',').map(s => s.trim()).filter(Boolean)
+        }
+      })
+      textFields.forEach(([k]) => {
+        if (k in draft) payload[k] = draft[k]
+      })
+      const { updateProyecto } = await import('../../../services/api')
+      await updateProyecto(recordId, payload)
+      onUpdated()
+      setEditing(false)
+      toast.success('Información actualizada')
+    } catch { toast.error('Error al guardar') }
+    finally { setSaving(false) }
+  }
+
   return (
     <motion.div variants={fadeUp} initial="hidden" animate="visible" exit="exit" className="p-5 space-y-5">
-      {desc && (
+      {/* Edit toggle */}
+      <div className="flex justify-end">
+        {!editing ? (
+          <button onClick={startEdit}
+            className="flex items-center gap-1.5 text-[11px] font-semibold text-blue-600 hover:text-blue-800 border border-blue-200 hover:bg-blue-50 px-3 py-1 rounded-lg transition">
+            <FontAwesomeIcon icon={faPencil} className="text-[9px]" /> Editar
+          </button>
+        ) : (
+          <div className="flex gap-2">
+            <button onClick={() => setEditing(false)} disabled={saving}
+              className="text-[11px] font-semibold text-gray-500 border border-gray-200 px-3 py-1 rounded-lg hover:bg-gray-50 transition">
+              Cancelar
+            </button>
+            <button onClick={handleSave} disabled={saving}
+              className="flex items-center gap-1.5 text-[11px] font-semibold text-white bg-blue-600 px-3 py-1 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition">
+              {saving && <FontAwesomeIcon icon={faSpinner} className="animate-spin text-[9px]" />}
+              Guardar
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Descripción */}
+      {(desc || editing) && (
         <div>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Descripción</p>
-          <p className="text-xs text-gray-600 leading-relaxed">{desc}</p>
+          {editing ? (
+            <textarea
+              value={String(draft.descripcion ?? '')}
+              onChange={e => setDraft(p => ({ ...p, descripcion: e.target.value }))}
+              rows={4}
+              className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none resize-y"
+            />
+          ) : (
+            <p className="text-xs text-gray-600 leading-relaxed">{desc}</p>
+          )}
         </div>
       )}
 
+      {/* List fields (areas comunes, lugares cercanos) */}
       {listFields.map(([k, items]) => (
         <div key={k}>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">
             {FIELD_LABELS[k] ?? k.replace(/_/g, ' ')}
           </p>
-          <div className="flex flex-wrap gap-1.5">
-            {(items as unknown[]).map((item, i) => (
-              <span key={i} className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-[10px] leading-tight">
-                {String(item)}
-              </span>
-            ))}
-          </div>
+          {editing ? (
+            <input
+              type="text"
+              value={String(draft[k] ?? (items as string[]).join(', '))}
+              onChange={e => setDraft(p => ({ ...p, [k]: e.target.value }))}
+              placeholder="Separar con comas"
+              className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
+            />
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {(items as unknown[]).map((item, i) => (
+                <span key={i} className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-[10px] leading-tight">
+                  {String(item)}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       ))}
 
+      {/* Text fields */}
       {textFields.length > 0 && (
         <div>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">Datos del proyecto</p>
           <div className="space-y-1.5">
             {textFields.map(([k, v]) => (
-              <div key={k} className="flex gap-3 text-xs">
+              <div key={k} className="flex gap-3 text-xs items-center">
                 <span className="text-gray-400 font-medium w-36 flex-shrink-0 truncate capitalize">
                   {FIELD_LABELS[k] ?? k.replace(/_/g, ' ')}
                 </span>
-                <span className="text-gray-700 flex-1 break-words">{String(v ?? '—')}</span>
+                {editing ? (
+                  <input
+                    type="text"
+                    value={String(draft[k] ?? v ?? '')}
+                    onChange={e => setDraft(p => ({ ...p, [k]: e.target.value }))}
+                    className="flex-1 text-xs text-gray-700 border border-gray-200 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
+                  />
+                ) : (
+                  <span className="text-gray-700 flex-1 break-words">{String(v ?? '—')}</span>
+                )}
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {!desc && !hasExtras && (
+      {!desc && !hasExtras && !editing && (
         <p className="text-center text-xs text-gray-400 py-6">Sin información adicional del proyecto</p>
       )}
     </motion.div>
@@ -594,7 +682,14 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
             </motion.div>
           )}
 
-          {tab === 'info' && <InfoTab key="info" d={d} />}
+          {tab === 'info' && (
+            <InfoTab
+              key="info"
+              d={d}
+              recordId={record.id}
+              onUpdated={() => queryClient.invalidateQueries({ queryKey: ['records', developerId] })}
+            />
+          )}
 
           {tab === 'gallery' && (
             <motion.div key="gallery" variants={fadeUp} initial="hidden" animate="visible" exit="exit" className="p-5 flex flex-col gap-4">

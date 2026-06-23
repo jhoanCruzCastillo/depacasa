@@ -36,6 +36,9 @@ export const updatePropiedad = (
   data: { dormitorios?: string; baños?: string; m2?: string; modelo?: string; status?: string }
 ) => API.patch(`/propiedades/${id}`, data)
 
+export const updateProyecto = (id: string, data: Record<string, unknown>) =>
+  API.patch(`/propiedades/proyectos/${id}`, data)
+
 export const extractPropertyFields = (developerId: string, onlyMissing = true) =>
   API.post<{ processed: number; updated: number; ai_calls: number }>(
     `/developers/${developerId}/extract-fields`,

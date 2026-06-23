@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from database import get_db
 from app.models.propiedad import Propiedad
+from app.models.proyecto import Proyecto
 from app.models.scraped_record import RecordStatus
 
 router = APIRouter(prefix="/api/propiedades", tags=["propiedades"])
@@ -76,3 +77,59 @@ async def update_propiedad(
     db.commit()
     db.refresh(p)
     return _as_record(p)
+
+
+# ── Proyectos PATCH ───────────────────────────────────────────────────────────
+
+PROYECTO_EDITABLE = (
+    "nombre", "estado_del_proyecto", "ubicacion", "precio_desde",
+    "descripcion", "gmaps_url", "gmaps_coordinates",
+)
+PROYECTO_JSONB = (
+    "areas_comunes", "areas_comunes_imagenes", "lugares_cercanos",
+)
+
+
+class ProyectoUpdate(BaseModel):
+    nombre: Optional[str] = None
+    estado_del_proyecto: Optional[str] = None
+    ubicacion: Optional[str] = None
+    precio_desde: Optional[str] = None
+    descripcion: Optional[str] = None
+    gmaps_url: Optional[str] = None
+    gmaps_coordinates: Optional[str] = None
+    areas_comunes: Optional[list] = None
+    areas_comunes_imagenes: Optional[list] = None
+    lugares_cercanos: Optional[list] = None
+
+
+@router.patch("/proyectos/{proyecto_id}")
+async def update_proyecto(
+    proyecto_id: UUID,
+    body: ProyectoUpdate,
+    db: Session = Depends(get_db),
+):
+    p = db.query(Proyecto).filter(Proyecto.id == proyecto_id).first()
+    if not p:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto not found")
+
+    for col in PROYECTO_EDITABLE:
+        val = getattr(body, col, None)
+        if val is not None:
+            setattr(p, col, val)
+
+    for col in PROYECTO_JSONB:
+        val = getattr(body, col, None)
+        if val is not None:
+            setattr(p, col, val)
+
+    db.commit()
+    db.refresh(p)
+    return {
+        "id": str(p.id),
+        "type": "proyecto",
+        "proyecto_id": None,
+        "status": p.status.value if hasattr(p.status, "value") else str(p.status),
+        "scraped_at": p.scraped_at.isoformat() if p.scraped_at else None,
+        "data": p.to_data(),
+    }
