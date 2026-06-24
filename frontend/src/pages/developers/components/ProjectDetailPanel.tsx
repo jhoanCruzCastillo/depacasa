@@ -9,10 +9,11 @@ import {
   faMagnifyingGlass, faChevronRight,
   faAngleLeft, faAngleRight, faExpand, faMapLocationDot, faTag,
   faPencil, faChevronDown, faSpinner, faCheckSquare,
+  faTrashCan, faCloudArrowUp, faImage,
 } from '@fortawesome/free-solid-svg-icons'
 import toast from 'react-hot-toast'
 import { ScrapedRecord, PropiedadStatus } from '../../../types'
-import { updatePropiedad } from '../../../services/api'
+import { updatePropiedad, uploadProyectoImage, deleteProyectoImage } from '../../../services/api'
 import { allImages, looksLikeImage } from '../helpers/media'
 import { isUrlValue as _isUrlValue } from '../helpers/childUrls'
 import {
@@ -195,6 +196,174 @@ function InfoTab({ d, recordId, onUpdated }: { d: Record<string, unknown>; recor
   )
 }
 
+function GalleryTab({ allImgs, recordId, onImgClick, onUpdated }: {
+  allImgs: string[]
+  recordId: string
+  onImgClick: (idx: number) => void
+  onUpdated: () => void
+}) {
+  const [editMode, setEditMode] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [galleryPage, setGalleryPage] = useState(0)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const galleryTotal = Math.ceil(allImgs.length / GALLERY_PER_PAGE)
+  const galleryItems = allImgs.slice(galleryPage * GALLERY_PER_PAGE, (galleryPage + 1) * GALLERY_PER_PAGE)
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    setUploading(true)
+    try {
+      for (const file of Array.from(files)) {
+        await uploadProyectoImage(recordId, file)
+      }
+      onUpdated()
+      toast.success(`${files.length} imagen(es) subida(s)`)
+    } catch { toast.error('Error al subir imagen') }
+    finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
+  }
+
+  const handleDelete = async () => {
+    if (!confirmDelete) return
+    setDeleting(true)
+    try {
+      // Try deleting from all image fields
+      for (const field of ['imagen', 'areas_comunes_imagenes', 'areas_comunes_exterior_e_interior_img'] as const) {
+        try { await deleteProyectoImage(recordId, confirmDelete, field) } catch { /* ignore */ }
+      }
+      onUpdated()
+      toast.success('Imagen eliminada')
+    } catch { toast.error('Error al eliminar') }
+    finally { setDeleting(false); setConfirmDelete(null) }
+  }
+
+  return (
+    <motion.div key="gallery" variants={fadeUp} initial="hidden" animate="visible" exit="exit" className="p-5 flex flex-col gap-4">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] text-gray-400">{allImgs.length} imagen(es)</span>
+        <div className="flex gap-2">
+          <button onClick={() => setEditMode(m => !m)}
+            className={`flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1 rounded-lg border transition ${
+              editMode ? 'bg-amber-50 border-amber-300 text-amber-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+            }`}>
+            <FontAwesomeIcon icon={faPencil} className="text-[9px]" />
+            {editMode ? 'Listo' : 'Editar'}
+          </button>
+          {editMode && (
+            <>
+              <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={handleUpload} />
+              <button onClick={() => fileRef.current?.click()} disabled={uploading}
+                className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 disabled:opacity-50 transition">
+                {uploading
+                  ? <FontAwesomeIcon icon={faSpinner} className="animate-spin text-[9px]" />
+                  : <FontAwesomeIcon icon={faCloudArrowUp} className="text-[9px]" />
+                }
+                Subir
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {allImgs.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-8 text-center">
+          <FontAwesomeIcon icon={faImage} className="text-3xl text-gray-200 mb-2" />
+          <p className="text-xs text-gray-400 mb-3">Sin imágenes disponibles</p>
+          {editMode && (
+            <button onClick={() => fileRef.current?.click()}
+              className="flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition">
+              <FontAwesomeIcon icon={faCloudArrowUp} className="text-[10px]" />
+              Subir primera imagen
+            </button>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+            {galleryItems.map((src, i) => {
+              const globalIdx = galleryPage * GALLERY_PER_PAGE + i
+              return (
+                <div key={globalIdx} className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 group">
+                  <button onClick={() => !editMode && onImgClick(globalIdx)}
+                    className="w-full h-full" disabled={editMode}>
+                    <img src={src} alt="" className="w-full h-full object-cover" />
+                    {!editMode && (
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
+                        <FontAwesomeIcon icon={faExpand} className="text-white opacity-0 group-hover:opacity-100 transition text-lg drop-shadow" />
+                      </div>
+                    )}
+                  </button>
+                  {editMode && (
+                    <button
+                      onClick={() => setConfirmDelete(src)}
+                      className="absolute top-1.5 right-1.5 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-lg hover:bg-red-600"
+                      title="Eliminar imagen"
+                    >
+                      <FontAwesomeIcon icon={faXmark} className="text-xs" />
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+
+          {galleryTotal > 1 && (
+            <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+              <span className="text-[10px] text-gray-400">
+                {galleryPage * GALLERY_PER_PAGE + 1}–{Math.min((galleryPage + 1) * GALLERY_PER_PAGE, allImgs.length)} de {allImgs.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setGalleryPage(p => Math.max(0, p - 1))} disabled={galleryPage === 0}
+                  className="w-6 h-6 rounded border border-gray-200 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40 transition">
+                  <FontAwesomeIcon icon={faAngleLeft} className="text-gray-600 text-[10px]" />
+                </button>
+                <span className="text-[10px] text-gray-500 px-1">{galleryPage + 1}/{galleryTotal}</span>
+                <button onClick={() => setGalleryPage(p => Math.min(galleryTotal - 1, p + 1))} disabled={galleryPage >= galleryTotal - 1}
+                  className="w-6 h-6 rounded border border-gray-200 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40 transition">
+                  <FontAwesomeIcon icon={faAngleRight} className="text-gray-600 text-[10px]" />
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Confirm delete dialog */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4" onClick={() => setConfirmDelete(null)}>
+          <div className="bg-white rounded-2xl shadow-xl p-5 w-80" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-16 h-12 rounded-lg overflow-hidden bg-gray-100 flex-shrink-0">
+                <img src={confirmDelete} alt="" className="w-full h-full object-cover" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900 text-sm">¿Eliminar imagen?</h3>
+                <p className="text-xs text-gray-500">Esta acción no se puede deshacer.</p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setConfirmDelete(null)} disabled={deleting}
+                className="flex-1 py-2 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition">
+                Cancelar
+              </button>
+              <button onClick={handleDelete} disabled={deleting}
+                className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl bg-red-500 text-white text-sm font-semibold hover:bg-red-600 disabled:opacity-50 transition">
+                {deleting && <FontAwesomeIcon icon={faSpinner} className="animate-spin text-xs" />}
+                <FontAwesomeIcon icon={faTrashCan} className="text-xs" />
+                Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </motion.div>
+  )
+}
+
 const STATUS_OPTIONS: { value: PropiedadStatus; label: string }[] = [
   { value: 'pending_review', label: 'Pendiente' },
   { value: 'public',         label: 'Público'   },
@@ -216,7 +385,6 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
 
   const [tab, setTab]               = useState<'props' | 'info' | 'gallery'>('props')
   const [page, setPage]             = useState(0)
-  const [galleryPage, setGalleryPage] = useState(0)
   const [search, setSearch]         = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [selected, setSelected]     = useState<Set<string>>(new Set())
@@ -242,7 +410,7 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
   const hasImgs = allImgs.length > 0
 
   useEffect(() => {
-    setImgIdx(0); setLightbox(false); setTab('props'); setSearch(''); setPage(0); setGalleryPage(0)
+    setImgIdx(0); setLightbox(false); setTab('props'); setSearch(''); setPage(0)
     setSelected(new Set()); setStatusFilter('all'); setBulkStatus(''); setLocalStatuses({})
   }, [record.id])
 
@@ -320,9 +488,6 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
     } catch { toast.error('Error al cambiar estado') }
     finally { setApplying(false); setPendingChange(null) }
   }
-
-  const galleryTotal = Math.ceil(allImgs.length / GALLERY_PER_PAGE)
-  const galleryItems = allImgs.slice(galleryPage * GALLERY_PER_PAGE, (galleryPage + 1) * GALLERY_PER_PAGE)
 
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-white">
@@ -692,59 +857,13 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
           )}
 
           {tab === 'gallery' && (
-            <motion.div key="gallery" variants={fadeUp} initial="hidden" animate="visible" exit="exit" className="p-5 flex flex-col gap-4">
-              {allImgs.length === 0 ? (
-                <p className="text-center text-xs text-gray-400 py-8">Sin imágenes disponibles</p>
-              ) : (
-                <>
-                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
-                    {galleryItems.map((src, i) => {
-                      const globalIdx = galleryPage * GALLERY_PER_PAGE + i
-                      return (
-                        <button key={globalIdx} onClick={() => { setImgIdx(globalIdx); setLightbox(true) }}
-                          className="aspect-square rounded-xl overflow-hidden bg-gray-100 hover:ring-2 hover:ring-blue-400 transition group relative">
-                          <img src={src} alt="" className="w-full h-full object-cover" />
-                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
-                            <FontAwesomeIcon icon={faExpand} className="text-white opacity-0 group-hover:opacity-100 transition text-lg drop-shadow" />
-                          </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-
-                  {galleryTotal > 1 && (
-                    <div className="flex items-center justify-between pt-3 border-t border-gray-100">
-                      <span className="text-[10px] text-gray-400">
-                        {galleryPage * GALLERY_PER_PAGE + 1}–{Math.min((galleryPage + 1) * GALLERY_PER_PAGE, allImgs.length)} de {allImgs.length} imágenes
-                      </span>
-                      <div className="flex items-center gap-1">
-                        <button onClick={() => setGalleryPage(p => Math.max(0, p - 1))} disabled={galleryPage === 0}
-                          className="w-6 h-6 rounded border border-gray-200 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40 transition">
-                          <FontAwesomeIcon icon={faAngleLeft} className="text-gray-600 text-[10px]" />
-                        </button>
-                        {Array.from({ length: galleryTotal }, (_, i) => i)
-                          .slice(Math.max(0, galleryPage - 2), Math.min(galleryTotal, galleryPage + 3))
-                          .map(p => (
-                            <button key={p} onClick={() => setGalleryPage(p)}
-                              className={`w-6 h-6 rounded text-[10px] font-bold flex items-center justify-center transition ${
-                                p === galleryPage
-                                  ? 'bg-blue-600 text-white'
-                                  : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
-                              }`}>
-                              {p + 1}
-                            </button>
-                          ))
-                        }
-                        <button onClick={() => setGalleryPage(p => Math.min(galleryTotal - 1, p + 1))} disabled={galleryPage >= galleryTotal - 1}
-                          className="w-6 h-6 rounded border border-gray-200 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40 transition">
-                          <FontAwesomeIcon icon={faAngleRight} className="text-gray-600 text-[10px]" />
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </motion.div>
+            <GalleryTab
+              key="gallery"
+              allImgs={allImgs}
+              recordId={record.id}
+              onImgClick={(idx) => { setImgIdx(idx); setLightbox(true) }}
+              onUpdated={() => queryClient.invalidateQueries({ queryKey: ['records', developerId] })}
+            />
           )}
 
         </AnimatePresence>
