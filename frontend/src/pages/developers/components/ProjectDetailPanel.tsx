@@ -13,7 +13,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons'
 import toast from 'react-hot-toast'
 import { ScrapedRecord, PropiedadStatus } from '../../../types'
-import { updatePropiedad, uploadProyectoImage, deleteProyectoImage } from '../../../services/api'
+import { updatePropiedad, updateProyecto, uploadProyectoImage, deleteProyectoImage } from '../../../services/api'
 import { allImages, looksLikeImage } from '../helpers/media'
 import { isUrlValue as _isUrlValue } from '../helpers/childUrls'
 import {
@@ -393,6 +393,9 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
   const [applying, setApplying]     = useState(false)
   const [imgIdx, setImgIdx]         = useState(0)
   const [lightboxOpen, setLightbox] = useState(false)
+  const [editHeader, setEditHeader] = useState(false)
+  const [headerDraft, setHeaderDraft] = useState<Record<string, string>>({})
+  const [savingHeader, setSavingHeader] = useState(false)
 
   // local status overrides so UI updates instantly before refetch
   const [localStatuses, setLocalStatuses] = useState<Record<string, PropiedadStatus>>({})
@@ -489,6 +492,32 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
     finally { setApplying(false); setPendingChange(null) }
   }
 
+  const startHeaderEdit = () => {
+    setHeaderDraft({
+      nombre: extractTitle(d),
+      ubicacion: extractLocation(d) || '',
+      precio_desde: extractPrice(d) || '',
+      estado_del_proyecto: extractStatus(d) || '',
+      url_propiedad: url || '',
+      gmaps_url: gmapsUrl || '',
+    })
+    setEditHeader(true)
+  }
+
+  const saveHeaderEdit = async () => {
+    setSavingHeader(true)
+    try {
+      await updateProyecto(record.id, headerDraft)
+      queryClient.invalidateQueries({ queryKey: ['records', developerId] })
+      setEditHeader(false)
+      toast.success('Datos actualizados')
+    } catch { toast.error('Error al guardar') }
+    finally { setSavingHeader(false) }
+  }
+
+  const hd = (k: string) => headerDraft[k] ?? ''
+  const setHd = (k: string, v: string) => setHeaderDraft(p => ({ ...p, [k]: v }))
+
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-white">
 
@@ -498,29 +527,84 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
           <FontAwesomeIcon icon={faBuilding} className="text-blue-600 text-sm" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h2 className="font-bold text-gray-900 text-base leading-snug">{extractTitle(d)}</h2>
-            {status && (
-              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${statusClass(status)}`}>
-                <FontAwesomeIcon icon={faCircleCheck} className="mr-0.5 text-[9px]" />{status}
-              </span>
-            )}
-          </div>
-          {extractLocation(d) && (
+          {editHeader ? (
+            <input value={hd('nombre')} onChange={e => setHd('nombre', e.target.value)}
+              className="font-bold text-gray-900 text-base leading-snug w-full border border-gray-200 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-200 outline-none" />
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="font-bold text-gray-900 text-base leading-snug">{extractTitle(d)}</h2>
+              {status && (
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${statusClass(status)}`}>
+                  <FontAwesomeIcon icon={faCircleCheck} className="mr-0.5 text-[9px]" />{status}
+                </span>
+              )}
+            </div>
+          )}
+          {editHeader ? (
+            <div className="flex items-center gap-1.5 mt-1">
+              <FontAwesomeIcon icon={faLocationDot} className="text-gray-400 w-3 flex-shrink-0" />
+              <input value={hd('ubicacion')} onChange={e => setHd('ubicacion', e.target.value)} placeholder="Ubicación"
+                className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-200 outline-none" />
+            </div>
+          ) : extractLocation(d) ? (
             <div className="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500">
               <FontAwesomeIcon icon={faLocationDot} className="text-gray-400 w-3 flex-shrink-0" />
               {extractLocation(d)}
             </div>
-          )}
+          ) : null}
         </div>
-        <button onClick={onClose}
-          className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition flex-shrink-0 text-gray-400 hover:text-gray-600">
-          <FontAwesomeIcon icon={faXmark} />
-        </button>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {!editHeader ? (
+            <button onClick={startHeaderEdit}
+              className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-blue-50 transition text-gray-400 hover:text-blue-600"
+              title="Editar datos del proyecto">
+              <FontAwesomeIcon icon={faPencil} className="text-xs" />
+            </button>
+          ) : (
+            <>
+              <button onClick={() => setEditHeader(false)} disabled={savingHeader}
+                className="text-[11px] font-semibold text-gray-500 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition">
+                Cancelar
+              </button>
+              <button onClick={saveHeaderEdit} disabled={savingHeader}
+                className="flex items-center gap-1 text-[11px] font-semibold text-white bg-blue-600 px-2.5 py-1 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition">
+                {savingHeader && <FontAwesomeIcon icon={faSpinner} className="animate-spin text-[9px]" />}
+                Guardar
+              </button>
+            </>
+          )}
+          <button onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition text-gray-400 hover:text-gray-600">
+            <FontAwesomeIcon icon={faXmark} />
+          </button>
+        </div>
       </div>
 
       {/* ── Price / links bar ────────────────────────────── */}
-      {(extractPrice(d) || url || gmapsUrl) && (
+      {editHeader ? (
+        <div className="flex items-center gap-3 px-5 py-2.5 bg-blue-50/50 border-b border-blue-100 flex-shrink-0 flex-wrap text-xs">
+          <div className="flex items-center gap-1.5">
+            <FontAwesomeIcon icon={faTag} className="text-gray-400 text-[10px]" />
+            <input value={hd('precio_desde')} onChange={e => setHd('precio_desde', e.target.value)} placeholder="Precio desde"
+              className="w-28 border border-gray-200 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-blue-200 outline-none" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-gray-400 text-[10px]">Estado:</span>
+            <input value={hd('estado_del_proyecto')} onChange={e => setHd('estado_del_proyecto', e.target.value)} placeholder="Estado"
+              className="w-32 border border-gray-200 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-blue-200 outline-none" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <FontAwesomeIcon icon={faGlobe} className="text-gray-400 text-[10px]" />
+            <input value={hd('url_propiedad')} onChange={e => setHd('url_propiedad', e.target.value)} placeholder="URL del proyecto"
+              className="w-48 border border-gray-200 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-blue-200 outline-none" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <FontAwesomeIcon icon={faMapLocationDot} className="text-gray-400 text-[10px]" />
+            <input value={hd('gmaps_url')} onChange={e => setHd('gmaps_url', e.target.value)} placeholder="URL Google Maps"
+              className="w-48 border border-gray-200 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-blue-200 outline-none" />
+          </div>
+        </div>
+      ) : (extractPrice(d) || url || gmapsUrl) ? (
         <div className="flex items-center gap-5 px-5 py-2.5 bg-gray-50 border-b border-gray-100 flex-shrink-0 flex-wrap text-xs">
           {extractPrice(d) && (
             <span className="flex items-center gap-1.5 font-semibold text-gray-900">
@@ -545,7 +629,7 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
             </a>
           )}
         </div>
-      )}
+      ) : null}
 
       {/* ── 2-column: carousel + summary ─────────────────── */}
       <div className="flex gap-5 p-5 border-b border-gray-100 flex-shrink-0">
@@ -604,7 +688,7 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
 
         {/* Right: summary card */}
         <div className="w-56 flex-shrink-0">
-          <div className="bg-gray-50 rounded-xl p-4 h-full flex flex-col">
+          <div className={`rounded-xl p-4 h-full flex flex-col ${editHeader ? 'bg-blue-50/40 border border-blue-100' : 'bg-gray-50'}`}>
             <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide mb-3">Resumen del proyecto</p>
             <div className="space-y-3 flex-1">
               <div className="flex items-center justify-between text-xs">
@@ -614,15 +698,15 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
                 </span>
                 <span className="font-bold text-gray-900">{childRecords.length}</span>
               </div>
-              {extractPrice(d) && (
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-gray-500 flex items-center gap-1.5">
-                    <FontAwesomeIcon icon={faTag} className="text-gray-400 text-[10px]" />
-                    Precio desde
-                  </span>
-                  <span className="font-bold text-gray-900 text-right max-w-[110px] truncate">{extractPrice(d)}</span>
-                </div>
-              )}
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500 flex items-center gap-1.5">
+                  <FontAwesomeIcon icon={faTag} className="text-gray-400 text-[10px]" />
+                  Precio desde
+                </span>
+                <span className="font-bold text-gray-900 text-right max-w-[110px] truncate">
+                  {editHeader ? hd('precio_desde') || '—' : extractPrice(d) || '—'}
+                </span>
+              </div>
               <div className="flex items-center justify-between text-xs">
                 <span className="text-gray-500 flex items-center gap-1.5">
                   <FontAwesomeIcon icon={faCalendarDays} className="text-gray-400 text-[10px]" />
@@ -630,27 +714,27 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
                 </span>
                 <span className="font-semibold text-gray-700">{lastUpd}</span>
               </div>
-              {status && (
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-gray-500 flex items-center gap-1.5">
-                    <FontAwesomeIcon icon={faCircleCheck} className="text-gray-400 text-[10px]" />
-                    Estado
-                  </span>
-                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusClass(status)}`}>{status}</span>
-                </div>
-              )}
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500 flex items-center gap-1.5">
+                  <FontAwesomeIcon icon={faCircleCheck} className="text-gray-400 text-[10px]" />
+                  Estado
+                </span>
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusClass(editHeader ? hd('estado_del_proyecto') : status)}`}>
+                  {editHeader ? hd('estado_del_proyecto') || '—' : status || '—'}
+                </span>
+              </div>
             </div>
             <div className="mt-4 space-y-2">
-              {url && (
-                <a href={url} target="_blank" rel="noopener noreferrer"
+              {(url || editHeader) && (
+                <a href={editHeader ? hd('url_propiedad') : url} target="_blank" rel="noopener noreferrer"
                   className="flex items-center justify-center gap-1.5 w-full py-2 rounded-lg border border-blue-200 text-blue-600 text-xs font-medium hover:bg-blue-50 transition">
                   <FontAwesomeIcon icon={faGlobe} className="text-[10px]" />
                   Ver proyecto
                   <FontAwesomeIcon icon={faArrowUpRightFromSquare} className="text-[9px]" />
                 </a>
               )}
-              {gmapsUrl && (
-                <a href={gmapsUrl} target="_blank" rel="noopener noreferrer"
+              {(gmapsUrl || editHeader) && (
+                <a href={editHeader ? hd('gmaps_url') : gmapsUrl} target="_blank" rel="noopener noreferrer"
                   className="flex items-center justify-center gap-1.5 w-full py-2 rounded-lg border border-green-200 text-green-600 text-xs font-medium hover:bg-green-50 transition">
                   <FontAwesomeIcon icon={faMapLocationDot} className="text-[10px]" />
                   Google Maps
