@@ -9,10 +9,11 @@ import {
   faMagnifyingGlass, faChevronRight,
   faAngleLeft, faAngleRight, faExpand, faMapLocationDot, faTag,
   faPencil, faChevronDown, faSpinner, faCheckSquare,
+  faTrashCan, faCloudArrowUp, faImage,
 } from '@fortawesome/free-solid-svg-icons'
 import toast from 'react-hot-toast'
 import { ScrapedRecord, PropiedadStatus } from '../../../types'
-import { updatePropiedad } from '../../../services/api'
+import { updatePropiedad, updateProyecto, uploadProyectoImage, deleteProyectoImage } from '../../../services/api'
 import { allImages, looksLikeImage } from '../helpers/media'
 import { isUrlValue as _isUrlValue } from '../helpers/childUrls'
 import {
@@ -40,7 +41,11 @@ const FIELD_LABELS: Record<string, string> = {
   lugares_cercanos:       'Lugares cercanos',
 }
 
-function InfoTab({ d }: { d: Record<string, unknown> }) {
+function InfoTab({ d, recordId, onUpdated }: { d: Record<string, unknown>; recordId: string; onUpdated: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [draft, setDraft] = useState<Record<string, unknown>>({})
+
   const desc = extractDesc(d)
 
   const textFields = Object.entries(d).filter(([k, v]) => {
@@ -60,48 +65,300 @@ function InfoTab({ d }: { d: Record<string, unknown> }) {
 
   const hasExtras = textFields.length > 0 || listFields.length > 0
 
+  const startEdit = () => {
+    const initial: Record<string, unknown> = {}
+    if (desc) initial.descripcion = desc
+    listFields.forEach(([k, items]) => { initial[k] = (items as string[]).join(', ') })
+    textFields.forEach(([k, v]) => { initial[k] = String(v ?? '') })
+    setDraft(initial)
+    setEditing(true)
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const payload: Record<string, unknown> = {}
+      if ('descripcion' in draft) payload.descripcion = draft.descripcion
+      listFields.forEach(([k]) => {
+        if (k in draft) {
+          payload[k] = String(draft[k] ?? '').split(',').map(s => s.trim()).filter(Boolean)
+        }
+      })
+      textFields.forEach(([k]) => {
+        if (k in draft) payload[k] = draft[k]
+      })
+      const { updateProyecto } = await import('../../../services/api')
+      await updateProyecto(recordId, payload)
+      onUpdated()
+      setEditing(false)
+      toast.success('Información actualizada')
+    } catch { toast.error('Error al guardar') }
+    finally { setSaving(false) }
+  }
+
   return (
     <motion.div variants={fadeUp} initial="hidden" animate="visible" exit="exit" className="p-5 space-y-5">
-      {desc && (
+      {/* Edit toggle */}
+      <div className="flex justify-end">
+        {!editing ? (
+          <button onClick={startEdit}
+            className="flex items-center gap-1.5 text-[11px] font-semibold text-blue-600 hover:text-blue-800 border border-blue-200 hover:bg-blue-50 px-3 py-1 rounded-lg transition">
+            <FontAwesomeIcon icon={faPencil} className="text-[9px]" /> Editar
+          </button>
+        ) : (
+          <div className="flex gap-2">
+            <button onClick={() => setEditing(false)} disabled={saving}
+              className="text-[11px] font-semibold text-gray-500 border border-gray-200 px-3 py-1 rounded-lg hover:bg-gray-50 transition">
+              Cancelar
+            </button>
+            <button onClick={handleSave} disabled={saving}
+              className="flex items-center gap-1.5 text-[11px] font-semibold text-white bg-blue-600 px-3 py-1 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition">
+              {saving && <FontAwesomeIcon icon={faSpinner} className="animate-spin text-[9px]" />}
+              Guardar
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Descripción */}
+      {(desc || editing) && (
         <div>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Descripción</p>
-          <p className="text-xs text-gray-600 leading-relaxed">{desc}</p>
+          {editing ? (
+            <textarea
+              value={String(draft.descripcion ?? '')}
+              onChange={e => setDraft(p => ({ ...p, descripcion: e.target.value }))}
+              rows={4}
+              className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none resize-y"
+            />
+          ) : (
+            <p className="text-xs text-gray-600 leading-relaxed">{desc}</p>
+          )}
         </div>
       )}
 
+      {/* List fields (areas comunes, lugares cercanos) */}
       {listFields.map(([k, items]) => (
         <div key={k}>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">
             {FIELD_LABELS[k] ?? k.replace(/_/g, ' ')}
           </p>
-          <div className="flex flex-wrap gap-1.5">
-            {(items as unknown[]).map((item, i) => (
-              <span key={i} className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-[10px] leading-tight">
-                {String(item)}
-              </span>
-            ))}
-          </div>
+          {editing ? (
+            <input
+              type="text"
+              value={String(draft[k] ?? (items as string[]).join(', '))}
+              onChange={e => setDraft(p => ({ ...p, [k]: e.target.value }))}
+              placeholder="Separar con comas"
+              className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
+            />
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {(items as unknown[]).map((item, i) => (
+                <span key={i} className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-[10px] leading-tight">
+                  {String(item)}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       ))}
 
+      {/* Text fields */}
       {textFields.length > 0 && (
         <div>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">Datos del proyecto</p>
           <div className="space-y-1.5">
             {textFields.map(([k, v]) => (
-              <div key={k} className="flex gap-3 text-xs">
+              <div key={k} className="flex gap-3 text-xs items-center">
                 <span className="text-gray-400 font-medium w-36 flex-shrink-0 truncate capitalize">
                   {FIELD_LABELS[k] ?? k.replace(/_/g, ' ')}
                 </span>
-                <span className="text-gray-700 flex-1 break-words">{String(v ?? '—')}</span>
+                {editing ? (
+                  <input
+                    type="text"
+                    value={String(draft[k] ?? v ?? '')}
+                    onChange={e => setDraft(p => ({ ...p, [k]: e.target.value }))}
+                    className="flex-1 text-xs text-gray-700 border border-gray-200 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
+                  />
+                ) : (
+                  <span className="text-gray-700 flex-1 break-words">{String(v ?? '—')}</span>
+                )}
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {!desc && !hasExtras && (
+      {!desc && !hasExtras && !editing && (
         <p className="text-center text-xs text-gray-400 py-6">Sin información adicional del proyecto</p>
+      )}
+    </motion.div>
+  )
+}
+
+function GalleryTab({ allImgs, recordId, onImgClick, onUpdated }: {
+  allImgs: string[]
+  recordId: string
+  onImgClick: (idx: number) => void
+  onUpdated: () => void
+}) {
+  const [editMode, setEditMode] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [galleryPage, setGalleryPage] = useState(0)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const galleryTotal = Math.ceil(allImgs.length / GALLERY_PER_PAGE)
+  const galleryItems = allImgs.slice(galleryPage * GALLERY_PER_PAGE, (galleryPage + 1) * GALLERY_PER_PAGE)
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    setUploading(true)
+    try {
+      for (const file of Array.from(files)) {
+        await uploadProyectoImage(recordId, file)
+      }
+      onUpdated()
+      toast.success(`${files.length} imagen(es) subida(s)`)
+    } catch { toast.error('Error al subir imagen') }
+    finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
+  }
+
+  const handleDelete = async () => {
+    if (!confirmDelete) return
+    setDeleting(true)
+    try {
+      // Try deleting from all image fields
+      for (const field of ['imagen', 'areas_comunes_imagenes', 'areas_comunes_exterior_e_interior_img'] as const) {
+        try { await deleteProyectoImage(recordId, confirmDelete, field) } catch { /* ignore */ }
+      }
+      onUpdated()
+      toast.success('Imagen eliminada')
+    } catch { toast.error('Error al eliminar') }
+    finally { setDeleting(false); setConfirmDelete(null) }
+  }
+
+  return (
+    <motion.div key="gallery" variants={fadeUp} initial="hidden" animate="visible" exit="exit" className="p-5 flex flex-col gap-4">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] text-gray-400">{allImgs.length} imagen(es)</span>
+        <div className="flex gap-2">
+          <button onClick={() => setEditMode(m => !m)}
+            className={`flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1 rounded-lg border transition ${
+              editMode ? 'bg-amber-50 border-amber-300 text-amber-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+            }`}>
+            <FontAwesomeIcon icon={faPencil} className="text-[9px]" />
+            {editMode ? 'Listo' : 'Editar'}
+          </button>
+          {editMode && (
+            <>
+              <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={handleUpload} />
+              <button onClick={() => fileRef.current?.click()} disabled={uploading}
+                className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 disabled:opacity-50 transition">
+                {uploading
+                  ? <FontAwesomeIcon icon={faSpinner} className="animate-spin text-[9px]" />
+                  : <FontAwesomeIcon icon={faCloudArrowUp} className="text-[9px]" />
+                }
+                Subir
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {allImgs.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-8 text-center">
+          <FontAwesomeIcon icon={faImage} className="text-3xl text-gray-200 mb-2" />
+          <p className="text-xs text-gray-400 mb-3">Sin imágenes disponibles</p>
+          {editMode && (
+            <button onClick={() => fileRef.current?.click()}
+              className="flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition">
+              <FontAwesomeIcon icon={faCloudArrowUp} className="text-[10px]" />
+              Subir primera imagen
+            </button>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+            {galleryItems.map((src, i) => {
+              const globalIdx = galleryPage * GALLERY_PER_PAGE + i
+              return (
+                <div key={globalIdx} className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 group">
+                  <button onClick={() => !editMode && onImgClick(globalIdx)}
+                    className="w-full h-full" disabled={editMode}>
+                    <img src={src} alt="" className="w-full h-full object-cover" />
+                    {!editMode && (
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
+                        <FontAwesomeIcon icon={faExpand} className="text-white opacity-0 group-hover:opacity-100 transition text-lg drop-shadow" />
+                      </div>
+                    )}
+                  </button>
+                  {editMode && (
+                    <button
+                      onClick={() => setConfirmDelete(src)}
+                      className="absolute top-1.5 right-1.5 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-lg hover:bg-red-600"
+                      title="Eliminar imagen"
+                    >
+                      <FontAwesomeIcon icon={faXmark} className="text-xs" />
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+
+          {galleryTotal > 1 && (
+            <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+              <span className="text-[10px] text-gray-400">
+                {galleryPage * GALLERY_PER_PAGE + 1}–{Math.min((galleryPage + 1) * GALLERY_PER_PAGE, allImgs.length)} de {allImgs.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setGalleryPage(p => Math.max(0, p - 1))} disabled={galleryPage === 0}
+                  className="w-6 h-6 rounded border border-gray-200 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40 transition">
+                  <FontAwesomeIcon icon={faAngleLeft} className="text-gray-600 text-[10px]" />
+                </button>
+                <span className="text-[10px] text-gray-500 px-1">{galleryPage + 1}/{galleryTotal}</span>
+                <button onClick={() => setGalleryPage(p => Math.min(galleryTotal - 1, p + 1))} disabled={galleryPage >= galleryTotal - 1}
+                  className="w-6 h-6 rounded border border-gray-200 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40 transition">
+                  <FontAwesomeIcon icon={faAngleRight} className="text-gray-600 text-[10px]" />
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Confirm delete dialog */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4" onClick={() => setConfirmDelete(null)}>
+          <div className="bg-white rounded-2xl shadow-xl p-5 w-80" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-16 h-12 rounded-lg overflow-hidden bg-gray-100 flex-shrink-0">
+                <img src={confirmDelete} alt="" className="w-full h-full object-cover" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900 text-sm">¿Eliminar imagen?</h3>
+                <p className="text-xs text-gray-500">Esta acción no se puede deshacer.</p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setConfirmDelete(null)} disabled={deleting}
+                className="flex-1 py-2 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition">
+                Cancelar
+              </button>
+              <button onClick={handleDelete} disabled={deleting}
+                className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl bg-red-500 text-white text-sm font-semibold hover:bg-red-600 disabled:opacity-50 transition">
+                {deleting && <FontAwesomeIcon icon={faSpinner} className="animate-spin text-xs" />}
+                <FontAwesomeIcon icon={faTrashCan} className="text-xs" />
+                Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </motion.div>
   )
@@ -128,7 +385,6 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
 
   const [tab, setTab]               = useState<'props' | 'info' | 'gallery'>('props')
   const [page, setPage]             = useState(0)
-  const [galleryPage, setGalleryPage] = useState(0)
   const [search, setSearch]         = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [selected, setSelected]     = useState<Set<string>>(new Set())
@@ -137,6 +393,9 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
   const [applying, setApplying]     = useState(false)
   const [imgIdx, setImgIdx]         = useState(0)
   const [lightboxOpen, setLightbox] = useState(false)
+  const [editHeader, setEditHeader] = useState(false)
+  const [headerDraft, setHeaderDraft] = useState<Record<string, string>>({})
+  const [savingHeader, setSavingHeader] = useState(false)
 
   // local status overrides so UI updates instantly before refetch
   const [localStatuses, setLocalStatuses] = useState<Record<string, PropiedadStatus>>({})
@@ -154,7 +413,7 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
   const hasImgs = allImgs.length > 0
 
   useEffect(() => {
-    setImgIdx(0); setLightbox(false); setTab('props'); setSearch(''); setPage(0); setGalleryPage(0)
+    setImgIdx(0); setLightbox(false); setTab('props'); setSearch(''); setPage(0)
     setSelected(new Set()); setStatusFilter('all'); setBulkStatus(''); setLocalStatuses({})
   }, [record.id])
 
@@ -233,8 +492,31 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
     finally { setApplying(false); setPendingChange(null) }
   }
 
-  const galleryTotal = Math.ceil(allImgs.length / GALLERY_PER_PAGE)
-  const galleryItems = allImgs.slice(galleryPage * GALLERY_PER_PAGE, (galleryPage + 1) * GALLERY_PER_PAGE)
+  const startHeaderEdit = () => {
+    setHeaderDraft({
+      nombre: extractTitle(d),
+      ubicacion: extractLocation(d) || '',
+      precio_desde: extractPrice(d) || '',
+      estado_del_proyecto: extractStatus(d) || '',
+      url_propiedad: url || '',
+      gmaps_url: gmapsUrl || '',
+    })
+    setEditHeader(true)
+  }
+
+  const saveHeaderEdit = async () => {
+    setSavingHeader(true)
+    try {
+      await updateProyecto(record.id, headerDraft)
+      queryClient.invalidateQueries({ queryKey: ['records', developerId] })
+      setEditHeader(false)
+      toast.success('Datos actualizados')
+    } catch { toast.error('Error al guardar') }
+    finally { setSavingHeader(false) }
+  }
+
+  const hd = (k: string) => headerDraft[k] ?? ''
+  const setHd = (k: string, v: string) => setHeaderDraft(p => ({ ...p, [k]: v }))
 
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-white">
@@ -245,29 +527,84 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
           <FontAwesomeIcon icon={faBuilding} className="text-blue-600 text-sm" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h2 className="font-bold text-gray-900 text-base leading-snug">{extractTitle(d)}</h2>
-            {status && (
-              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${statusClass(status)}`}>
-                <FontAwesomeIcon icon={faCircleCheck} className="mr-0.5 text-[9px]" />{status}
-              </span>
-            )}
-          </div>
-          {extractLocation(d) && (
+          {editHeader ? (
+            <input value={hd('nombre')} onChange={e => setHd('nombre', e.target.value)}
+              className="font-bold text-gray-900 text-base leading-snug w-full border border-gray-200 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-200 outline-none" />
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="font-bold text-gray-900 text-base leading-snug">{extractTitle(d)}</h2>
+              {status && (
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${statusClass(status)}`}>
+                  <FontAwesomeIcon icon={faCircleCheck} className="mr-0.5 text-[9px]" />{status}
+                </span>
+              )}
+            </div>
+          )}
+          {editHeader ? (
+            <div className="flex items-center gap-1.5 mt-1">
+              <FontAwesomeIcon icon={faLocationDot} className="text-gray-400 w-3 flex-shrink-0" />
+              <input value={hd('ubicacion')} onChange={e => setHd('ubicacion', e.target.value)} placeholder="Ubicación"
+                className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-200 outline-none" />
+            </div>
+          ) : extractLocation(d) ? (
             <div className="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500">
               <FontAwesomeIcon icon={faLocationDot} className="text-gray-400 w-3 flex-shrink-0" />
               {extractLocation(d)}
             </div>
-          )}
+          ) : null}
         </div>
-        <button onClick={onClose}
-          className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition flex-shrink-0 text-gray-400 hover:text-gray-600">
-          <FontAwesomeIcon icon={faXmark} />
-        </button>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {!editHeader ? (
+            <button onClick={startHeaderEdit}
+              className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-blue-50 transition text-gray-400 hover:text-blue-600"
+              title="Editar datos del proyecto">
+              <FontAwesomeIcon icon={faPencil} className="text-xs" />
+            </button>
+          ) : (
+            <>
+              <button onClick={() => setEditHeader(false)} disabled={savingHeader}
+                className="text-[11px] font-semibold text-gray-500 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition">
+                Cancelar
+              </button>
+              <button onClick={saveHeaderEdit} disabled={savingHeader}
+                className="flex items-center gap-1 text-[11px] font-semibold text-white bg-blue-600 px-2.5 py-1 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition">
+                {savingHeader && <FontAwesomeIcon icon={faSpinner} className="animate-spin text-[9px]" />}
+                Guardar
+              </button>
+            </>
+          )}
+          <button onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition text-gray-400 hover:text-gray-600">
+            <FontAwesomeIcon icon={faXmark} />
+          </button>
+        </div>
       </div>
 
       {/* ── Price / links bar ────────────────────────────── */}
-      {(extractPrice(d) || url || gmapsUrl) && (
+      {editHeader ? (
+        <div className="flex items-center gap-3 px-5 py-2.5 bg-blue-50/50 border-b border-blue-100 flex-shrink-0 flex-wrap text-xs">
+          <div className="flex items-center gap-1.5">
+            <FontAwesomeIcon icon={faTag} className="text-gray-400 text-[10px]" />
+            <input value={hd('precio_desde')} onChange={e => setHd('precio_desde', e.target.value)} placeholder="Precio desde"
+              className="w-28 border border-gray-200 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-blue-200 outline-none" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-gray-400 text-[10px]">Estado:</span>
+            <input value={hd('estado_del_proyecto')} onChange={e => setHd('estado_del_proyecto', e.target.value)} placeholder="Estado"
+              className="w-32 border border-gray-200 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-blue-200 outline-none" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <FontAwesomeIcon icon={faGlobe} className="text-gray-400 text-[10px]" />
+            <input value={hd('url_propiedad')} onChange={e => setHd('url_propiedad', e.target.value)} placeholder="URL del proyecto"
+              className="w-48 border border-gray-200 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-blue-200 outline-none" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <FontAwesomeIcon icon={faMapLocationDot} className="text-gray-400 text-[10px]" />
+            <input value={hd('gmaps_url')} onChange={e => setHd('gmaps_url', e.target.value)} placeholder="URL Google Maps"
+              className="w-48 border border-gray-200 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-blue-200 outline-none" />
+          </div>
+        </div>
+      ) : (extractPrice(d) || url || gmapsUrl) ? (
         <div className="flex items-center gap-5 px-5 py-2.5 bg-gray-50 border-b border-gray-100 flex-shrink-0 flex-wrap text-xs">
           {extractPrice(d) && (
             <span className="flex items-center gap-1.5 font-semibold text-gray-900">
@@ -292,7 +629,7 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
             </a>
           )}
         </div>
-      )}
+      ) : null}
 
       {/* ── 2-column: carousel + summary ─────────────────── */}
       <div className="flex gap-5 p-5 border-b border-gray-100 flex-shrink-0">
@@ -351,7 +688,7 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
 
         {/* Right: summary card */}
         <div className="w-56 flex-shrink-0">
-          <div className="bg-gray-50 rounded-xl p-4 h-full flex flex-col">
+          <div className={`rounded-xl p-4 h-full flex flex-col ${editHeader ? 'bg-blue-50/40 border border-blue-100' : 'bg-gray-50'}`}>
             <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide mb-3">Resumen del proyecto</p>
             <div className="space-y-3 flex-1">
               <div className="flex items-center justify-between text-xs">
@@ -361,15 +698,15 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
                 </span>
                 <span className="font-bold text-gray-900">{childRecords.length}</span>
               </div>
-              {extractPrice(d) && (
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-gray-500 flex items-center gap-1.5">
-                    <FontAwesomeIcon icon={faTag} className="text-gray-400 text-[10px]" />
-                    Precio desde
-                  </span>
-                  <span className="font-bold text-gray-900 text-right max-w-[110px] truncate">{extractPrice(d)}</span>
-                </div>
-              )}
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500 flex items-center gap-1.5">
+                  <FontAwesomeIcon icon={faTag} className="text-gray-400 text-[10px]" />
+                  Precio desde
+                </span>
+                <span className="font-bold text-gray-900 text-right max-w-[110px] truncate">
+                  {editHeader ? hd('precio_desde') || '—' : extractPrice(d) || '—'}
+                </span>
+              </div>
               <div className="flex items-center justify-between text-xs">
                 <span className="text-gray-500 flex items-center gap-1.5">
                   <FontAwesomeIcon icon={faCalendarDays} className="text-gray-400 text-[10px]" />
@@ -377,27 +714,27 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
                 </span>
                 <span className="font-semibold text-gray-700">{lastUpd}</span>
               </div>
-              {status && (
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-gray-500 flex items-center gap-1.5">
-                    <FontAwesomeIcon icon={faCircleCheck} className="text-gray-400 text-[10px]" />
-                    Estado
-                  </span>
-                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusClass(status)}`}>{status}</span>
-                </div>
-              )}
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500 flex items-center gap-1.5">
+                  <FontAwesomeIcon icon={faCircleCheck} className="text-gray-400 text-[10px]" />
+                  Estado
+                </span>
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusClass(editHeader ? hd('estado_del_proyecto') : status)}`}>
+                  {editHeader ? hd('estado_del_proyecto') || '—' : status || '—'}
+                </span>
+              </div>
             </div>
             <div className="mt-4 space-y-2">
-              {url && (
-                <a href={url} target="_blank" rel="noopener noreferrer"
+              {(url || editHeader) && (
+                <a href={editHeader ? hd('url_propiedad') : url} target="_blank" rel="noopener noreferrer"
                   className="flex items-center justify-center gap-1.5 w-full py-2 rounded-lg border border-blue-200 text-blue-600 text-xs font-medium hover:bg-blue-50 transition">
                   <FontAwesomeIcon icon={faGlobe} className="text-[10px]" />
                   Ver proyecto
                   <FontAwesomeIcon icon={faArrowUpRightFromSquare} className="text-[9px]" />
                 </a>
               )}
-              {gmapsUrl && (
-                <a href={gmapsUrl} target="_blank" rel="noopener noreferrer"
+              {(gmapsUrl || editHeader) && (
+                <a href={editHeader ? hd('gmaps_url') : gmapsUrl} target="_blank" rel="noopener noreferrer"
                   className="flex items-center justify-center gap-1.5 w-full py-2 rounded-lg border border-green-200 text-green-600 text-xs font-medium hover:bg-green-50 transition">
                   <FontAwesomeIcon icon={faMapLocationDot} className="text-[10px]" />
                   Google Maps
@@ -594,62 +931,23 @@ export default function ProjectDetailPanel({ record, childRecords, developerId, 
             </motion.div>
           )}
 
-          {tab === 'info' && <InfoTab key="info" d={d} />}
+          {tab === 'info' && (
+            <InfoTab
+              key="info"
+              d={d}
+              recordId={record.id}
+              onUpdated={() => queryClient.invalidateQueries({ queryKey: ['records', developerId] })}
+            />
+          )}
 
           {tab === 'gallery' && (
-            <motion.div key="gallery" variants={fadeUp} initial="hidden" animate="visible" exit="exit" className="p-5 flex flex-col gap-4">
-              {allImgs.length === 0 ? (
-                <p className="text-center text-xs text-gray-400 py-8">Sin imágenes disponibles</p>
-              ) : (
-                <>
-                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
-                    {galleryItems.map((src, i) => {
-                      const globalIdx = galleryPage * GALLERY_PER_PAGE + i
-                      return (
-                        <button key={globalIdx} onClick={() => { setImgIdx(globalIdx); setLightbox(true) }}
-                          className="aspect-square rounded-xl overflow-hidden bg-gray-100 hover:ring-2 hover:ring-blue-400 transition group relative">
-                          <img src={src} alt="" className="w-full h-full object-cover" />
-                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
-                            <FontAwesomeIcon icon={faExpand} className="text-white opacity-0 group-hover:opacity-100 transition text-lg drop-shadow" />
-                          </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-
-                  {galleryTotal > 1 && (
-                    <div className="flex items-center justify-between pt-3 border-t border-gray-100">
-                      <span className="text-[10px] text-gray-400">
-                        {galleryPage * GALLERY_PER_PAGE + 1}–{Math.min((galleryPage + 1) * GALLERY_PER_PAGE, allImgs.length)} de {allImgs.length} imágenes
-                      </span>
-                      <div className="flex items-center gap-1">
-                        <button onClick={() => setGalleryPage(p => Math.max(0, p - 1))} disabled={galleryPage === 0}
-                          className="w-6 h-6 rounded border border-gray-200 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40 transition">
-                          <FontAwesomeIcon icon={faAngleLeft} className="text-gray-600 text-[10px]" />
-                        </button>
-                        {Array.from({ length: galleryTotal }, (_, i) => i)
-                          .slice(Math.max(0, galleryPage - 2), Math.min(galleryTotal, galleryPage + 3))
-                          .map(p => (
-                            <button key={p} onClick={() => setGalleryPage(p)}
-                              className={`w-6 h-6 rounded text-[10px] font-bold flex items-center justify-center transition ${
-                                p === galleryPage
-                                  ? 'bg-blue-600 text-white'
-                                  : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
-                              }`}>
-                              {p + 1}
-                            </button>
-                          ))
-                        }
-                        <button onClick={() => setGalleryPage(p => Math.min(galleryTotal - 1, p + 1))} disabled={galleryPage >= galleryTotal - 1}
-                          className="w-6 h-6 rounded border border-gray-200 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40 transition">
-                          <FontAwesomeIcon icon={faAngleRight} className="text-gray-600 text-[10px]" />
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </motion.div>
+            <GalleryTab
+              key="gallery"
+              allImgs={allImgs}
+              recordId={record.id}
+              onImgClick={(idx) => { setImgIdx(idx); setLightbox(true) }}
+              onUpdated={() => queryClient.invalidateQueries({ queryKey: ['records', developerId] })}
+            />
           )}
 
         </AnimatePresence>

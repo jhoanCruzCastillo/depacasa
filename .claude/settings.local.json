@@ -40,7 +40,10 @@
       "Bash(curl -s \"http://localhost:8000/openapi.json\")",
       "Bash(curl -s -X POST \"http://localhost:8000/api/scrape/742e20f6-4e53-47c5-96e4-a1f5a1376bad/run\")",
       "Bash(curl -s \"http://localhost:8000/api/scrape/jobs/0fc6239c-32b7-45ec-9e6a-96d1349e0c77\")",
-      "Bash(python -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\('job_id:', r['id']\\)\")"
+      "Bash(python -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\('job_id:', r['id']\\)\")",
+      "PowerShell(docker cp \"C:\\\\Users\\\\anton\\\\Documents\\\\DEV\\\\Depacasa\\\\dron\\\\backend\\\\app\\\\models\\\\template.py\" proptech_backend:/app/app/models/template.py)",
+      "PowerShell(docker cp \"C:\\\\Users\\\\anton\\\\Documents\\\\DEV\\\\Depacasa\\\\dron\\\\backend\\\\app\\\\routers\\\\developers.py\" proptech_backend:/app/app/routers/developers.py)",
+      "PowerShell(docker restart proptech_backend)"
     ]
   }
 }

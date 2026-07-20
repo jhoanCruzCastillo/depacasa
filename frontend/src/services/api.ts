@@ -36,6 +36,18 @@ export const updatePropiedad = (
   data: { dormitorios?: string; baños?: string; m2?: string; modelo?: string; status?: string }
 ) => API.patch(`/propiedades/${id}`, data)
 
+export const updateProyecto = (id: string, data: Record<string, unknown>) =>
+  API.patch(`/propiedades/proyectos/${id}`, data)
+
+export const uploadProyectoImage = (id: string, file: File) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return API.post(`/propiedades/proyectos/${id}/images`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+}
+
+export const deleteProyectoImage = (id: string, imageUrl: string, field = 'imagen') =>
+  API.delete(`/propiedades/proyectos/${id}/images`, { params: { image_url: imageUrl, field } })
+
 export const extractPropertyFields = (developerId: string, onlyMissing = true) =>
   API.post<{ processed: number; updated: number; ai_calls: number }>(
     `/developers/${developerId}/extract-fields`,

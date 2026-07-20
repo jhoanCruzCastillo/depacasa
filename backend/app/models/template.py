@@ -18,6 +18,7 @@ class ExtractionTemplate(Base):
         unique=True, nullable=False, index=True,
     )
     nodes      = Column(JSONB, nullable=False, default=list)
+    capture_config = Column(JSONB, nullable=True, default=None)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     developer = relationship("Developer", back_populates="extraction_template")
