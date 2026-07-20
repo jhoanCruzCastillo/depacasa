@@ -29,6 +29,32 @@ export const updateDeveloper = (id: string, data: Partial<Developer>) =>
   API.patch<Developer>(`/developers/${id}`, data)
 export const deleteDeveloper = (id: string) => API.delete(`/developers/${id}`)
 
+// Propiedades
+export const getPropiedad = (id: string) => API.get(`/propiedades/${id}`)
+export const updatePropiedad = (
+  id: string,
+  data: { dormitorios?: string; baños?: string; m2?: string; modelo?: string; status?: string }
+) => API.patch(`/propiedades/${id}`, data)
+
+export const updateProyecto = (id: string, data: Record<string, unknown>) =>
+  API.patch(`/propiedades/proyectos/${id}`, data)
+
+export const uploadProyectoImage = (id: string, file: File) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return API.post(`/propiedades/proyectos/${id}/images`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+}
+
+export const deleteProyectoImage = (id: string, imageUrl: string, field = 'imagen') =>
+  API.delete(`/propiedades/proyectos/${id}/images`, { params: { image_url: imageUrl, field } })
+
+export const extractPropertyFields = (developerId: string, onlyMissing = true) =>
+  API.post<{ processed: number; updated: number; ai_calls: number }>(
+    `/developers/${developerId}/extract-fields`,
+    null,
+    { params: { only_missing: onlyMissing }, timeout: 120_000 }
+  )
+
 // Developer URL nodes (summary list)
 export const getDeveloperUrlNodes = (developerId: string) =>
   API.get(`/developers/${developerId}/url-nodes`)
@@ -63,6 +89,26 @@ export const createField = (data: Partial<Field>) => API.post<Field>('/templates
 export const updateField = (id: string, data: Partial<Field>) =>
   API.put<Field>(`/templates/fields/${id}`, data)
 export const deleteField = (id: string) => API.delete(`/templates/fields/${id}`)
+
+// Run single-field scrape
+export const runFieldScrape = (data: {
+  developer_id: string
+  url_node_id: string
+  node_url: string
+  container_selector?: string | null
+  field: {
+    name: string
+    is_child_url: boolean
+    plain_text: boolean
+    is_shared: boolean
+    is_list: boolean
+    list_container: string | null
+    is_image: boolean
+    extract_attr: string | null
+    order: number
+    selectors: Array<{ value: string; order: number }>
+  }
+}) => API.post('/scrape/field/run', data)
 
 // Selectors
 export const getSelectors = (fieldId: string) =>
@@ -122,6 +168,7 @@ export const updateChatTemplate = (id: string, data: {
 export const deleteChatTemplate = (id: string) => API.delete(`/chat/templates/${id}`)
 
 export const getChatAdvisors = () => API.get('/chat/advisors')
+export const getChatAdvisorClients = (advisorId: string) => API.get(`/chat/advisors/${advisorId}/clients`)
 export const createChatAdvisor = (data: {
   name: string; phone?: string; email?: string; whatsapp_number?: string; is_active?: boolean
 }) => API.post('/chat/advisors', data)
@@ -137,7 +184,10 @@ export const updateChatConfig = (data: {
   contact_message?: string
   no_results_message?: string
   no_more_message?: string
+  ai_model?: string
 }) => API.put('/chat/config', data)
+export const testAIModel = (model: string, prompt?: string) =>
+  API.post('/chat/config/test-ai', { model, prompt })
 
 // ── Web Chatbot ───────────────────────────────────────────────────────────────
 
@@ -145,17 +195,56 @@ export const createWebChatSession = (token?: string | null) =>
   API.post('/chat/web/sessions', {}, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   })
-export const sendWebChatMessage = (sessionId: string, content: string) =>
-  API.post(`/chat/web/sessions/${sessionId}/message`, { content })
+export const sendWebChatMessage = (
+  sessionId: string,
+  payload:
+    | string
+    | {
+        content?: string
+        attachment_urls?: string[]
+        financial_document_url?: string
+      },
+  token?: string | null,
+) => {
+  const body = typeof payload === 'string' ? { content: payload } : payload
+  return API.post(`/chat/web/sessions/${sessionId}/message`, body, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+}
+
+export const uploadWebChatAttachment = (sessionId: string, file: File) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  return API.post(`/chat/web/sessions/${sessionId}/attachments`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
-export const authRegister = (email: string, password: string, wants_newsletter: boolean) =>
-  API.post('/auth/register', { email, password, wants_newsletter })
+export const authRegister = (email: string, password: string, name: string, country?: string) =>
+  API.post('/auth/register', { email, password, name, country })
 export const authLogin = (email: string, password: string) =>
   API.post('/auth/login', { email, password })
 export const authMe = (token: string) =>
   API.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+export const authAdminMe = (token: string) =>
+  API.get('/auth/admin/me', { headers: { Authorization: `Bearer ${token}` } })
+export const updateAdminProfile = (token: string, data: { name?: string; phone?: string; country?: string; whatsapp?: string }) =>
+  API.put('/auth/me', data, { headers: { Authorization: `Bearer ${token}` } })
+export const changeAdminPassword = (token: string, current_password: string, new_password: string) =>
+  API.put('/auth/me/password', { current_password, new_password }, { headers: { Authorization: `Bearer ${token}` } })
+
+// ── Admin Notifications ───────────────────────────────────────────────────────
+
+export const getAdminNotifications = (limit = 50) =>
+  API.get('/admin/notifications', { params: { limit } })
+export const getNotificationUnreadCount = () =>
+  API.get('/admin/notifications/unread-count')
+export const markNotificationRead = (id: string) =>
+  API.patch(`/admin/notifications/${id}/read`)
+export const markAllNotificationsRead = () =>
+  API.post('/admin/notifications/mark-all-read')
 
 // ── Site Builder (admin) ──────────────────────────────────────────────────────
 

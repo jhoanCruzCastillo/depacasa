@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -6,9 +6,9 @@ import {
   getDeveloperTemplate,
   saveDeveloperTemplate,
   startScrapeJob,
+  runFieldScrape,
   getDeveloperRecords,
   updateDeveloper,
-  getFieldNameSuggestions,
 } from '../services/api'
 import {
   ChevronRight, Save, Play, Plus, Trash2, ChevronDown, ChevronUp,
@@ -19,7 +19,8 @@ import toast from 'react-hot-toast'
 import Modal from '../components/ui/Modal'
 import ScrapeProgress from '../components/scrape/ScrapeProgress'
 import Badge from '../components/ui/Badge'
-import VisualSelectorModal from '../components/visual-selector/VisualSelectorModal'
+import VisualSelectorModal, { type VisualSelectorPayload } from '../components/visual-selector/VisualSelectorModal'
+// import CaptureMode, { type CaptureModeHandle } from '../components/capture-mode/CaptureMode'
 import { Developer, ScrapeJob, ScrapedRecord } from '../types'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -30,13 +31,55 @@ interface NodeDraft { client_id: string; parent_client_id: string | null; name: 
 
 let _c = 0
 const uid = () => `d${++_c}`
-const emptyNode = (parent: string | null = null, order = 0): NodeDraft => ({ client_id: uid(), parent_client_id: parent, name: '', url: '', container_selector: '', order, fields: [] })
+const emptyNode = (parent: string | null = null, order = 0): NodeDraft => ({ client_id: uid(), parent_client_id: parent, name: parent ? 'Propiedades' : 'Proyectos', url: '', container_selector: '', order, fields: [] })
 const emptyField = (order = 0): FieldDraft => ({ id: uid(), name: '', is_child_url: false, plain_text: false, is_shared: false, is_list: false, list_container: '', is_image: false, extract_attr: '', order, selectors: [] })
 const emptySelector = (order = 0): SelectorDraft => ({ id: uid(), value: '', order })
+
+// ─── Standardized column definitions ─────────────────────────────────────────
+
+interface ColumnDef {
+  value: string
+  label: string
+  autoToggles?: Partial<FieldDraft>
+}
+
+// Campos de la tabla proyectos (nodo raíz)
+const PROYECTO_COLUMNS: ColumnDef[] = [
+  { value: 'url_propiedad',    label: 'URL del proyecto (enlace detalle)', autoToggles: { is_child_url: true } },
+  { value: 'nombre',           label: 'Nombre del proyecto' },
+  { value: 'estado_del_proyecto', label: 'Estado del proyecto' },
+  { value: 'ubicacion',        label: 'Ubicación' },
+  { value: 'precio_desde',     label: 'Precio desde' },
+  { value: 'imagen',           label: 'Imagen del proyecto', autoToggles: { is_list: true, is_image: true } },
+  { value: 'descripcion',      label: 'Descripción' },
+  { value: 'areas_comunes_exterior_e_interior_img', label: 'Imágenes áreas (ext/int)', autoToggles: { is_list: true, is_image: true } },
+  { value: 'areas_comunes',    label: 'Áreas comunes (lista)', autoToggles: { is_list: true } },
+  { value: 'areas_comunes_imagenes', label: 'Áreas comunes (imágenes)', autoToggles: { is_list: true, is_image: true } },
+  { value: 'lugares_cercanos', label: 'Lugares cercanos', autoToggles: { is_list: true } },
+]
+
+// Campos de la tabla propiedades (nodo hijo)
+// Los marcados is_shared=true se guardarán en la tabla proyectos del proyecto padre
+const PROPIEDAD_COLUMNS: ColumnDef[] = [
+  { value: 'imagen_modelo',    label: 'Imagen del modelo', autoToggles: { is_image: true, extract_attr: 'src' } },
+  { value: 'dormitorios',      label: 'Dormitorios' },
+  { value: 'm2',               label: 'Metros cuadrados (m²)' },
+  { value: 'modelo',           label: 'Modelo' },
+  { value: 'modelo_imagen',    label: 'Imagen adicional del modelo', autoToggles: { is_image: true } },
+  { value: 'descripcion',      label: 'Descripción del proyecto (→ proyecto)', autoToggles: { is_shared: true } },
+  { value: 'ubicacion',        label: 'Ubicación (→ proyecto)', autoToggles: { is_shared: true } },
+  { value: 'lugares_cercanos', label: 'Lugares cercanos (→ proyecto)', autoToggles: { is_shared: true, is_list: true } },
+  { value: 'areas_comunes',    label: 'Áreas comunes lista (→ proyecto)', autoToggles: { is_shared: true, is_list: true } },
+  { value: 'areas_comunes_imagenes', label: 'Áreas comunes imágenes (→ proyecto)', autoToggles: { is_shared: true, is_list: true, is_image: true } },
+  { value: 'areas_comunes_exterior_e_interior_img', label: 'Imágenes áreas ext/int (→ proyecto)', autoToggles: { is_shared: true, is_list: true, is_image: true } },
+  { value: 'gmaps_url',         label: 'URL Google Maps (→ proyecto)',         autoToggles: { is_shared: true, extract_attr: 'href' } },
+  { value: 'gmaps_coordinates', label: 'Coordenadas Google Maps (→ proyecto)', autoToggles: { is_shared: true } },
+]
 
 // ─── Tab types ────────────────────────────────────────────────────────────────
 
 type Tab = 'template' | 'properties' | 'records'
+type TemplateSubTab = 'proyectos' | 'propiedades'
 
 const TAB_META: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'template', label: 'Plantilla de extracción', icon: Settings },
@@ -123,25 +166,70 @@ export default function TemplateEditorPage() {
     setSelectorOpen(true)
   }
 
-  const applyVisualFields = (payload: { cardSelector?: string; fields: Array<{ name: string; selector: string; type: string }> }) => {
-    if (!selectorNodeId) return
-    const cardSelector = payload.cardSelector?.trim() || ''
-    const newFields = payload.fields
-      .filter(field => field.selector?.trim())
-      .map((field, index) => ({
+  const toNodeFields = (fields: VisualSelectorPayload['fields']) =>
+    fields
+      .filter(f => f.selector?.trim())
+      .map((f, index) => ({
         id: uid(),
-        name: (field.name?.trim() || `campo_${index + 1}`).toLowerCase(),
-        is_child_url: field.type === 'url',
-        plain_text: false,
-        is_shared: false,
-        is_list: false,
-        list_container: '',
-        is_image: false,
-        extract_attr: '',
+        name: (f.name?.trim() || `campo_${index + 1}`).toLowerCase(),
+        is_child_url: f.is_child_url,
+        plain_text:   f.plain_text,
+        is_shared:    f.is_shared,
+        is_list:      f.is_list,
+        list_container: f.list_container || '',
+        is_image:     f.is_image,
+        extract_attr: f.extract_attr || '',
         order: index,
-        selectors: [field.selector.trim()].map((value, order) => ({ id: uid(), value, order })),
+        selectors: [f.selector.trim()].map((value, order) => ({ id: uid(), value, order })),
       }))
-    updateNode(selectorNodeId, { container_selector: cardSelector, fields: newFields })
+
+  const mergeFields = (existing: FieldDraft[], incoming: FieldDraft[]): FieldDraft[] => {
+    const byName = new Map(existing.map(f => [f.name.toLowerCase(), f]))
+    const result = [...existing]
+    for (const f of incoming) {
+      const key = f.name.toLowerCase()
+      if (byName.has(key)) {
+        const idx = result.findIndex(r => r.name.toLowerCase() === key)
+        if (idx >= 0) result[idx] = { ...f, id: result[idx].id, order: result[idx].order }
+      } else {
+        result.push({ ...f, order: result.length })
+      }
+    }
+    return result
+  }
+
+  const applyVisualFields = (payload: VisualSelectorPayload) => {
+    if (!selectorNodeId) return
+
+    const currentNode = nodes.find(n => n.client_id === selectorNodeId)
+    const newListingFields = toNodeFields(payload.fields)
+    updateNode(selectorNodeId, {
+      ...(payload.cardSelector?.trim() ? { container_selector: payload.cardSelector.trim() } : {}),
+      fields: mergeFields(currentNode?.fields ?? [], newListingFields),
+    })
+
+    if (payload.detailFields?.length) {
+      const newDetailFields = toNodeFields(payload.detailFields)
+      const existingChild = nodes.find(n => n.parent_client_id === selectorNodeId)
+      if (existingChild) {
+        updateNode(existingChild.client_id, {
+          ...(payload.detailContainerSelector?.trim() ? { container_selector: payload.detailContainerSelector.trim() } : {}),
+          fields: mergeFields(existingChild.fields, newDetailFields),
+        })
+      } else {
+        const childId = uid()
+        const siblings = nodes.filter(n => n.parent_client_id === selectorNodeId)
+        setNodes(prev => [...prev, {
+          client_id: childId,
+          parent_client_id: selectorNodeId,
+          name: 'Detalle',
+          url: '',
+          container_selector: payload.detailContainerSelector?.trim() || '',
+          order: siblings.length,
+          fields: newDetailFields,
+        }])
+      }
+    }
   }
 
   const normalizeNodes = (raw: NodeDraft[]) =>
@@ -290,6 +378,7 @@ export default function TemplateEditorPage() {
       <div className="flex-1 overflow-y-auto">
         {activeTab === 'template' && (
           <TabTemplate
+            developerId={developerId!}
             nodes={nodes}
             rootNodes={rootNodes}
             updateNode={updateNode}
@@ -326,6 +415,15 @@ export default function TemplateEditorPage() {
       <VisualSelectorModal
         open={selectorOpen}
         url={selectorUrl}
+        existingFields={(() => {
+          if (!selectorNodeId) return []
+          const node = nodes.find(n => n.client_id === selectorNodeId)
+          const child = nodes.find(n => n.parent_client_id === selectorNodeId)
+          return [
+            ...(node?.fields ?? []).map(f => ({ name: f.name, tab: 'listing' as const })),
+            ...(child?.fields ?? []).map(f => ({ name: f.name, tab: 'detail' as const })),
+          ]
+        })()}
         onClose={() => {
           setSelectorOpen(false)
           setSelectorNodeId(null)
@@ -345,8 +443,9 @@ export default function TemplateEditorPage() {
 // ─── Tab: Plantilla de extracción ────────────────────────────────────────────
 
 function TabTemplate({
-  nodes, rootNodes, updateNode, removeNode, addChildNode, onAddRoot, onOpenSelector,
+  developerId, nodes, rootNodes, updateNode, removeNode, addChildNode, onAddRoot, onOpenSelector,
 }: {
+  developerId: string
   nodes: NodeDraft[]
   rootNodes: NodeDraft[]
   updateNode: (cid: string, p: Partial<NodeDraft>) => void
@@ -355,6 +454,9 @@ function TabTemplate({
   onAddRoot: () => void
   onOpenSelector: (nodeId: string, url: string) => void
 }) {
+  const [subTab, setSubTab] = useState<TemplateSubTab>('proyectos')
+  const childNodes = nodes.filter(n => !!n.parent_client_id)
+
   if (rootNodes.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-center">
@@ -375,25 +477,99 @@ function TabTemplate({
 
   return (
     <div className="space-y-4">
-      {rootNodes.map(node => (
-        <UrlNodeEditor
-          key={node.client_id}
-          node={node}
-          allNodes={nodes}
-          depth={0}
-          onUpdate={updateNode}
-          onRemove={removeNode}
-          onAddChild={addChildNode}
-          onOpenSelector={onOpenSelector}
-        />
-      ))}
-      <button
-        onClick={onAddRoot}
-        className="w-full flex items-center justify-center gap-2 py-4 border-2 border-dashed border-gray-200 rounded-2xl text-sm text-gray-400 hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50/40 transition-all"
-      >
-        <Plus className="w-4 h-4" />
-        Agregar sección raíz
-      </button>
+      {/* Sub-tabs Proyectos / Propiedades */}
+      <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-xl w-fit">
+        <button
+          onClick={() => setSubTab('proyectos')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            subTab === 'proyectos'
+              ? 'bg-white shadow-sm text-blue-700'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Database className="w-3.5 h-3.5" />
+          Proyectos
+          <span className="text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">{rootNodes.length}</span>
+        </button>
+        <button
+          onClick={() => setSubTab('propiedades')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            subTab === 'propiedades'
+              ? 'bg-white shadow-sm text-violet-700'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <Settings className="w-3.5 h-3.5" />
+          Propiedades
+          {childNodes.length > 0 && (
+            <span className="text-xs bg-violet-100 text-violet-600 px-1.5 py-0.5 rounded-full">{childNodes.length}</span>
+          )}
+        </button>
+      </div>
+
+      {/* Mode subtabs: "Por capturas" hidden — re-enable when ready */}
+      {/* {modeTab === 'capturas' && <CaptureMode ... />} */}
+
+      {/* ── Modo: Por selectores (comportamiento actual) ──────────────── */}
+      {subTab === 'proyectos' && (
+        <>
+          {rootNodes.map(node => (
+            <UrlNodeEditor
+              key={node.client_id}
+              developerId={developerId}
+              node={node}
+              allNodes={nodes}
+              depth={0}
+              isChild={false}
+              hideChildren
+              onUpdate={updateNode}
+              onRemove={removeNode}
+              onAddChild={addChildNode}
+              onOpenSelector={onOpenSelector}
+            />
+          ))}
+          <button
+            onClick={onAddRoot}
+            className="w-full flex items-center justify-center gap-2 py-4 border-2 border-dashed border-gray-200 rounded-2xl text-sm text-gray-400 hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50/40 transition-all"
+          >
+            <Plus className="w-4 h-4" />
+            Agregar sección raíz
+          </button>
+        </>
+      )}
+
+      {subTab === 'propiedades' && (
+        <>
+          {childNodes.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="w-14 h-14 rounded-full bg-violet-50 flex items-center justify-center mb-4">
+                <Settings className="w-6 h-6 text-violet-300" />
+              </div>
+              <p className="font-medium text-gray-700 mb-1">Sin secciones de propiedades</p>
+              <p className="text-sm text-gray-400 max-w-xs">
+                Activa el toggle <span className="font-semibold">URL hija</span> en un campo de la sección Proyectos y luego haz clic en{' '}
+                <span className="font-semibold">Agregar sección hija</span> para configurar las propiedades.
+              </p>
+            </div>
+          ) : (
+            childNodes.map(node => (
+              <UrlNodeEditor
+                key={node.client_id}
+                developerId={developerId}
+                node={node}
+                allNodes={nodes}
+                depth={1}
+                isChild={true}
+                hideChildren={false}
+                onUpdate={updateNode}
+                onRemove={removeNode}
+                onAddChild={addChildNode}
+                onOpenSelector={onOpenSelector}
+              />
+            ))
+          )}
+        </>
+      )}
     </div>
   )
 }
@@ -405,13 +581,17 @@ function TabProperties({ developer, developerId }: { developer: Developer; devel
   const [name, setName] = useState(developer.name)
   const [description, setDescription] = useState(developer.description || '')
   const [baseUrl, setBaseUrl] = useState(developer.base_url)
+  const [proyectosUrl, setProyectosUrl] = useState(developer.proyectos_url || '')
   const [saving, setSaving] = useState(false)
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
     try {
-      await updateDeveloper(developerId, { name, description, base_url: baseUrl })
+      await updateDeveloper(developerId, {
+        name, description, base_url: baseUrl,
+        proyectos_url: proyectosUrl || null,
+      })
       queryClient.invalidateQueries({ queryKey: ['developer', developerId] })
       queryClient.invalidateQueries({ queryKey: ['developers'] })
       toast.success('Propiedades guardadas')
@@ -444,6 +624,16 @@ function TabProperties({ developer, developerId }: { developer: Developer; devel
               type="url"
               value={baseUrl}
               onChange={e => setBaseUrl(e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">URL Proyectos</label>
+            <input
+              type="url"
+              value={proyectosUrl}
+              onChange={e => setProyectosUrl(e.target.value)}
+              placeholder="https://ejemplo.com/proyectos"
               className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
@@ -548,14 +738,9 @@ function TabRecords({ developerId }: { developerId: string }) {
                     : <><ChevronDown className="w-3 h-3" /> Ver {keys.length - 3} más</>}
                 </button>
               )}
-              <a
-                href={rec.source_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-2 block text-xs text-blue-400 hover:text-blue-600 truncate"
-              >
-                {rec.source_url}
-              </a>
+              {rec.type && (
+                <span className="mt-2 block text-xs text-gray-400 capitalize">{rec.type}</span>
+              )}
             </div>
           )
         })}
@@ -574,11 +759,15 @@ const depthColors = [
 ]
 
 function UrlNodeEditor({
-  node, allNodes, depth, onUpdate, onRemove, onAddChild, onOpenSelector,
+  developerId, node, allNodes, depth, isChild, hideChildren = false,
+  onUpdate, onRemove, onAddChild, onOpenSelector,
 }: {
+  developerId: string
   node: NodeDraft
   allNodes: NodeDraft[]
   depth: number
+  isChild: boolean
+  hideChildren?: boolean
   onUpdate: (cid: string, p: Partial<NodeDraft>) => void
   onRemove: (cid: string) => void
   onAddChild: (parent: string) => void
@@ -599,6 +788,12 @@ function UrlNodeEditor({
 
   const removeField = (fid: string) =>
     onUpdate(node.client_id, { fields: node.fields.filter(f => f.id !== fid) })
+
+  const duplicateNames = new Set(
+    node.fields
+      .map(f => f.name.trim().toLowerCase())
+      .filter((n, i, arr) => n && arr.indexOf(n) !== i)
+  )
 
   return (
     <div
@@ -685,7 +880,18 @@ function UrlNodeEditor({
           {node.fields.length > 0 && (
             <div className="space-y-3 mb-4">
               {node.fields.map(field => (
-                <FieldEditor key={field.id} field={field} onUpdate={updateField} onRemove={removeField} />
+                <FieldEditor
+                  key={field.id}
+                  developerId={developerId}
+                  field={field}
+                  nodeId={node.client_id}
+                  nodeUrl={node.url}
+                  containerSelector={node.container_selector}
+                  isChild={isChild}
+                  isDuplicate={duplicateNames.has(field.name.trim().toLowerCase())}
+                  onUpdate={updateField}
+                  onRemove={removeField}
+                />
               ))}
             </div>
           )}
@@ -719,15 +925,18 @@ function UrlNodeEditor({
             </button>
           )}
 
-          {/* Children */}
-          {children.length > 0 && (
+          {/* Children — ocultos en el sub-tab Proyectos para verlos en sub-tab Propiedades */}
+          {!hideChildren && children.length > 0 && (
             <div className="space-y-3 mt-2">
               {children.map(child => (
                 <UrlNodeEditor
                   key={child.client_id}
+                  developerId={developerId}
                   node={child}
                   allNodes={allNodes}
                   depth={depth + 1}
+                  isChild={true}
+                  hideChildren={false}
                   onUpdate={onUpdate}
                   onRemove={onRemove}
                   onAddChild={onAddChild}
@@ -742,81 +951,40 @@ function UrlNodeEditor({
   )
 }
 
-// ─── FieldNameAutocomplete ────────────────────────────────────────────────────
+// ─── ColumnSelect ─────────────────────────────────────────────────────────────
 
-function FieldNameAutocomplete({
-  value, onChange,
+function ColumnSelect({
+  value, isChild, onChange,
 }: {
   value: string
-  onChange: (v: string) => void
+  isChild: boolean
+  onChange: (name: string, toggles: Partial<FieldDraft>) => void
 }) {
-  const [suggestions, setSuggestions] = useState<string[]>([])
-  const [open, setOpen] = useState(false)
-  const [focused, setFocused] = useState(-1)
-  const timer = useRef<ReturnType<typeof setTimeout>>()
-  const containerRef = useRef<HTMLDivElement>(null)
+  const columns = isChild ? PROPIEDAD_COLUMNS : PROYECTO_COLUMNS
 
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) {
-        setOpen(false); setFocused(-1)
-      }
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [])
-
-  const fetch = (q: string) => {
-    clearTimeout(timer.current)
-    if (q.length < 1) { setSuggestions([]); setOpen(false); return }
-    timer.current = setTimeout(async () => {
-      try {
-        const res = await getFieldNameSuggestions(q)
-        setSuggestions(res.data)
-        setOpen(res.data.length > 0)
-        setFocused(-1)
-      } catch {
-        setSuggestions([]); setOpen(false)
-      }
-    }, 200)
-  }
-
-  const select = (name: string) => { onChange(name); setOpen(false); setFocused(-1) }
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!open) return
-    if (e.key === 'ArrowDown') { e.preventDefault(); setFocused(f => Math.min(f + 1, suggestions.length - 1)) }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setFocused(f => Math.max(f - 1, -1)) }
-    else if (e.key === 'Enter' && focused >= 0) { e.preventDefault(); select(suggestions[focused]) }
-    else if (e.key === 'Escape') { setOpen(false); setFocused(-1) }
+  const handleSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value
+    const col = columns.find(c => c.value === v)
+    onChange(v, {
+      is_child_url: false, is_list: false, is_image: false, extract_attr: '',
+      ...(col?.autoToggles || {}),
+    })
   }
 
   return (
-    <div ref={containerRef} className="relative flex-1">
-      <input
-        value={value}
-        onChange={e => { onChange(e.target.value); fetch(e.target.value) }}
-        onFocus={() => { if (suggestions.length > 0) setOpen(true) }}
-        onKeyDown={onKeyDown}
-        placeholder="nombre_campo (ej: precio, ubicacion)"
+    <div className="flex-1">
+      <select
+        value={columns.some(c => c.value === value) ? value : ''}
+        onChange={handleSelect}
         className="w-full border border-gray-200 bg-white rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-      />
-      {open && suggestions.length > 0 && (
-        <ul className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
-          {suggestions.map((s, i) => (
-            <li
-              key={s}
-              onMouseDown={() => select(s)}
-              className={`px-3 py-2 text-sm cursor-pointer transition-colors flex items-center gap-2 ${
-                i === focused ? 'bg-blue-50 text-blue-700' : 'text-gray-700 hover:bg-gray-50'
-              }`}
-            >
-              <span className="font-mono text-xs uppercase tracking-wider font-semibold">{s}</span>
-              <span className="text-gray-400 text-xs normal-case">({s})</span>
-            </li>
-          ))}
-        </ul>
-      )}
+      >
+        <option value="">— Selecciona una columna —</option>
+        {columns.map(col => (
+          <option key={col.value} value={col.value}>
+            {col.label}  ·  {col.value}
+          </option>
+        ))}
+      </select>
     </div>
   )
 }
@@ -824,12 +992,19 @@ function FieldNameAutocomplete({
 // ─── FieldEditor ──────────────────────────────────────────────────────────────
 
 function FieldEditor({
-  field, onUpdate, onRemove,
+  developerId, field, nodeId, nodeUrl, containerSelector, isChild, isDuplicate, onUpdate, onRemove,
 }: {
+  developerId: string
   field: FieldDraft
+  nodeId: string
+  nodeUrl: string
+  containerSelector: string
+  isChild: boolean
+  isDuplicate: boolean
   onUpdate: (id: string, p: Partial<FieldDraft>) => void
   onRemove: (id: string) => void
 }) {
+  const [running, setRunning] = useState(false)
   const addSelector = () =>
     onUpdate(field.id, { selectors: [...field.selectors, emptySelector(field.selectors.length)] })
 
@@ -840,15 +1015,22 @@ function FieldEditor({
     onUpdate(field.id, { selectors: field.selectors.filter(s => s.id !== sid) })
 
   return (
-    <div className="rounded-xl border border-gray-100 bg-gray-50 p-3.5">
+    <div className={`rounded-xl border p-3.5 ${isDuplicate ? 'border-red-400 bg-red-50' : 'border-gray-100 bg-gray-50'}`}>
+      {isDuplicate && (
+        <p className="text-[11px] text-red-600 font-semibold mb-2 flex items-center gap-1">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+          Campo duplicado — existe otro campo con el mismo nombre en esta sección
+        </p>
+      )}
       <div className="flex items-start gap-3">
         <div className="flex-1 space-y-2.5">
 
-          {/* Field name */}
+          {/* Field name — columna estándar o campo personalizado */}
           <div className="flex items-center gap-2">
-            <FieldNameAutocomplete
+            <ColumnSelect
               value={field.name}
-              onChange={v => onUpdate(field.id, { name: v })}
+              isChild={isChild}
+              onChange={(name, toggles) => onUpdate(field.id, { name, ...toggles })}
             />
             {field.is_list && (
               <span className="flex-shrink-0 text-xs bg-indigo-100 text-indigo-600 px-2 py-0.5 rounded-md font-medium border border-indigo-200">
@@ -1097,12 +1279,54 @@ function FieldEditor({
           )}
         </div>
 
-        <button
-          onClick={() => onRemove(field.id)}
-          className="p-1.5 text-gray-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition flex-shrink-0 mt-0.5"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
+        <div className="flex flex-col gap-2">
+          <button
+            onClick={async () => {
+              try {
+                if (!nodeUrl.trim()) {
+                  toast.error('Este nodo no tiene URL. Completa la URL antes de ejecutar este campo.')
+                  return
+                }
+                setRunning(true)
+                await runFieldScrape({
+                  developer_id: developerId,
+                  url_node_id: nodeId,
+                  node_url: nodeUrl,
+                  container_selector: containerSelector || null,
+                  field: {
+                    name: field.name,
+                    is_child_url: field.is_child_url,
+                    plain_text: field.plain_text,
+                    is_shared: field.is_shared,
+                    is_list: field.is_list,
+                    list_container: field.list_container || null,
+                    is_image: field.is_image,
+                    extract_attr: field.extract_attr || null,
+                    order: field.order,
+                    selectors: field.selectors.filter(s => s.value.trim()).map(s => ({ value: s.value, order: s.order })),
+                  },
+                })
+                toast.success('Ejecución encolada para este campo')
+              } catch (e: any) {
+                toast.error(e?.response?.data?.detail || 'Error al iniciar ejecución del campo')
+              } finally {
+                setRunning(false)
+              }
+            }}
+            disabled={running}
+            className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition flex-shrink-0 mt-0.5"
+            title="Ejecutar campo"
+          >
+            {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          </button>
+
+          <button
+            onClick={() => onRemove(field.id)}
+            className="p-1.5 text-gray-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition flex-shrink-0 mt-0.5"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
       </div>
     </div>
   )

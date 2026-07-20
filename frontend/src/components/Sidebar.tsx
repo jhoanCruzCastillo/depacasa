@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
-import { NavLink, useLocation } from 'react-router-dom'
-import { Building2, LayoutTemplate, MessageSquare, Users, FileText, Settings, Smartphone, ChevronDown, ChevronRight, UserCheck, Globe, Sliders } from 'lucide-react'
+import { NavLink } from 'react-router-dom'
+import {
+  Building2, LayoutTemplate, Users,
+  Settings, UserCheck, Globe, Sliders, Award, UserCircle,
+} from 'lucide-react'
 import API from '../services/api'
 
 const baseApiUrl = API.defaults.baseURL || ''
@@ -11,34 +14,51 @@ const mainLinks = [
   { to: '/templates', label: 'Plantillas de Extracción', icon: LayoutTemplate },
 ]
 
-const chatLinks = [
-  { to: '/chat/users', label: 'Usuarios', icon: Users },
-  { to: '/chat/templates', label: 'Plantillas', icon: FileText },
-  { to: '/chat/advisors', label: 'Asesores', icon: UserCheck },
-  { to: '/chat/config', label: 'Configuración', icon: Settings },
-  { to: '/chat/preview', label: 'Vista Previa', icon: Smartphone },
-]
-
 const siteLinks = [
   { to: '/site-builder', label: 'Constructor', icon: Sliders },
   { href: '/public', label: 'Ver sitio', icon: Globe },
 ]
 
+const chatLinks = [
+  { to: '/leads/users', label: 'Usuarios', icon: Users },
+  { to: '/leads/scoring', label: 'Ajuste de precios', icon: Award },
+  { to: '/leads/advisors', label: 'Asesores', icon: UserCheck },
+  { to: '/leads/config', label: 'Configuración', icon: Settings },
+]
+
+type NavItem = { to?: string; href?: string; label: string; icon: React.ElementType }
+
+function SectionLink({ item, activeColor }: { item: NavItem; activeColor: string }) {
+  if (item.href) {
+    return (
+      <a
+        href={item.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors text-slate-400 hover:text-slate-100 hover:bg-slate-800"
+      >
+        <item.icon className="w-3.5 h-3.5 flex-shrink-0" />
+        {item.label}
+      </a>
+    )
+  }
+  return (
+    <NavLink
+      to={item.to!}
+      className={({ isActive }) =>
+        `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+          isActive ? `${activeColor}` : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
+        }`
+      }
+    >
+      <item.icon className="w-3.5 h-3.5 flex-shrink-0" />
+      {item.label}
+    </NavLink>
+  )
+}
+
 export default function Sidebar() {
   const [online, setOnline] = useState<boolean | null>(null)
-  const location = useLocation()
-  const chatActive = location.pathname.startsWith('/chat')
-  const siteActive = location.pathname.startsWith('/site-builder')
-  const [chatOpen, setChatOpen] = useState(chatActive)
-  const [siteOpen, setSiteOpen] = useState(siteActive)
-
-  useEffect(() => {
-    if (chatActive) setChatOpen(true)
-  }, [chatActive])
-
-  useEffect(() => {
-    if (siteActive) setSiteOpen(true)
-  }, [siteActive])
 
   useEffect(() => {
     const check = async () => {
@@ -64,9 +84,11 @@ export default function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-3 space-y-0.5">
-        {/* Scraping section */}
-        <p className="px-3 pt-1 pb-1 text-[10px] font-semibold text-slate-500 uppercase tracking-widest">Scraping</p>
+      <nav className="flex-1 px-3 space-y-0.5 pb-4">
+        {/* SCRAPING */}
+        <p className="px-3 pt-1 pb-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
+          Scraping
+        </p>
         {mainLinks.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
@@ -84,92 +106,43 @@ export default function Sidebar() {
           </NavLink>
         ))}
 
-        {/* Site Builder section */}
-        <div className="pt-3">
-          <button
-            onClick={() => setSiteOpen(o => !o)}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              siteActive
-                ? 'bg-purple-600/20 text-purple-400 ring-1 ring-purple-600/20'
-                : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
-            }`}
-          >
-            <Globe className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1 text-left">Portal Público</span>
-            {siteOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-          </button>
-
-          {siteOpen && (
-            <div className="ml-4 mt-0.5 border-l border-slate-700 pl-3 space-y-0.5">
-              {siteLinks.map(({ to, href, label, icon: Icon }) =>
-                href ? (
-                  <a
-                    key={href}
-                    href={href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors text-slate-400 hover:text-slate-100 hover:bg-slate-800"
-                  >
-                    <Icon className="w-3.5 h-3.5 flex-shrink-0" />
-                    {label}
-                  </a>
-                ) : (
-                  <NavLink
-                    key={to}
-                    to={to!}
-                    className={({ isActive }) =>
-                      `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
-                        isActive
-                          ? 'bg-purple-600/20 text-purple-400'
-                          : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
-                      }`
-                    }
-                  >
-                    <Icon className="w-3.5 h-3.5 flex-shrink-0" />
-                    {label}
-                  </NavLink>
-                )
-              )}
-            </div>
-          )}
+        {/* PORTAL PÚBLICO */}
+        <p className="px-3 pt-4 pb-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
+          Portal Público
+        </p>
+        <div className="ml-1 space-y-0.5">
+          {siteLinks.map(item => (
+            <SectionLink key={item.to ?? item.href} item={item} activeColor="bg-purple-600/20 text-purple-400" />
+          ))}
         </div>
 
-        {/* Chatbot section */}
-        <div className="pt-3">
-          <button
-            onClick={() => setChatOpen(o => !o)}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              chatActive
-                ? 'bg-green-600/20 text-green-400 ring-1 ring-green-600/20'
-                : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
-            }`}
-          >
-            <MessageSquare className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1 text-left">Chatbot WhatsApp</span>
-            {chatOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-          </button>
-
-          {chatOpen && (
-            <div className="ml-4 mt-0.5 border-l border-slate-700 pl-3 space-y-0.5">
-              {chatLinks.map(({ to, label, icon: Icon }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  className={({ isActive }) =>
-                    `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
-                      isActive
-                        ? 'bg-green-600/20 text-green-400'
-                        : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
-                    }`
-                  }
-                >
-                  <Icon className="w-3.5 h-3.5 flex-shrink-0" />
-                  {label}
-                </NavLink>
-              ))}
-            </div>
-          )}
+        {/* GESTIÓN DE LEADS */}
+        <p className="px-3 pt-4 pb-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
+          Gestión de Leads
+        </p>
+        <div className="ml-1 space-y-0.5">
+          {chatLinks.map(item => (
+            <SectionLink key={item.to} item={item} activeColor="bg-green-600/20 text-green-400" />
+          ))}
         </div>
+
+        {/* CUENTA */}
+        <p className="px-3 pt-4 pb-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
+          Cuenta
+        </p>
+        <NavLink
+          to="/admin/profile"
+          className={({ isActive }) =>
+            `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+              isActive
+                ? 'bg-blue-600/20 text-blue-400 ring-1 ring-blue-600/20'
+                : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
+            }`
+          }
+        >
+          <UserCircle className="w-4 h-4 flex-shrink-0" />
+          Perfil y Seguridad
+        </NavLink>
       </nav>
 
       {/* System status */}
@@ -177,12 +150,21 @@ export default function Sidebar() {
         <div className="flex items-center gap-2.5">
           <span
             className={`w-2 h-2 rounded-full flex-shrink-0 ${
-              online === null ? 'bg-slate-500 animate-pulse' : online ? 'bg-green-400' : 'bg-red-400'
+              online === null
+                ? 'bg-slate-500 animate-pulse'
+                : online
+                ? 'bg-green-400'
+                : 'bg-red-400'
             }`}
           />
-          <span className="text-xs text-slate-500">
-            {online === null ? 'Verificando...' : online ? 'Sistema activo' : 'Sin conexión'}
-          </span>
+          <div>
+            <p className="text-xs text-slate-400 font-medium">
+              {online === null ? 'Verificando...' : online ? 'Sistema activo' : 'Sin conexión'}
+            </p>
+            {online && (
+              <p className="text-[10px] text-slate-600 mt-0.5">Todos los servicios operativos</p>
+            )}
+          </div>
         </div>
       </div>
     </aside>

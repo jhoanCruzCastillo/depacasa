@@ -5,6 +5,7 @@ from .templates import router as templates_router
 from .advisors import router as advisors_router
 from .config import router as config_router
 from .web import router as web_router
+from .scoring_config_router import router as scoring_config_router
 
 chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 chat_router.include_router(webhook_router)
@@ -13,3 +14,4 @@ chat_router.include_router(templates_router)
 chat_router.include_router(advisors_router)
 chat_router.include_router(config_router)
 chat_router.include_router(web_router)
+chat_router.include_router(scoring_config_router)

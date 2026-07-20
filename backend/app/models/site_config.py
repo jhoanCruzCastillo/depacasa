@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Boolean, JSON, DateTime
+from sqlalchemy import Column, String, Boolean, Integer, JSON, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from database import Base
@@ -56,5 +56,22 @@ class SiteConfig(Base):
     chatbot_enabled = Column(Boolean, default=True)
     chatbot_greeting = Column(String, default="¡Hola! Soy tu asistente inmobiliario. ¿Cuál es tu nombre?")
     chatbot_button_label = Column(String, default="¿Necesitas ayuda?")
+
+    # Hero carousel: list of scraped record UUID strings handpicked by admin
+    hero_record_ids = Column(JSON, nullable=True)
+
+    # Featured section (Section 1)
+    featured_enabled = Column(Boolean, default=True)
+    featured_title = Column(String, default="Proyectos destacados")
+    featured_level = Column(Integer, default=2)   # 1=root nodes, 2=child nodes
+    featured_limit = Column(Integer, default=6)
+    featured_field_keys = Column(JSON, nullable=True)  # [] = auto-detect all
+
+    # Catalog section (Section 2)
+    catalog_enabled = Column(Boolean, default=True)
+    catalog_title = Column(String, default="Propiedades disponibles")
+    catalog_level = Column(Integer, default=2)
+    catalog_columns = Column(String, default="3")  # "2" | "3" | "4"
+    catalog_field_keys = Column(JSON, nullable=True)  # [] = auto-detect all
 
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

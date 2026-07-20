@@ -1,17 +1,38 @@
-import { useState, useRef, useEffect } from 'react'
+﻿import { useState, useRef, useEffect } from 'react'
 import {
   MessageCircle, X, Send, Star, ChevronRight, ChevronLeft,
-  Heart, Building2, MapPin, BedDouble, Bath, Maximize2,
-  GalleryHorizontal, DollarSign,
+  Heart, Building2, MapPin, BedDouble, Bath, Maximize2, Paperclip,
+  GalleryHorizontal, DollarSign, Eye,
 } from 'lucide-react'
-import API from '../../services/api'
+import {
+  createWebChatSession,
+  sendWebChatMessage,
+  uploadWebChatAttachment,
+} from '../../services/api'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 interface CardField { key: string; label: string; type: string }
-interface PropertyCard { index: number; total: number; record_id: string; data: Record<string, unknown> }
-interface Message { role: 'user' | 'assistant'; content: string; card: PropertyCard | null }
+interface PropertyCard {
+  index: number
+  total: number
+  record_id: string
+  property_identifier?: string
+  seen_by_user_before?: boolean | null
+  data: Record<string, unknown>
+}
+interface Message {
+  role: 'user' | 'assistant'
+  content: string
+  card: PropertyCard | null
+  quick_replies?: string[]
+}
 interface SiteUser { id: string; email: string; name: string | null }
+interface OutgoingPayload {
+  content?: string
+  attachment_urls?: string[]
+  financial_document_url?: string
+}
 
 interface Props {
   buttonLabel?: string
@@ -20,9 +41,10 @@ interface Props {
   cardFields?: CardField[]
   user?: SiteUser | null
   token?: string | null
+  onRequestAuth?: (tab: 'login' | 'register') => void
 }
 
-// ─── Image extraction ─────────────────────────────────────────────────────────
+// â”€â”€â”€ Image extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|webp|gif|avif|bmp|svg)(\?.*)?$/i
 const HTTP = /^https?:\/\//
@@ -57,7 +79,7 @@ function extractAllImages(data: Record<string, unknown>): string[] {
   return out
 }
 
-// ─── Field categorization ─────────────────────────────────────────────────────
+// â”€â”€â”€ Field categorization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const ROLE: Record<string, string> = {
   name: 'title', nombre: 'title', proyecto: 'title', project_name: 'title',
@@ -72,9 +94,9 @@ const ROLE: Record<string, string> = {
   bathrooms: 'bathrooms', banos: 'bathrooms', baths: 'bathrooms', wc: 'bathrooms',
   area: 'area', m2: 'area', size: 'area', sqft: 'area',
   metros: 'area', superficie: 'area', metraje: 'area', area_m2: 'area',
-  description: 'desc', descripcion: 'desc', descripción: 'desc',
+  description: 'desc', descripcion: 'desc', "descripci\u00f3n": 'desc',
   details: 'desc', detalles: 'desc', info: 'desc', information: 'desc', sobre: 'desc',
-  caracteristicas: 'desc', características: 'desc', resumen: 'desc', acerca: 'desc',
+  caracteristicas: 'desc', "caracter\u00edsticas": 'desc', resumen: 'desc', acerca: 'desc',
 }
 
 interface TF { key: string; label: string; value: string; role: string }
@@ -118,7 +140,7 @@ function extractFields(data: Record<string, unknown>, images: string[]) {
   return { text, lists }
 }
 
-// ─── Lightbox ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Lightbox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Lightbox({ images, start, onClose }: { images: string[]; start: number; onClose: () => void }) {
   const [cur, setCur] = useState(start)
@@ -188,7 +210,7 @@ function Lightbox({ images, start, onClose }: { images: string[]; start: number;
   )
 }
 
-// ─── Image Carousel (inside card) ─────────────────────────────────────────────
+// â”€â”€â”€ Image Carousel (inside card) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function ImageCarousel({ images, onOpen }: { images: string[]; onOpen: (i: number) => void }) {
   const [cur, setCur] = useState(0)
@@ -252,7 +274,7 @@ function ImageCarousel({ images, onOpen }: { images: string[]; onOpen: (i: numbe
   )
 }
 
-// ─── Star Rating ───────────────────────────────────────────────────────────────
+// â”€â”€â”€ Star Rating â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function StarRating({ rating, onChange }: { rating: number; onChange: (r: number) => void }) {
   const [hover, setHover] = useState(0)
@@ -278,10 +300,10 @@ function StarRating({ rating, onChange }: { rating: number; onChange: (r: number
   )
 }
 
-// ─── Full Property Card ────────────────────────────────────────────────────────
+// â”€â”€â”€ Full Property Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function PropertyCardView({
-  card, cardFields, primaryColor, secondaryColor, onNext, onInterested, readonly,
+  card, cardFields, primaryColor, secondaryColor, onNext, onInterested, onRate, readonly,
 }: {
   card: PropertyCard
   cardFields: CardField[]
@@ -289,10 +311,12 @@ function PropertyCardView({
   secondaryColor: string
   onNext: () => void
   onInterested: (r: number) => void
+  onRate?: (r: number) => void
   readonly?: boolean
 }) {
   const [rating, setRating] = useState(0)
   const [lightboxStart, setLightboxStart] = useState<number | null>(null)
+  const rateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const images = extractAllImages(card.data)
   const { text, lists } = extractFields(card.data, images)
@@ -305,6 +329,13 @@ function PropertyCardView({
   const areaF = text.find(f => f.role === 'area')
   const descFields = text.filter(f => f.role === 'desc')
   const otherFields = text.filter(f => f.role === 'other')
+  const propertyIdentifier = card.property_identifier || card.record_id
+  const seenFlag = card.seen_by_user_before
+  const seenLabel = seenFlag === null || seenFlag === undefined
+    ? 'Estado de vista: no disponible'
+    : seenFlag
+      ? 'Ya vista por ti'
+      : 'Nueva para ti'
 
   return (
     <>
@@ -331,6 +362,17 @@ function PropertyCardView({
               {images.length}
             </span>
           )}
+        </div>
+
+        {/* Property meta */}
+        <div className="px-4 py-2 border-t border-slate-100 bg-slate-50/70 space-y-1">
+          <p className="text-[11px] text-slate-500">
+            ID propiedad: <span className="font-mono text-slate-700 break-all">{propertyIdentifier}</span>
+          </p>
+          <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
+            <Eye className="w-3.5 h-3.5 text-slate-400" />
+            {seenLabel}
+          </p>
         </div>
 
         {/* Images */}
@@ -391,7 +433,7 @@ function PropertyCardView({
           </div>
         )}
 
-        {/* Lists / arrays → chips */}
+        {/* Lists / arrays â†’ chips */}
         {lists.length > 0 && (
           <div className="px-4 pb-2 space-y-1.5">
             {lists.map(l => (
@@ -413,7 +455,7 @@ function PropertyCardView({
           </div>
         )}
 
-        {/* Other fields — single column, full text */}
+        {/* Other fields â€” single column, full text */}
         {otherFields.length > 0 && (
           <div className="px-4 pb-2 border-t border-slate-100 pt-2 space-y-2">
             {otherFields.map(f => (
@@ -435,7 +477,16 @@ function PropertyCardView({
             {/* Star rating */}
             <div className="px-4 pb-2 pt-2 border-t border-slate-100">
               <p className="text-xs text-slate-400 mb-1.5">¿Qué te parece?</p>
-              <StarRating rating={rating} onChange={setRating} />
+              <StarRating
+                rating={rating}
+                onChange={r => {
+                  setRating(r)
+                  if (onRate) {
+                    if (rateTimerRef.current) clearTimeout(rateTimerRef.current)
+                    rateTimerRef.current = setTimeout(() => onRate(r), 800)
+                  }
+                }}
+              />
             </div>
 
             {/* Action buttons */}
@@ -461,7 +512,7 @@ function PropertyCardView({
   )
 }
 
-// ─── Markdown-lite renderer ────────────────────────────────────────────────────
+// â”€â”€â”€ Markdown-lite renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Md({ text }: { text: string }) {
   return (
@@ -475,7 +526,7 @@ function Md({ text }: { text: string }) {
   )
 }
 
-// ─── Main Widget ───────────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Widget â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export default function ChatWidget({
   buttonLabel = '¿Necesitas ayuda?',
@@ -484,14 +535,36 @@ export default function ChatWidget({
   cardFields = [],
   user,
   token,
+  onRequestAuth,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [initializing, setInitializing] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [state, setState] = useState('collecting_info')
+  const [showRegBanner, setShowRegBanner] = useState(false)
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null)
+  const [attachmentError, setAttachmentError] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+  const ALLOWED_ATTACHMENT_MIME_PREFIXES = ['image/']
+  const ALLOWED_ATTACHMENT_MIME = new Set([
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+    'application/rtf',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/csv',
+    'application/vnd.oasis.opendocument.text',
+  ])
 
   useEffect(() => {
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
@@ -499,51 +572,160 @@ export default function ChatWidget({
 
   const startSession = async () => {
     if (sessionId) return
+    setInitializing(true)
     try {
-      const res = await API.post('/chat/web/sessions', {}, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
+      const res = await createWebChatSession(token)
       setSessionId(res.data.session_id)
       setState(res.data.state)
-      setMessages([{ role: 'assistant', content: res.data.message, card: res.data.card }])
+      setMessages([{ role: 'assistant', content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }])
     } catch {
-      setMessages([{ role: 'assistant', content: 'Error al iniciar la sesión. Recarga la página.', card: null }])
+      setMessages([{ role: 'assistant', content: 'Error al iniciar la sesión. Recarga la página.', card: null, quick_replies: [] }])
+    } finally {
+      setInitializing(false)
     }
   }
 
-  const handleOpen = () => { setOpen(true); if (!sessionId) startSession() }
+  const handleOpen = () => {
+    setOpen(true)
+    if (!sessionId) startSession()
+    setTimeout(() => inputRef.current?.focus(), 100)
+  }
 
-  const sendRaw = async (content: string) => {
-    if (!sessionId || loading) return
+  const sendRaw = async (payload: OutgoingPayload) => {
+    if (!sessionId || loading || uploading) return
     setLoading(true)
     try {
-      const res = await API.post(`/chat/web/sessions/${sessionId}/message`, { content })
-      setMessages(m => [...m, { role: 'assistant', content: res.data.message, card: res.data.card }])
+      const res = await sendWebChatMessage(sessionId, payload, token)
+      setMessages(m => {
+        const preludes: Message[] = (res.data.prelude_messages || []).map((content: string) => ({
+          role: 'assistant' as const,
+          content,
+          card: null,
+          quick_replies: [],
+        }))
+        const main: Message = { role: 'assistant', content: res.data.message, card: res.data.card, quick_replies: res.data.quick_replies || [] }
+        if (res.data.card && !user && !showRegBanner) setShowRegBanner(true)
+        return [...m, ...preludes, main]
+      })
       setState(res.data.state)
     } catch {
-      setMessages(m => [...m, { role: 'assistant', content: 'Ocurrió un error. Intenta nuevamente.', card: null }])
+      setMessages(m => [...m, { role: 'assistant', content: 'Ocurrió un error. Intenta nuevamente.', card: null, quick_replies: [] }])
     } finally {
       setLoading(false)
+      setTimeout(() => inputRef.current?.focus(), 0)
+    }
+  }
+
+  const isAllowedAttachment = (file: File) => {
+    const mime = (file.type || '').toLowerCase()
+    return (
+      ALLOWED_ATTACHMENT_MIME_PREFIXES.some(prefix => mime.startsWith(prefix))
+      || ALLOWED_ATTACHMENT_MIME.has(mime)
+    )
+  }
+
+  const onAttachmentPick = (file: File | null) => {
+    setAttachmentError('')
+    if (!file) {
+      setAttachmentFile(null)
+      return
+    }
+    if (!isAllowedAttachment(file)) {
+      setAttachmentFile(null)
+      setAttachmentError('Tipo de archivo no permitido. Usa imagen o documento.')
+      return
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setAttachmentFile(null)
+      setAttachmentError('El archivo supera 10 MB.')
+      return
+    }
+    setAttachmentFile(file)
+  }
+
+  const clearAttachment = () => {
+    setAttachmentFile(null)
+    setAttachmentError('')
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const shouldMarkAsFinancialDoc = () => {
+    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+    const contextText = String(lastAssistant?.content || '').toLowerCase()
+    return /sustento|capacidad de compra|capacidad financiera|preaprob|credito aprobado|ayuda social/.test(contextText)
+  }
+
+  const uploadAttachmentIfAny = async (): Promise<{ attachmentUrls: string[]; financialDocumentUrl?: string }> => {
+    if (!sessionId || !attachmentFile) return { attachmentUrls: [] }
+    setUploading(true)
+    try {
+      const res = await uploadWebChatAttachment(sessionId, attachmentFile)
+      const url = String(res.data?.attachment_url || '').trim()
+      if (!url) throw new Error('missing attachment_url')
+      const kind = String(res.data?.kind || '')
+      const isLikelyFinancial = kind === 'document' && (
+        shouldMarkAsFinancialDoc()
+        || /capacidad|sustento|credito|crédito|preaprob|ayuda social|financ/i.test(input)
+      )
+      return {
+        attachmentUrls: [url],
+        financialDocumentUrl: isLikelyFinancial ? url : undefined,
+      }
+    } finally {
+      setUploading(false)
     }
   }
 
   const send = async () => {
     const text = input.trim()
-    if (!text || !sessionId || loading || state === 'contact_requested') return
+    if ((!text && !attachmentFile) || !sessionId || loading || uploading || state === 'contact_requested') return
+    let attachmentUrls: string[] = []
+    let financialDocumentUrl: string | undefined
+    if (attachmentFile) {
+      try {
+        const uploaded = await uploadAttachmentIfAny()
+        attachmentUrls = uploaded.attachmentUrls
+        financialDocumentUrl = uploaded.financialDocumentUrl
+      } catch {
+        setAttachmentError('No se pudo subir el archivo. Intenta nuevamente.')
+        return
+      }
+    }
+    const userBubbleParts = [text]
+    if (attachmentFile?.name) userBubbleParts.push(`[Adjunto] ${attachmentFile.name}`)
+    const userBubbleText = userBubbleParts.filter(Boolean).join('\n').trim()
     setInput('')
-    setMessages(m => [...m, { role: 'user', content: text, card: null }])
-    await sendRaw(text)
+    clearAttachment()
+    setMessages(m => [...m, { role: 'user', content: userBubbleText || 'Adjunto archivo', card: null }])
+    await sendRaw({
+      content: text,
+      attachment_urls: attachmentUrls,
+      financial_document_url: financialDocumentUrl,
+    })
   }
 
   const handleNext = () => {
     setMessages(m => [...m, { role: 'user', content: 'Ver siguiente', card: null }])
-    sendRaw('ver siguiente')
+    sendRaw({ content: 'ver siguiente' })
   }
 
-  const handleInterested = (rating: number) => {
-    const text = rating > 0 ? `Lo quiero, le doy ${rating} estrellas` : 'Lo quiero'
+  const handleRate = (rating: number) => {
+    if (!sessionId || loading || uploading) return
+    const text = `Le doy ${rating} estrella${rating === 1 ? '' : 's'}`
     setMessages(m => [...m, { role: 'user', content: text, card: null }])
-    sendRaw(text)
+    sendRaw({ content: text })
+  }
+
+  const handleInterested = (_rating: number) => {
+    const text = 'Lo quiero'
+    setMessages(m => [...m, { role: 'user', content: text, card: null }])
+    sendRaw({ content: text })
+  }
+
+  const handleQuickReply = (text: string) => {
+    if (!text || !sessionId || loading || uploading) return
+    setMessages(m => [...m, { role: 'user', content: text, card: null }])
+    sendRaw({ content: text })
   }
 
   const isDone = state === 'contact_requested'
@@ -584,6 +766,19 @@ export default function ChatWidget({
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0 bg-slate-50">
+            {/* Session init spinner */}
+            {initializing && messages.length === 0 && (
+              <div className="flex flex-col items-center justify-center gap-3 py-16">
+                <div
+                  className="w-9 h-9 rounded-full border-4 animate-spin"
+                  style={{
+                    borderColor: `${primaryColor}25`,
+                    borderTopColor: primaryColor,
+                  }}
+                />
+                <p className="text-xs text-slate-400">Iniciando conversación...</p>
+              </div>
+            )}
             {messages.map((msg, i) => (
               <div key={i} className="space-y-2">
                 {msg.role === 'user' ? (
@@ -613,8 +808,22 @@ export default function ChatWidget({
                         secondaryColor={secondaryColor}
                         onNext={handleNext}
                         onInterested={handleInterested}
+                        onRate={handleRate}
                         readonly={i !== lastIdx || isDone}
                       />
+                    )}
+                    {i === lastIdx && !loading && !uploading && (msg.quick_replies || []).length > 0 && (
+                      <div className="flex flex-wrap gap-2 pl-1">
+                        {(msg.quick_replies || []).slice(0, 4).map((opt, idx) => (
+                          <button
+                            key={`${i}-${idx}-${opt}`}
+                            onClick={() => handleQuickReply(opt)}
+                            className="px-3 py-1.5 text-xs rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-colors"
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
                     )}
                   </>
                 )}
@@ -622,7 +831,7 @@ export default function ChatWidget({
             ))}
 
             {/* Typing indicator */}
-            {loading && (
+            {(loading || uploading) && (
               <div className="flex justify-start">
                 <div className="bg-white border border-slate-100 shadow-sm px-4 py-3 rounded-2xl rounded-bl-sm">
                   <div className="flex items-center gap-1.5">
@@ -637,32 +846,97 @@ export default function ChatWidget({
                 </div>
               </div>
             )}
+            {/* Registration suggestion banner */}
+            {showRegBanner && !user && onRequestAuth && (
+              <div className="relative mx-1 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
+                <button
+                  onClick={() => setShowRegBanner(false)}
+                  className="absolute top-2 right-2 text-slate-300 hover:text-slate-500 transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+                <p className="text-xs text-slate-700 leading-relaxed pr-4">
+                  <span className="font-semibold text-slate-800">Guarda tus preferencias</span> — Regístrate para recibir novedades de propiedades que se ajusten a lo que buscas.
+                </p>
+                <div className="flex gap-2 mt-2.5">
+                  <button
+                    onClick={() => onRequestAuth('register')}
+                    className="flex-1 py-1.5 rounded-xl text-xs font-semibold text-white transition-opacity hover:opacity-90"
+                    style={{ backgroundColor: primaryColor }}
+                  >
+                    Registrarme
+                  </button>
+                  <button
+                    onClick={() => onRequestAuth('login')}
+                    className="flex-1 py-1.5 rounded-xl text-xs font-medium border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 transition-colors"
+                  >
+                    Ya tengo cuenta
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div ref={bottomRef} />
           </div>
 
           {/* Input */}
-          <div className="border-t border-slate-200 bg-white p-3 flex items-end gap-2 flex-shrink-0">
-            <textarea
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-              placeholder={isDone ? 'Conversación finalizada' : 'Escribe un mensaje...'}
-              disabled={isDone || loading}
-              rows={1}
-              className="flex-1 resize-none rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 disabled:bg-slate-50 disabled:text-slate-400 max-h-28 overflow-y-auto"
-              style={{ lineHeight: '1.5', '--tw-ring-color': primaryColor } as React.CSSProperties}
+          <div className="border-t border-slate-200 bg-white p-3 flex-shrink-0">
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              accept="image/*,.pdf,.doc,.docx,.txt,.rtf,.xls,.xlsx,.csv,.odt"
+              onChange={e => onAttachmentPick(e.target.files?.[0] || null)}
             />
-            <button
-              onClick={send}
-              disabled={!input.trim() || loading || isDone}
-              className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-white disabled:opacity-40 transition-opacity"
-              style={{ backgroundColor: primaryColor }}
-            >
-              <Send className="w-4 h-4" />
-            </button>
+            {attachmentFile && (
+              <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 bg-slate-50">
+                <Paperclip className="w-3.5 h-3.5 text-slate-500" />
+                <span className="max-w-[250px] truncate">{attachmentFile.name}</span>
+                <button
+                  onClick={clearAttachment}
+                  className="text-slate-400 hover:text-slate-600 transition-colors"
+                  disabled={loading || uploading || isDone}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+            {attachmentError && (
+              <p className="mb-2 text-[11px] text-rose-500">{attachmentError}</p>
+            )}
+            <div className="flex items-end gap-2">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading || uploading || isDone}
+                className="flex-shrink-0 w-10 h-10 rounded-xl border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-50 disabled:opacity-40 transition-opacity"
+                title="Adjuntar archivo"
+              >
+                <Paperclip className="w-4 h-4" />
+              </button>
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+                placeholder={isDone ? 'Conversación finalizada' : 'Escribe un mensaje o adjunta un archivo...'}
+                disabled={isDone || loading || uploading}
+                rows={1}
+                className="flex-1 resize-none rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 disabled:bg-slate-50 disabled:text-slate-400 max-h-28 overflow-y-auto"
+                style={{ lineHeight: '1.5', '--tw-ring-color': primaryColor } as React.CSSProperties}
+              />
+              <button
+                onClick={send}
+                disabled={(!input.trim() && !attachmentFile) || loading || uploading || isDone}
+                className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-white disabled:opacity-40 transition-opacity"
+                style={{ backgroundColor: primaryColor }}
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}
     </>
   )
 }
+

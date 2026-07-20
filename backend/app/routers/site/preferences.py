@@ -1,0 +1,243 @@
+"""User preferences, property ratings, and search history — public API."""
+
+from datetime import datetime, timezone
+from typing import Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.routers.auth import get_optional_user
+from database import get_db
+from app.services.preference_service import criteria_from_preference, summarize_preference
+
+router = APIRouter()
+
+
+# ── Schemas ───────────────────────────────────────────────────────────────────
+
+class RateIn(BaseModel):
+    record_id: str
+    rating: int        # 1–5
+    interested: bool = False
+
+
+class SearchHistoryIn(BaseModel):
+    query: Optional[str] = None
+    location: Optional[str] = None
+    project_id: Optional[str] = None
+    source: str = "portal"   # 'portal' | 'chatbot'
+
+
+class PreferencesIn(BaseModel):
+    direccion: Optional[str] = None
+    direccion_priority: Optional[str] = None
+    ubicacion: Optional[str] = None
+    ubicacion_priority: Optional[str] = None
+    pais: Optional[str] = None
+    pais_priority: Optional[str] = None
+    bedrooms: Optional[int] = None
+    bedrooms_priority: Optional[str] = None
+    bathrooms: Optional[int] = None
+    bathrooms_priority: Optional[str] = None
+    m2: Optional[float] = None
+    m2_priority: Optional[str] = None
+    min_price: Optional[float] = None
+    min_price_priority: Optional[str] = None
+    max_price: Optional[float] = None
+    max_price_priority: Optional[str] = None
+    nearby_places: Optional[list[dict]] = None   # [{"name": str, "priority": "REQUIRED"|"OPTIONAL"}]
+    property_type: Optional[str] = None
+    property_type_priority: Optional[str] = None
+
+
+# ── Rate a property ───────────────────────────────────────────────────────────
+
+@router.post("/rate")
+def rate_property(body: RateIn, request: Request, db: Session = Depends(get_db)):
+    user = get_optional_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Autenticación requerida.")
+
+    from app.models.user_property_interaction import UserPropertyInteraction
+
+    try:
+        record_uuid = UUID(body.record_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="record_id inválido.")
+
+    row = db.query(UserPropertyInteraction).filter_by(
+        site_user_id=user.id, record_id=record_uuid
+    ).first()
+    if not row:
+        row = UserPropertyInteraction(site_user_id=user.id, record_id=record_uuid)
+        db.add(row)
+
+    row.rating = max(1, min(5, body.rating))
+    row.rated_at = datetime.now(timezone.utc)
+    if body.interested:
+        row.interested = True
+
+    db.commit()
+    return {"ok": True, "rating": row.rating}
+
+
+# ── Save a search ─────────────────────────────────────────────────────────────
+
+@router.post("/search-history")
+def save_search(body: SearchHistoryIn, request: Request, db: Session = Depends(get_db)):
+    user = get_optional_user(request, db)
+    if not user:
+        return {"ok": False, "reason": "anonymous"}
+
+    if not (body.query or body.location or body.project_id):
+        return {"ok": False, "reason": "empty"}
+
+    from app.models.search_history import SearchHistory
+
+    h = SearchHistory(
+        site_user_id=user.id,
+        query=body.query.strip() if body.query else None,
+        location=body.location.strip() if body.location else None,
+        project_id=body.project_id or None,
+        source=body.source,
+    )
+    db.add(h)
+    db.commit()
+    return {"ok": True}
+
+
+# ── My profile ────────────────────────────────────────────────────────────────
+
+@router.get("/me")
+def get_my_profile(request: Request, db: Session = Depends(get_db)):
+    user = get_optional_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Autenticación requerida.")
+
+    from app.models.user_preference import UserPreference
+    from app.models.user_property_interaction import UserPropertyInteraction
+    from app.models.search_history import SearchHistory
+
+    pref = db.query(UserPreference).filter_by(site_user_id=user.id).first()
+
+    interactions = (
+        db.query(UserPropertyInteraction)
+        .filter_by(site_user_id=user.id)
+        .order_by(UserPropertyInteraction.created_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    history = (
+        db.query(SearchHistory)
+        .filter_by(site_user_id=user.id)
+        .order_by(SearchHistory.created_at.desc())
+        .limit(30)
+        .all()
+    )
+
+    preferences = {
+        "direccion": pref.direccion if pref else None,
+        "direccion_priority": pref.direccion_priority if pref else None,
+        "ubicacion": pref.ubicacion if pref else None,
+        "ubicacion_priority": pref.ubicacion_priority if pref else None,
+        "pais": pref.pais if pref else None,
+        "pais_priority": pref.pais_priority if pref else None,
+        "m2": pref.m2 if pref else None,
+        "m2_priority": pref.m2_priority if pref else None,
+        "bedrooms": pref.bedrooms if pref else None,
+        "bedrooms_priority": pref.bedrooms_priority if pref else None,
+        "bathrooms": pref.bathrooms if pref else None,
+        "bathrooms_priority": pref.bathrooms_priority if pref else None,
+        "min_price": pref.min_price if pref else None,
+        "min_price_priority": pref.min_price_priority if pref else None,
+        "max_price": pref.max_price if pref else None,
+        "max_price_priority": pref.max_price_priority if pref else None,
+        "nearby_places": pref.nearby_places if pref else None,
+        "property_type": pref.property_type if pref else None,
+        "property_type_priority": pref.property_type_priority if pref else None,
+    }
+    summary = summarize_preference(pref) if pref else ""
+
+    return {
+        "preferences": preferences,
+        "summary": summary,
+        "preferences_updated_at": pref.updated_at.isoformat() if pref and pref.updated_at else None,
+        "interactions": [
+            {
+                "record_id": str(i.record_id),
+                "rating": i.rating,
+                "interested": i.interested,
+                "seen_in_chat": i.seen_in_chat,
+                "rated_at": i.rated_at.isoformat() if i.rated_at else None,
+            }
+            for i in interactions
+        ],
+        "search_history": [
+            {
+                "id": str(h.id),
+                "query": h.query,
+                "location": h.location,
+                "project_id": h.project_id,
+                "source": h.source,
+                "created_at": h.created_at.isoformat() if h.created_at else None,
+            }
+            for h in history
+        ],
+    }
+
+
+# ── Update my preferences ─────────────────────────────────────────────────────
+
+@router.put("/me")
+def update_my_preferences(body: PreferencesIn, request: Request, db: Session = Depends(get_db)):
+    from app.models.user_preference import UserPreference
+    from datetime import datetime, timezone
+
+    user = get_optional_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Autenticación requerida.")
+
+    pref = db.query(UserPreference).filter_by(site_user_id=user.id).first()
+    if not pref:
+        pref = UserPreference(site_user_id=user.id)
+        db.add(pref)
+
+    fields = [
+        "direccion", "direccion_priority", "ubicacion", "ubicacion_priority",
+        "pais", "pais_priority", "bedrooms", "bedrooms_priority",
+        "bathrooms", "bathrooms_priority", "m2", "m2_priority",
+        "min_price", "min_price_priority", "max_price", "max_price_priority",
+        "nearby_places", "property_type", "property_type_priority",
+    ]
+    for field in fields:
+        setattr(pref, field, getattr(body, field))
+
+    pref.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(pref)
+    return {"ok": True}
+
+
+# ── My ratings (quick lookup) ─────────────────────────────────────────────────
+
+@router.get("/my-ratings")
+def get_my_ratings(request: Request, db: Session = Depends(get_db)):
+    """Returns a map of record_id → rating for the authenticated user."""
+    user = get_optional_user(request, db)
+    if not user:
+        return {}
+
+    from app.models.user_property_interaction import UserPropertyInteraction
+
+    rows = (
+        db.query(UserPropertyInteraction)
+        .filter(
+            UserPropertyInteraction.site_user_id == user.id,
+            UserPropertyInteraction.rating.isnot(None),
+        )
+        .all()
+    )
+    return {str(r.record_id): r.rating for r in rows}

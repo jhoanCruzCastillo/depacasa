@@ -2,12 +2,40 @@ from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from uuid import UUID
 from datetime import datetime
+from typing import Optional, List
+from pydantic import BaseModel
 
 from database import get_db
 from app.models import ScrapeJob, Developer, JobStatus
 from app.schemas import ScrapeJobResponse
 
 router = APIRouter(prefix="/api/scrape", tags=["scrape"])
+
+
+class FieldSelectorIn(BaseModel):
+    value: str
+    order: int = 0
+
+
+class FieldScrapeIn(BaseModel):
+    name: str
+    is_child_url: bool = False
+    plain_text: bool = False
+    is_shared: bool = False
+    is_list: bool = False
+    list_container: Optional[str] = None
+    is_image: bool = False
+    extract_attr: Optional[str] = None
+    order: int = 0
+    selectors: List[FieldSelectorIn] = []
+
+
+class SingleFieldScrapeIn(BaseModel):
+    developer_id: UUID
+    url_node_id: UUID
+    node_url: str
+    container_selector: Optional[str] = None
+    field: FieldScrapeIn
 
 
 @router.post("/{developer_id}/run", response_model=ScrapeJobResponse, status_code=status.HTTP_201_CREATED)
@@ -53,3 +81,18 @@ async def list_jobs_by_developer(
         ScrapeJob.developer_id == developer_id
     ).order_by(ScrapeJob.created_at.desc()).all()
     return jobs
+
+
+@router.post("/field/run", status_code=status.HTTP_202_ACCEPTED)
+async def run_field_scrape(
+    payload: SingleFieldScrapeIn,
+):
+    """Enqueue a background task to scrape a single field from the current editor state."""
+    try:
+        from app.workers.tasks import scrape_single_field_task
+        scrape_single_field_task.delay(payload.model_dump(mode="json"))
+    except Exception:
+        # best-effort: failure to enqueue shouldn't crash the endpoint
+        pass
+
+    return {"status": "queued"}

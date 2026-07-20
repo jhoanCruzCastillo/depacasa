@@ -7,6 +7,7 @@ export interface SiteUser {
   name: string | null
   country: string | null
   phone: string | null
+  whatsapp: string | null
   wants_newsletter: boolean
 }
 
@@ -46,10 +47,18 @@ export function useAuth() {
     return r.data.user
   }
 
-  const register = async (email: string, password: string, wants_newsletter: boolean): Promise<SiteUser> => {
-    const r = await authRegister(email, password, wants_newsletter)
+  const register = async (email: string, password: string, name: string, country?: string): Promise<SiteUser> => {
+    const r = await authRegister(email, password, name, country)
     _persist(r.data.token, r.data.user)
     return r.data.user
+  }
+
+  const refresh = () => {
+    const savedToken = localStorage.getItem(TOKEN_KEY)
+    const savedUser = localStorage.getItem(USER_KEY)
+    if (savedToken && savedUser) {
+      try { setToken(savedToken); setUser(JSON.parse(savedUser)) } catch { /* ignore */ }
+    }
   }
 
   const logout = () => {
@@ -59,5 +68,10 @@ export function useAuth() {
     setUser(null)
   }
 
-  return { user, token, loading, login, register, logout }
+  const updateUser = (u: SiteUser) => {
+    localStorage.setItem(USER_KEY, JSON.stringify(u))
+    setUser(u)
+  }
+
+  return { user, token, loading, login, register, logout, refresh, updateUser }
 }

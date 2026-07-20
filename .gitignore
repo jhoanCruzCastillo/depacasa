@@ -20,3 +20,8 @@ htmlcov/
 *.swp
 *.swo
 *~
+
+# Ignore downloaded scraper images but keep placeholder files
+/backend/media/images/*
+!/backend/media/images/.gitkeep
+!/backend/media/images/README.md
